@@ -7,18 +7,21 @@ import {
 } from "lucide-react";
 import type { Period, OrdersAnalytics, OrderStatus } from "~/types/api";
 import { ordersAnalyticsQueryOptions } from "../queries";
-import { money } from "../utils";
-import { StatTile } from "./stat-tile";
+import { money, SERIES } from "../utils";
+import { MetricTile } from "./metric-tile";
 import { DonutChart, type DonutSlice } from "./donut-chart";
 
+// Order status is an identity dimension, so each status is pinned to a fixed
+// series slot. Pinning matters: the donut reorders by count, and a colour that
+// followed rank instead of entity would repaint the chart on every refresh.
 const STATUS_COLORS: Record<OrderStatus, string> = {
-  pending: "hsl(215 16% 47%)",
-  paid: "hsl(217 91% 60%)",
-  processing: "hsl(38 92% 50%)",
-  shipped: "hsl(262 83% 63%)",
-  delivered: "hsl(142 71% 45%)",
-  refunded: "hsl(0 72% 51%)",
-  cancelled: "hsl(0 63% 40%)",
+  pending: SERIES[4],
+  paid: SERIES[0],
+  processing: SERIES[3],
+  shipped: SERIES[6],
+  delivered: SERIES[2],
+  refunded: SERIES[1],
+  cancelled: SERIES[7],
 };
 
 export function OrdersTab({ period }: { period: Period }) {
@@ -30,39 +33,53 @@ export function OrdersTab({ period }: { period: Period }) {
   const statusSlices: DonutSlice[] = data.statusBreakdown.map((r) => ({
     name: r.status,
     value: r.count,
-    color: STATUS_COLORS[r.status] ?? "hsl(215 16% 47%)",
+    color: STATUS_COLORS[r.status] ?? SERIES[4],
   }));
 
+  // Payment outcome is genuinely a state, not an identity — the one place the
+  // reserved status palette belongs. Each slice is labelled, so the meaning
+  // never rests on hue alone.
   const paymentSlices: DonutSlice[] = [
-    { name: "captured", value: data.payments.captured, color: "hsl(142 71% 45%)" },
-    { name: "failed", value: data.payments.failed, color: "hsl(0 72% 51%)" },
-    { name: "pending", value: data.payments.pending, color: "hsl(38 92% 50%)" },
+    {
+      name: "captured",
+      value: data.payments.captured,
+      color: "hsl(var(--status-good))",
+    },
+    {
+      name: "failed",
+      value: data.payments.failed,
+      color: "hsl(var(--status-critical))",
+    },
+    {
+      name: "pending",
+      value: data.payments.pending,
+      color: "hsl(var(--status-warning))",
+    },
   ];
 
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatTile
+        <MetricTile
           label="Cart abandonment"
           value={`${data.cartAbandonment.abandonmentRatePct}%`}
           icon={XCircleIcon}
-          tone="warn"
           hint={`${data.cartAbandonment.abandonedCount} abandoned · ${data.cartAbandonment.convertedCount} converted`}
         />
-        <StatTile
+        <MetricTile
           label="Lost cart value"
           value={money(data.cartAbandonment.lostValue)}
           icon={ShoppingCartIcon}
           hint="Total of abandoned carts"
         />
-        <StatTile
+        <MetricTile
           label="Refund rate"
           value={`${data.refunds.refundRatePct}%`}
           icon={RotateCcwIcon}
-          tone={data.refunds.refundRatePct > 0 ? "warn" : "default"}
+          status={data.refunds.refundRatePct > 0 ? "warning" : undefined}
           hint={`${data.refunds.count} refunds`}
         />
-        <StatTile
+        <MetricTile
           label="Refunded"
           value={money(data.refunds.amount)}
           icon={DollarSignIcon}

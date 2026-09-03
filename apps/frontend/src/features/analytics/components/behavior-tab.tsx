@@ -1,3 +1,9 @@
+import {
+  FileTextIcon,
+  LogInIcon,
+  MousePointerClickIcon,
+  SendIcon,
+} from "lucide-react";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import type { Period, BehaviorAnalytics } from "~/types/api";
 import { behaviorAnalyticsQueryOptions } from "../queries";
@@ -9,65 +15,57 @@ export function BehaviorTab({ period }: { period: Period }) {
     behaviorAnalyticsQueryOptions(period),
   ).data;
 
-  const empty =
-    data.topPages.length === 0 &&
-    data.topClicks.length === 0 &&
-    data.forms.length === 0;
-
   return (
-    <div className="space-y-4">
-      {empty ? (
-        <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-          No on-site behavior yet for this period. Page views populate
-          automatically once the tracker is embedded; clicks and form
-          submissions require opt-in autocapture (<code>data-autocapture</code>)
-          or per-element <code>data-ca-event</code>.
-        </p>
-      ) : null}
-
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <RankedBarList
-          title="Top pages"
-          description="Views and unique visitors"
-          emptyLabel="No page views for this period"
-          items={data.topPages.map((p) => ({
-            label: p.path,
-            sublabel: `${num(p.visitors)} visitors`,
-            value: num(p.views),
-            weight: p.views,
-          }))}
-        />
-        <RankedBarList
-          title="Landing pages"
-          description="First page of each session"
-          emptyLabel="No entry pages for this period"
-          items={data.entryPages.map((p) => ({
-            label: p.path,
-            value: num(p.sessions),
-            weight: p.sessions,
-          }))}
-        />
-        <RankedBarList
-          title="Top clicks"
-          description="Tracked element clicks (opt-in)"
-          emptyLabel="No click events — enable click autocapture to populate"
-          items={data.topClicks.map((c) => ({
-            label: c.label,
-            value: num(c.count),
-            weight: c.count,
-          }))}
-        />
-        <RankedBarList
-          title="Form submissions"
-          description="Submissions by form"
-          emptyLabel="No form submissions for this period"
-          items={data.forms.map((f) => ({
-            label: f.name,
-            value: num(f.submissions),
-            weight: f.submissions,
-          }))}
-        />
-      </div>
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <RankedBarList
+        title="Top pages"
+        description="Views and unique visitors"
+        icon={FileTextIcon}
+        emptyLabel="No page views yet"
+        emptyDetail="Page views start arriving as soon as the tracker is on your storefront."
+        items={data.topPages.map((p) => ({
+          label: p.path,
+          sublabel: `${num(p.visitors)} visitors`,
+          value: num(p.views),
+          weight: p.views,
+        }))}
+      />
+      <RankedBarList
+        title="Landing pages"
+        description="First page of each session"
+        icon={LogInIcon}
+        emptyLabel="No landing pages yet"
+        emptyDetail="This shows where visitors arrive first, once traffic comes in."
+        items={data.entryPages.map((p) => ({
+          label: p.path,
+          value: num(p.sessions),
+          weight: p.sessions,
+        }))}
+      />
+      <RankedBarList
+        title="Top clicks"
+        description="Tracked element clicks"
+        icon={MousePointerClickIcon}
+        emptyLabel="No clicks tracked yet"
+        emptyDetail="Click tracking is opt-in — turn on autocapture, or mark the elements you care about."
+        items={data.topClicks.map((c) => ({
+          label: c.label,
+          value: num(c.count),
+          weight: c.count,
+        }))}
+      />
+      <RankedBarList
+        title="Form submissions"
+        description="Submissions by form"
+        icon={SendIcon}
+        emptyLabel="No form submissions yet"
+        emptyDetail="Form tracking is opt-in — turn on autocapture, or mark the forms you care about."
+        items={data.forms.map((f) => ({
+          label: f.name,
+          value: num(f.submissions),
+          weight: f.submissions,
+        }))}
+      />
     </div>
   );
 }

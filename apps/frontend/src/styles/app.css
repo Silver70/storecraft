@@ -46,11 +46,25 @@
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
+  /* Wrapped in hsl() so the Tailwind colour utilities (bg-chart-1, text-chart-2…)
+     resolve — the tokens themselves are bare HSL triplets. */
+  --color-chart-1: hsl(var(--chart-1));
+  --color-chart-2: hsl(var(--chart-2));
+  --color-chart-3: hsl(var(--chart-3));
+  --color-chart-4: hsl(var(--chart-4));
+  --color-chart-5: hsl(var(--chart-5));
+  --color-chart-6: hsl(var(--chart-6));
+  --color-chart-7: hsl(var(--chart-7));
+  --color-chart-8: hsl(var(--chart-8));
+  --color-seq-1: hsl(var(--seq-1));
+  --color-seq-2: hsl(var(--seq-2));
+  --color-seq-3: hsl(var(--seq-3));
+  --color-seq-4: hsl(var(--seq-4));
+  --color-seq-5: hsl(var(--seq-5));
+  --color-status-good: hsl(var(--status-good));
+  --color-status-warning: hsl(var(--status-warning));
+  --color-status-serious: hsl(var(--status-serious));
+  --color-status-critical: hsl(var(--status-critical));
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
@@ -97,12 +111,38 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
-  --chart-1: 18 100% 60%;
-  --chart-2: 38 95% 62%;
-  --chart-3: 16 75% 48%;
-  --chart-4: 45 100% 78%;
-  --chart-5: 13 80% 33%;
-  --radius: 0.625rem;
+  /* Categorical data hues — identity, not brand. Brand orange stays on actions
+     (buttons, active states); series get their own scale so 7 channels or 3
+     device types are actually distinguishable. Assigned in fixed slot order,
+     never cycled. Validated against this surface (#ffffff): lightness band,
+     chroma floor, CVD separation (worst adjacent ΔE 9.1), normal-vision floor
+     (19.6) all pass. Slots 3/4/5 sit under 3:1 contrast on white — wherever
+     they appear, the mark must carry a visible label (all our lists do). */
+  --chart-1: 213 67.7% 50.2%; /* blue    #2a78d6 */
+  --chart-2: 17 82.1% 56.3%; /* orange  #eb6834 */
+  --chart-3: 159 73.3% 39.6%; /* aqua    #1baf7a */
+  --chart-4: 41 100% 46.5%; /* yellow  #eda100 */
+  --chart-5: 337 70.3% 69.6%; /* magenta #e87ba4 */
+  --chart-6: 120 100% 25.7%; /* green   #008300 */
+  --chart-7: 249 48.4% 44.1%; /* violet  #4a3aa7 */
+  --chart-8: 0 73.5% 58.6%; /* red     #e34948 */
+
+  /* Sequential blue ramp for magnitude / ordered stages (funnel), dark→light.
+     Stops at step 250 so the palest band still reads on white. */
+  --seq-1: 213 77.9% 28.4%;
+  --seq-2: 213 71.9% 39%;
+  --seq-3: 213 67.7% 50.2%;
+  --seq-4: 212 75.3% 62%;
+  --seq-5: 213 76.6% 73.1%;
+
+  /* Status — reserved. Never reused as a series colour, always paired with an
+     icon or label so meaning is never carried by hue alone. */
+  --status-good: 120 86.3% 34.3%;
+  --status-warning: 41 95.7% 53.9%;
+  --status-serious: 17 79.3% 63.9%;
+  --status-critical: 0 61.3% 52.4%;
+
+  --radius: 0.875rem;
   --sidebar: #fffcfc;
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
@@ -132,11 +172,25 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
-  --chart-1: 18 100% 65%;
-  --chart-2: 38 95% 66%;
-  --chart-3: 16 75% 55%;
-  --chart-4: 45 100% 82%;
-  --chart-5: 13 80% 40%;
+  /* Same eight hues re-stepped for the dark surface (#171717) — a selected dark
+     palette, not an automatic flip. All eight clear 3:1 here; worst adjacent
+     CVD ΔE 8.4. */
+  --chart-1: 213 76.8% 56.1%; /* blue    #3987e5 */
+  --chart-2: 17 70.2% 50%; /* orange  #d95926 */
+  --chart-3: 159 72.7% 35.9%; /* aqua    #199e70 */
+  --chart-4: 40 100% 39.4%; /* yellow  #c98500 */
+  --chart-5: 338 61.1% 57.6%; /* magenta #d55181 */
+  --chart-6: 120 100% 25.7%; /* green   #008300 */
+  --chart-7: 247 69.4% 71.8%; /* violet  #9085e9 */
+  --chart-8: 0 71.8% 65.3%; /* red     #e66767 */
+
+  /* Sequential ramp stepped for the dark surface; stops at step 600 so the
+     deepest band doesn't sink into the background. */
+  --seq-1: 214 72.3% 33.9%;
+  --seq-2: 213 67.5% 44.7%;
+  --seq-3: 213 76.8% 56.1%;
+  --seq-4: 213 77% 67.6%;
+  --seq-5: 213 79.6% 78.8%;
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);

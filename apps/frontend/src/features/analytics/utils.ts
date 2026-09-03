@@ -16,12 +16,38 @@ export function num(n: number): string {
   return n.toLocaleString();
 }
 
-/** Distinct donut/legend colors — chart-1 plus a fixed light/dark-safe set. */
-export const CHART_PALETTE = [
+/**
+ * Categorical series colours in fixed slot order. Assign by index — never cycle
+ * or generate a 9th hue; past eight, fold the tail into "Other". Values live in
+ * app.css, where light and dark are stepped separately and validated for
+ * colour-blind separation against each surface.
+ */
+export const SERIES = [
   "hsl(var(--chart-1))",
-  "hsl(217 91% 60%)",
-  "hsl(160 84% 39%)",
-  "hsl(35 92% 55%)",
-  "hsl(280 65% 60%)",
-  "hsl(0 72% 60%)",
+  "hsl(var(--chart-2))",
+  "hsl(var(--chart-3))",
+  "hsl(var(--chart-4))",
+  "hsl(var(--chart-5))",
+  "hsl(var(--chart-6))",
+  "hsl(var(--chart-7))",
+  "hsl(var(--chart-8))",
 ];
+
+/** Colour for series slot `i`, capped at the last slot rather than wrapping. */
+export const series = (i: number) => SERIES[Math.min(i, SERIES.length - 1)];
+
+/** Ordered blue ramp, dark → light: magnitude and funnel stages. */
+export const SEQUENTIAL = [
+  "hsl(var(--seq-1))",
+  "hsl(var(--seq-2))",
+  "hsl(var(--seq-3))",
+  "hsl(var(--seq-4))",
+  "hsl(var(--seq-5))",
+];
+
+/** Step `i` of `n` along the sequential ramp, dark → light. */
+export function seqStep(i: number, n: number): string {
+  if (n <= 1) return SEQUENTIAL[0];
+  const idx = Math.round((i / (n - 1)) * (SEQUENTIAL.length - 1));
+  return SEQUENTIAL[Math.min(Math.max(idx, 0), SEQUENTIAL.length - 1)];
+}

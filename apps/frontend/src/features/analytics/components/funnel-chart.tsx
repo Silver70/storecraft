@@ -1,75 +1,53 @@
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "~/components/ui/card";
-import { num } from "../utils";
+import * as React from "react";
+import { TrendingDownIcon, TrendingUpIcon } from "lucide-react";
+import { cn } from "~/lib/utils";
+import { num, seqStep } from "../utils";
+import { ChartCard, EmptyState } from "./chart-card";
 
-export type FunnelStage = { stage: string; sessions: number };
-
-type Tone = "default" | "positive" | "warn" | "accent";
-
-function HeaderKpi({
-  label,
-  value,
-  unit,
-  tone = "default",
-}: {
-  label: string;
-  value: string;
-  unit: string;
-  tone?: Tone;
-}) {
-  const toneClass =
-    tone === "positive"
-      ? "text-emerald-600 dark:text-emerald-400"
-      : tone === "warn"
-        ? "text-destructive"
-        : tone === "accent"
-          ? "text-[hsl(var(--chart-1))]"
-          : "";
-  return (
-    <div>
-      <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </p>
-      <p
-        className={`text-xl font-bold tabular-nums leading-tight ${toneClass}`}
-      >
-        {value}
-      </p>
-      <p className="text-[10px] text-muted-foreground">{unit}</p>
-    </div>
-  );
-}
+export type FunnelStage = {
+  stage: string;
+  sessions: number;
+  /** % change vs the prior period. Wired in P3; absent for now. */
+  delta?: number;
+};
 
 /**
- * Horizontal conversion funnel with a smooth tapering silhouette + a summary
- * header (entered / completed / dropped / conversion). Stage heights are share
- * of the entered (first) stage; the per-step % is share of the *previous* stage.
- * Every ratio is guarded against divide-by-zero (never NaN).
+ * Horizontal conversion funnel: a smooth tapering silhouette banded per stage,
+ * with the stage figure, its step-conversion, and (when available) its delta
+ * sitting directly above each band.
+ *
+ * Stage heights are share of the *entered* (first) stage, so the silhouette is a
+ * true picture of drop-off; the per-step % below is share of the *previous*
+ * stage, which is the number you act on. Bands walk a single blue ramp dark →
+ * light — an ordered scale, not eight identities.
  */
 export function FunnelChart({
   title,
   description,
+  icon,
+  action,
   stages,
+  emptyLabel = "No traffic yet for this period",
+  emptyDetail,
 }: {
   title: string;
   description?: string;
+  icon?: React.ElementType;
+  action?: React.ReactNode;
   stages: FunnelStage[];
+  emptyLabel?: string;
+  emptyDetail?: React.ReactNode;
 }) {
+  const [hover, setHover] = React.useState<number | null>(null);
   const n = stages.length;
   const entered = stages[0]?.sessions ?? 0;
   const completed = n > 0 ? stages[n - 1].sessions : 0;
-  const dropped = Math.max(entered - completed, 0);
   const conversionPct =
     entered > 0 ? Math.round((completed / entered) * 1000) / 10 : 0;
 
   // ── SVG geometry ──────────────────────────────────────────────────────────
   const W = 1000;
-  const H = 240;
+  const H = 220;
   const usableH = H * 0.86;
   const colW = n > 0 ? W / n : W;
   const barH = (v: number) => (entered > 0 ? (v / entered) * usableH : 0);
@@ -83,7 +61,6 @@ export function FunnelChart({
     top.push({ x, y: (H - h) / 2 });
     bot.push({ x, y: (H + h) / 2 });
   };
-  // Flat caps at the left/right edges so the shape spans the full width.
   addPoint(0, stages[0]?.sessions ?? 0);
   stages.forEach((s, i) => addPoint(nodeX(i), s.sessions));
   addPoint(W, stages[n - 1]?.sessions ?? 0);
@@ -101,132 +78,163 @@ export function FunnelChart({
   };
 
   const path =
-    `M ${top[0].x} ${top[0].y}` +
+    `M ${top[0]?.x ?? 0} ${top[0]?.y ?? 0}` +
     smooth(top) +
-    ` L ${bot[bot.length - 1].x} ${bot[bot.length - 1].y}` +
+    ` L ${bot[bot.length - 1]?.x ?? W} ${bot[bot.length - 1]?.y ?? H}` +
     smooth([...bot].reverse()) +
     " Z";
 
   const cols = `repeat(${n}, minmax(0, 1fr))`;
 
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base font-semibold">{title}</CardTitle>
-        {description ? (
-          <CardDescription className="text-xs">{description}</CardDescription>
-        ) : null}
-      </CardHeader>
-      <CardContent className="pt-2">
-        {/* Summary header */}
-        <div className="grid grid-cols-4 gap-2 border-b pb-3">
-          <HeaderKpi label="Entered" value={num(entered)} unit="sessions" />
-          <HeaderKpi
-            label="Completed"
-            value={num(completed)}
-            unit="sessions"
-            tone="positive"
-          />
-          <HeaderKpi
-            label="Dropped"
-            value={num(dropped)}
-            unit="sessions"
-            tone="warn"
-          />
-          <HeaderKpi
-            label="Conversion"
-            value={`${conversionPct}%`}
-            unit="of entered"
-            tone="accent"
-          />
-        </div>
-
-        {entered === 0 ? (
-          <p className="py-10 text-center text-sm text-muted-foreground">
-            No traffic events for this period
-          </p>
-        ) : (
-          <div className="pt-4">
-            {/* Stage labels */}
-            <div className="grid" style={{ gridTemplateColumns: cols }}>
-              {stages.map((s) => (
-                <div key={s.stage} className="px-1 text-center">
-                  <p className="truncate text-[11px] text-muted-foreground">
+    <ChartCard
+      title={title}
+      description={description}
+      icon={icon}
+      action={action}
+    >
+      {entered === 0 ? (
+        <EmptyState message={emptyLabel} detail={emptyDetail} />
+      ) : (
+        <div>
+          {/* Stage headers — figure, delta, step conversion */}
+          <div className="grid gap-2" style={{ gridTemplateColumns: cols }}>
+            {stages.map((s, i) => {
+              const prev = i > 0 ? stages[i - 1].sessions : s.sessions;
+              const stepPct =
+                i === 0
+                  ? 100
+                  : prev > 0
+                    ? Math.round((s.sessions / prev) * 100)
+                    : 0;
+              const hasDelta =
+                typeof s.delta === "number" && Number.isFinite(s.delta);
+              return (
+                <div
+                  key={s.stage}
+                  className={cn(
+                    "rounded-md px-2 py-1.5 transition-colors",
+                    hover === i && "bg-muted/60",
+                  )}
+                  onMouseEnter={() => setHover(i)}
+                  onMouseLeave={() => setHover(null)}
+                >
+                  <p className="truncate text-[11px] uppercase tracking-wider text-muted-foreground">
                     {s.stage}
                   </p>
-                  <p className="text-lg font-bold leading-tight tabular-nums">
-                    {num(s.sessions)}
-                  </p>
-                </div>
-              ))}
-            </div>
-
-            {/* Funnel silhouette */}
-            <svg
-              viewBox={`0 0 ${W} ${H}`}
-              preserveAspectRatio="none"
-              className="my-2 h-36 w-full"
-              role="img"
-              aria-label="Conversion funnel"
-            >
-              <defs>
-                <linearGradient id="funnelGrad" x1="0" y1="0" x2="1" y2="0">
-                  <stop
-                    offset="0%"
-                    stopColor="hsl(var(--chart-1))"
-                    stopOpacity="0.9"
-                  />
-                  <stop
-                    offset="100%"
-                    stopColor="hsl(var(--chart-1))"
-                    stopOpacity="0.5"
-                  />
-                </linearGradient>
-              </defs>
-              {stages.map((_, i) =>
-                i > 0 ? (
-                  <line
-                    key={i}
-                    x1={i * colW}
-                    y1={0}
-                    x2={i * colW}
-                    y2={H}
-                    stroke="var(--border)"
-                    strokeDasharray="2 5"
-                  />
-                ) : null,
-              )}
-              <path d={path} fill="url(#funnelGrad)" />
-            </svg>
-
-            {/* Per-step conversion (share of previous stage) */}
-            <div className="grid" style={{ gridTemplateColumns: cols }}>
-              {stages.map((s, i) => {
-                const prev = i > 0 ? stages[i - 1].sessions : s.sessions;
-                const stepPct =
-                  i === 0
-                    ? 100
-                    : prev > 0
-                      ? Math.round((s.sessions / prev) * 100)
-                      : 0;
-                return (
-                  <div key={s.stage} className="px-1 text-center">
-                    <span
-                      className={`text-xs font-semibold tabular-nums ${
-                        i > 0 && stepPct < 50
-                          ? "text-amber-600 dark:text-amber-400"
-                          : "text-muted-foreground"
-                      }`}
-                    >
-                      {stepPct}%
+                  <div className="mt-1 flex items-baseline gap-1.5">
+                    <span className="text-xl font-bold leading-none tabular-nums">
+                      {num(s.sessions)}
                     </span>
+                    {hasDelta ? (
+                      <span
+                        className={cn(
+                          "flex items-center gap-0.5 text-[11px] font-semibold tabular-nums",
+                          s.delta! >= 0
+                            ? "text-status-good"
+                            : "text-status-critical",
+                        )}
+                      >
+                        {s.delta! >= 0 ? (
+                          <TrendingUpIcon className="h-3 w-3" />
+                        ) : (
+                          <TrendingDownIcon className="h-3 w-3" />
+                        )}
+                        {Math.abs(s.delta!)}%
+                      </span>
+                    ) : null}
                   </div>
-                );
-              })}
-            </div>
+                  {i > 0 ? (
+                    <p
+                      className={cn(
+                        "mt-1 text-[11px] tabular-nums",
+                        stepPct < 50
+                          ? "text-status-warning"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {stepPct}% of previous
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      entered
+                    </p>
+                  )}
+                </div>
+              );
+            })}
           </div>
-        )}
-      </CardContent>
-    </Card>
+
+          {/* Funnel silhouette, banded per stage along one ordered ramp */}
+          <svg
+            viewBox={`0 0 ${W} ${H}`}
+            preserveAspectRatio="none"
+            className="mt-3 h-40 w-full"
+            role="img"
+            aria-label={`Conversion funnel: ${stages
+              .map((s) => `${s.stage} ${s.sessions}`)
+              .join(", ")}`}
+          >
+            <defs>
+              <clipPath id="funnelClip">
+                <path d={path} />
+              </clipPath>
+            </defs>
+            {/* One band per stage, clipped to the funnel silhouette */}
+            <g clipPath="url(#funnelClip)">
+              {stages.map((s, i) => (
+                <rect
+                  key={s.stage}
+                  x={i * colW}
+                  y={0}
+                  width={colW}
+                  height={H}
+                  fill={seqStep(i, n)}
+                  opacity={hover === null || hover === i ? 1 : 0.55}
+                  className="transition-opacity duration-200 motion-reduce:transition-none"
+                />
+              ))}
+            </g>
+            {/* Hairline dividers between stages */}
+            {stages.map((_, i) =>
+              i > 0 ? (
+                <line
+                  key={i}
+                  x1={i * colW}
+                  y1={0}
+                  x2={i * colW}
+                  y2={H}
+                  stroke="var(--card)"
+                  strokeWidth={2}
+                />
+              ) : null,
+            )}
+            {/* Hover targets */}
+            {stages.map((s, i) => (
+              <rect
+                key={`hit-${s.stage}`}
+                x={i * colW}
+                y={0}
+                width={colW}
+                height={H}
+                fill="transparent"
+                onMouseEnter={() => setHover(i)}
+                onMouseLeave={() => setHover(null)}
+              />
+            ))}
+          </svg>
+
+          <div className="mt-3 flex items-center justify-between border-t pt-3 text-xs">
+            <span className="text-muted-foreground">
+              {num(entered)} entered · {num(Math.max(entered - completed, 0))}{" "}
+              dropped
+            </span>
+            <span className="font-semibold tabular-nums">
+              {conversionPct}% completed
+            </span>
+          </div>
+        </div>
+      )}
+    </ChartCard>
   );
 }

@@ -23,7 +23,7 @@ import {
 import type { InventoryAnalytics } from "~/types/api";
 import { inventoryAnalyticsQueryOptions } from "../queries";
 import { money, num } from "../utils";
-import { StatTile } from "./stat-tile";
+import { MetricTile } from "./metric-tile";
 
 export function InventoryTab() {
   const data: InventoryAnalytics = useSuspenseQuery(
@@ -33,27 +33,27 @@ export function InventoryTab() {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatTile
+        <MetricTile
           label="Out of stock"
           value={num(data.outOfStockCount)}
           icon={XCircleIcon}
-          tone={data.outOfStockCount > 0 ? "warn" : "default"}
+          status={data.outOfStockCount > 0 ? "critical" : undefined}
           hint="Variants at or below zero available"
         />
-        <StatTile
+        <MetricTile
           label="Low stock"
           value={num(data.lowStockCount)}
           icon={AlertTriangleIcon}
-          tone={data.lowStockCount > 0 ? "warn" : "default"}
+          status={data.lowStockCount > 0 ? "warning" : undefined}
           hint="At or below threshold"
         />
-        <StatTile
+        <MetricTile
           label="Stock on hand"
           value={num(data.stockUnits)}
           icon={BoxesIcon}
           hint={`${num(data.inStockCount)} variants in stock`}
         />
-        <StatTile
+        <MetricTile
           label="Stock value"
           value={money(data.stockValueAtCost)}
           icon={DollarSignIcon}

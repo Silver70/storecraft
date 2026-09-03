@@ -1,9 +1,16 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { UsersIcon, MonitorSmartphoneIcon, GlobeIcon } from "lucide-react";
+import {
+  UsersIcon,
+  MonitorSmartphoneIcon,
+  GlobeIcon,
+  AppWindowIcon,
+  LaptopIcon,
+} from "lucide-react";
+import { Flag } from "~/components/ui/flag";
 import type { Period, AudienceAnalytics } from "~/types/api";
 import { audienceAnalyticsQueryOptions } from "../queries";
-import { num, CHART_PALETTE } from "../utils";
-import { StatTile } from "./stat-tile";
+import { num, series } from "../utils";
+import { MetricTile } from "./metric-tile";
 import { DonutChart, type DonutSlice } from "./donut-chart";
 import { BarChartCard } from "./bar-chart-card";
 import { RankedBarList } from "./ranked-bar-list";
@@ -22,10 +29,12 @@ export function AudienceTab({ period }: { period: Period }) {
     audienceAnalyticsQueryOptions(period),
   ).data;
 
+  // Devices are distinct things, not a ranking — the one place categorical
+  // colour belongs, assigned in fixed slot order.
   const deviceSlices: DonutSlice[] = data.devices.map((d, i) => ({
     name: d.label,
     value: d.sessions,
-    color: CHART_PALETTE[i % CHART_PALETTE.length],
+    color: series(i),
   }));
 
   const topDevice = data.devices[0]?.label ?? "—";
@@ -35,43 +44,53 @@ export function AudienceTab({ period }: { period: Period }) {
 
   return (
     <div className="space-y-4">
-      {data.totalSessions === 0 ? (
-        <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-          No audience data yet for this period. Device, browser, and country are
-          derived server-side from tracked events — embed the tracker to
-          populate them.
-        </p>
-      ) : null}
-
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
-        <StatTile
+        <MetricTile
           label="Sessions"
           value={num(data.totalSessions)}
           icon={UsersIcon}
           hint="Bots excluded"
         />
-        <StatTile
+        <MetricTile
           label="Top device"
           value={topDevice}
           icon={MonitorSmartphoneIcon}
         />
-        <StatTile label="Top country" value={topCountry} icon={GlobeIcon} />
+        <MetricTile label="Top country" value={topCountry} icon={GlobeIcon} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <DonutChart
           title="Devices"
           description="Sessions by device type"
+          icon={MonitorSmartphoneIcon}
           data={deviceSlices}
           centerValue={num(data.totalSessions)}
           centerLabel="sessions"
+          emptyLabel="No sessions yet"
+          emptyDetail="Device type is detected automatically once visitors arrive."
+        />
+        <RankedBarList
+          title="Countries"
+          description="Sessions by country"
+          icon={GlobeIcon}
+          emptyLabel="No location data yet"
+          emptyDetail="Country is resolved at the edge — it appears as soon as traffic comes through your CDN."
+          items={data.countries.map((c) => ({
+            label: countryName(c.countryCode),
+            icon: <Flag code={c.countryCode} className="text-base" />,
+            value: num(c.sessions),
+            weight: c.sessions,
+          }))}
         />
         <BarChartCard
           title="Browsers"
           description="Sessions by browser"
+          icon={AppWindowIcon}
           valueLabel="Sessions"
           formatValue={num}
           maxLabel={12}
+          emptyLabel="No browser data yet"
           data={data.browsers.map((b) => ({
             label: b.label,
             value: b.sessions,
@@ -80,23 +99,14 @@ export function AudienceTab({ period }: { period: Period }) {
         <BarChartCard
           title="Operating systems"
           description="Sessions by OS"
+          icon={LaptopIcon}
           valueLabel="Sessions"
           formatValue={num}
           maxLabel={12}
+          emptyLabel="No OS data yet"
           data={data.operatingSystems.map((o) => ({
             label: o.label,
             value: o.sessions,
-          }))}
-        />
-        <RankedBarList
-          title="Countries"
-          description="Sessions by country"
-          emptyLabel="No geo data for this period"
-          items={data.countries.map((c) => ({
-            label: countryName(c.countryCode),
-            sublabel: c.countryCode,
-            value: num(c.sessions),
-            weight: c.sessions,
           }))}
         />
       </div>

@@ -3,7 +3,7 @@ import { DollarSignIcon, TrendingUpIcon, PercentIcon } from "lucide-react";
 import type { Period, SalesAnalytics } from "~/types/api";
 import { salesAnalyticsQueryOptions } from "../queries";
 import { money, num } from "../utils";
-import { StatTile } from "./stat-tile";
+import { MetricTile } from "./metric-tile";
 import { RankedBarList } from "./ranked-bar-list";
 import { BarChartCard } from "./bar-chart-card";
 
@@ -16,25 +16,24 @@ export function SalesTab({ period }: { period: Period }) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatTile
+        <MetricTile
           label="Revenue"
           value={money(profit.revenue)}
           icon={DollarSignIcon}
         />
-        <StatTile
+        <MetricTile
           label="Gross Profit"
           value={money(profit.grossProfit)}
           icon={TrendingUpIcon}
-          tone="positive"
           hint={`${profit.coveragePct}% of revenue has cost data`}
         />
-        <StatTile
+        <MetricTile
           label="Margin"
           value={`${profit.marginPct}%`}
           icon={PercentIcon}
           hint="On items with a known cost"
         />
-        <StatTile
+        <MetricTile
           label="Cost of Goods"
           value={money(profit.cost)}
           icon={DollarSignIcon}
