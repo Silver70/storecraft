@@ -12,6 +12,8 @@ import {
   deleteCookie,
 } from "@tanstack/react-start/server";
 import { gqlFetch } from "./gql-client";
+import { CREATE_CART_MUTATION } from "~/features/attribution/graphql";
+import type { DeclaredAttributionInput } from "~/features/attribution/schema";
 
 const CART_COOKIE = "cartId";
 const CUSTOMER_ACCESS_COOKIE = "customerAccessToken";
@@ -27,28 +29,39 @@ const baseCookieOptions = {
   path: "/",
 };
 
-const CREATE_CART_MUTATION = /* GraphQL */ `
-  mutation CreateCart {
-    createCart {
-      id
-    }
-  }
-`;
-
 // ─── Cart ─────────────────────────────────────────────────────────────────────
 
 /**
  * Returns the current cart id from the httpOnly cookie, creating a fresh cart
  * (and setting the cookie) when none exists. Every cart server fn calls this so
  * the cart id is always server-derived and never trusted from the client.
+ *
+ * `attribution` is where the visitor came from, as the browser recorded it. It
+ * is declared here because this is the one moment it can be — the cart is
+ * created on the visitor's first add, and everything after that reads a frozen
+ * copy. Omitting it produces an Unattributed order and nothing else.
  */
-export async function getOrCreateCartId(): Promise<string> {
+export async function getOrCreateCartId(
+  attribution?: DeclaredAttributionInput,
+): Promise<string> {
   const existing = getCookie(CART_COOKIE);
   if (existing) return existing;
 
-  const { createCart } = await gqlFetch<{ createCart: { id: string } }>(
-    CREATE_CART_MUTATION,
-  );
+  const create = (declared?: DeclaredAttributionInput) =>
+    gqlFetch<{ createCart: { id: string } }>(CREATE_CART_MUTATION, {
+      attribution: declared ?? null,
+    });
+
+  let createCart: { id: string };
+  try {
+    createCart = (await create(attribution)).createCart;
+  } catch (err) {
+    // Attribution must never cost a sale. If the declaration itself is what the
+    // API rejected, mint the cart without it and let the order be Unattributed.
+    if (!attribution) throw err;
+    createCart = (await create()).createCart;
+  }
+
   setCookie(CART_COOKIE, createCart.id, {
     ...baseCookieOptions,
     maxAge: THIRTY_DAYS,

@@ -14,6 +14,8 @@ import { NotFound } from "~/components/NotFound";
 import { Header } from "~/components/layout/header";
 import { Footer } from "~/components/layout/footer";
 import { storeConfig } from "~/config/store.config";
+import { trackingScript } from "~/features/attribution/config";
+import { useAttributionCapture } from "~/features/attribution/hooks";
 import appCss from "~/styles/app.css?url";
 import { seo } from "~/utils/seo";
 
@@ -56,6 +58,19 @@ export const Route = createRootRouteWithContext<{
       { rel: "manifest", href: "/site.webmanifest", color: "#fffff" },
       { rel: "icon", href: "/favicon.ico" },
     ],
+    // The drop-in behavioral tracker. `defer` keeps it off the critical path,
+    // and it boots before hydration, so the visitor and session ids it mints
+    // are the ones attribution capture then declares to the commerce API.
+    scripts: trackingScript
+      ? [
+          {
+            src: trackingScript.src,
+            defer: true,
+            "data-key": trackingScript.key,
+            "data-autocapture": trackingScript.autocapture,
+          },
+        ]
+      : [],
   }),
   errorComponent: (props) => {
     return (
@@ -69,6 +84,11 @@ export const Route = createRootRouteWithContext<{
 });
 
 function RootComponent() {
+  // Reads UTM tags and the referrer on landing and on every client-side
+  // navigation. Local, synchronous, and run from an effect — nothing here is
+  // on the path between a click and what the shopper sees.
+  useAttributionCapture();
+
   return (
     <RootDocument>
       <div className="flex min-h-svh flex-col">

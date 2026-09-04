@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Cart } from "~/types/api";
+import { readDeclaredAttribution } from "~/features/attribution/client";
 import { CART_QUERY_KEY, cartQueryOptions } from "./queries";
 import {
   addToCartServerFn,
@@ -33,7 +34,14 @@ export function useCartMutations() {
   const addToCart = useMutation({
     mutationFn: (vars: { variantId: string; quantity?: number }) =>
       addToCartServerFn({
-        data: { variantId: vars.variantId, quantity: vars.quantity ?? 1 },
+        data: {
+          variantId: vars.variantId,
+          quantity: vars.quantity ?? 1,
+          // Read here rather than held in state: this is the first add, so it
+          // is the call that creates the cart, and the first touch it carries
+          // may have been recorded on a visit days ago.
+          attribution: readDeclaredAttribution(),
+        },
       }),
     onSuccess: setCart,
   });

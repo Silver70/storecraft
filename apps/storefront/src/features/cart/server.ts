@@ -3,6 +3,7 @@ import { z } from "zod";
 import { gqlFetch } from "~/lib/gql-client";
 import { clearCartId, getCartId, getOrCreateCartId } from "~/lib/session";
 import type { Cart } from "~/types/api";
+import { optionalAttribution } from "~/features/attribution/schema";
 import {
   ADD_TO_CART_MUTATION,
   APPLY_COUPON_MUTATION,
@@ -55,6 +56,11 @@ export const addToCartServerFn = createServerFn({ method: "POST" })
     z.object({
       variantId: z.string().min(1),
       quantity: z.number().int().positive().default(1),
+      // Where the visitor came from, read from the browser at click time. The
+      // cart is created lazily on this call, so this is the moment attribution
+      // has to travel; unparseable attribution degrades to none rather than
+      // failing the add.
+      attribution: optionalAttribution,
     }),
   )
   .handler(async ({ data }): Promise<Cart> => {
@@ -65,7 +71,7 @@ export const addToCartServerFn = createServerFn({ method: "POST" })
         quantity: data.quantity,
       });
 
-    const cartId = await getOrCreateCartId();
+    const cartId = await getOrCreateCartId(data.attribution);
     try {
       return (await addTo(cartId)).addToCart;
     } catch (err) {
@@ -77,7 +83,7 @@ export const addToCartServerFn = createServerFn({ method: "POST" })
         /no longer active|not found/i.test(err.message)
       ) {
         clearCartId();
-        const freshId = await getOrCreateCartId();
+        const freshId = await getOrCreateCartId(data.attribution);
         return (await addTo(freshId)).addToCart;
       }
       throw err;
