@@ -6,23 +6,24 @@ import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
+import { Separator } from "~/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import { formatMoney, toCents } from "~/lib/money";
-import type { CampaignSpend, CampaignSpendReport, Period } from "~/types/api";
+import type {
+    AttributionTouch,
+    CampaignSpend,
+    CampaignSpendReport,
+    Period,
+} from "~/types/api";
 import { campaignSpendQueryOptions } from "../queries";
+import { CampaignPerformancePanel } from "./campaign-performance-panel";
+import { PerformancePeriodTabs } from "./campaign-performance-controls";
 import {
     deleteCampaignSpendServerFn,
     recordCampaignSpendRangeServerFn,
     recordCampaignSpendServerFn,
     updateCampaignSpendServerFn,
 } from "../server";
-
-const PERIODS: { value: Period; label: string }[] = [
-    { value: "today", label: "Today" },
-    { value: "7d", label: "7 days" },
-    { value: "30d", label: "30 days" },
-    { value: "90d", label: "90 days" },
-];
 
 /**
  * A typed amount as whole minor units, or `null` if it is not money.
@@ -129,6 +130,7 @@ interface EntryProps {
  */
 export function CampaignSpendCard({ campaignId }: { campaignId: string }) {
     const [period, setPeriod] = React.useState<Period>("30d");
+    const [touch, setTouch] = React.useState<AttributionTouch>("last");
     const [mode, setMode] = React.useState<EntryMode>("day");
 
     const {
@@ -142,20 +144,22 @@ export function CampaignSpendCard({ campaignId }: { campaignId: string }) {
         <Card>
             <CardHeader className="flex flex-row items-center justify-between gap-4 border-b pb-4">
                 <CardTitle className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                    Spend
+                    Performance &amp; spend
                 </CardTitle>
-                <Tabs value={period} onValueChange={v => setPeriod(v as Period)}>
-                    <TabsList className="h-8">
-                        {PERIODS.map(p => (
-                            <TabsTrigger key={p.value} value={p.value} className="text-xs">
-                                {p.label}
-                            </TabsTrigger>
-                        ))}
-                    </TabsList>
-                </Tabs>
+                <PerformancePeriodTabs value={period} onValueChange={setPeriod} />
             </CardHeader>
 
             <CardContent className="space-y-5 pt-5">
+                <CampaignPerformancePanel
+                    campaignId={campaignId}
+                    period={period}
+                    touch={touch}
+                    currency={report?.currency}
+                    onTouchChange={setTouch}
+                />
+
+                <Separator />
+
                 <p className="text-xs text-muted-foreground">
                     What you paid for this campaign, one figure per day, in{" "}
                     {report?.currency ?? "your store's currency"}. Recording a day you have already entered{" "}

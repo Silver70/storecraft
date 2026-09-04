@@ -13,7 +13,6 @@ import { cn } from "~/lib/utils";
 import { formatMoney } from "~/lib/money";
 import { Button } from "~/components/ui/button";
 import { Card } from "~/components/ui/card";
-import { Tabs, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import type {
   AttributedRevenueReport,
   AttributionTouch,
@@ -23,26 +22,11 @@ import type {
 import { attributedRevenueQueryOptions } from "../queries";
 import { formatPlatform } from "../utils";
 import { CampaignStatusBadge } from "../components/campaign-status-badge";
-
-const PERIODS: { value: Period; label: string }[] = [
-  { value: "today", label: "Today" },
-  { value: "7d", label: "7 days" },
-  { value: "30d", label: "30 days" },
-  { value: "90d", label: "90 days" },
-];
-
-const TOUCHES: { value: AttributionTouch; label: string; hint: string }[] = [
-  {
-    value: "last",
-    label: "Last touch",
-    hint: "Credits the campaign that closed the sale — the last tagged arrival before the order.",
-  },
-  {
-    value: "first",
-    label: "First touch",
-    hint: "Credits the campaign that discovered the customer — the first tagged arrival before the order.",
-  },
-];
+import {
+  AttributionTouchTabs,
+  PerformancePeriodTabs,
+  attributionTouchHint,
+} from "../components/campaign-performance-controls";
 
 const COLUMNS =
   "grid-cols-[minmax(180px,1fr)_110px_104px_76px_112px_124px_88px_150px]";
@@ -271,7 +255,7 @@ export function CampaignRevenuePage() {
     0,
   );
 
-  const touchHint = TOUCHES.find((t) => t.value === touch)!.hint;
+  const touchHint = attributionTouchHint(touch);
 
   return (
     <div className="space-y-6">
@@ -298,15 +282,7 @@ export function CampaignRevenuePage() {
               placed.
             </p>
           </div>
-          <Tabs value={period} onValueChange={(v) => setPeriod(v as Period)}>
-            <TabsList>
-              {PERIODS.map((p) => (
-                <TabsTrigger key={p.value} value={p.value} className="text-xs">
-                  {p.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
+          <PerformancePeriodTabs value={period} onValueChange={setPeriod} />
         </div>
       </div>
 
@@ -340,18 +316,7 @@ export function CampaignRevenuePage() {
 
       {/* ── Touch selector + the two caveats on every figure here ─────────────── */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <Tabs
-          value={touch}
-          onValueChange={(v) => setTouch(v as AttributionTouch)}
-        >
-          <TabsList>
-            {TOUCHES.map((t) => (
-              <TabsTrigger key={t.value} value={t.value} className="text-xs">
-                {t.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+        <AttributionTouchTabs value={touch} onValueChange={setTouch} />
 
         <div className="space-y-1.5 sm:max-w-md">
           {/* The window is why these figures differ from an ad platform's, so it
