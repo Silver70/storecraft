@@ -6,6 +6,7 @@ import { AttributionRepository } from './repositories/attribution.repository';
 import { CampaignRepository } from './repositories/campaign.repository';
 import { AttributedRevenueService } from './services/attributed-revenue.service';
 import { CampaignService } from './services/campaign.service';
+import { RulePreviewService } from './services/rule-preview.service';
 
 /**
  * Marketing: Campaigns, the matching rules that resolve an Order's raw UTM tuple
@@ -21,7 +22,13 @@ import { CampaignService } from './services/campaign.service';
     AttributionRepository,
     CampaignService,
     AttributedRevenueService,
+    RulePreviewService,
   ],
-  exports: [CampaignRepository, CampaignService, AttributedRevenueService],
+  exports: [
+    CampaignRepository,
+    CampaignService,
+    AttributedRevenueService,
+    RulePreviewService,
+  ],
 })
 export class MarketingModule {}

@@ -91,21 +91,56 @@ function isUniqueViolation(error: unknown): boolean {
 }
 
 /**
- * What to store for a rule the merchant typed.
+ * What to store for a rule the merchant typed, and what it will be compared as.
  *
  * Values are stored as written rather than normalized, so the rules screen shows
  * the merchant their own words back; normalization happens on both sides at
  * comparison time. The one exception is a referrer host, where a merchant
  * pastes the link they were given — `https://www.instagram.com/p/abc/` — and
  * means the host it is on.
+ *
+ * Exported because the rule preview has to prepare a candidate exactly as
+ * saving would. A preview of a value other than the one that gets stored would
+ * be worse than no preview: it would be confidently wrong.
  */
-function canonicalizeRuleValue(
+export function prepareRuleValue(
   field: CampaignRuleField,
   value: string,
-): string {
+): { value: string; normalized: string } {
   const trimmed = value.trim();
-  if (field !== 'referrer_host') return trimmed;
-  return referrerHost(trimmed) ?? trimmed;
+  const canonical =
+    field === 'referrer_host' ? (referrerHost(trimmed) ?? trimmed) : trimmed;
+
+  const normalized = normalizeMatchValue(canonical);
+  if (normalized === null) {
+    throw new BadRequestException(
+      'A rule value must contain at least one letter or number — punctuation alone can never match a visit.',
+    );
+  }
+
+  return { value: canonical, normalized };
+}
+
+/**
+ * Whether a Campaign already has a rule *meaning* the same thing. Matching
+ * compares normalized values, so `Summer_Sale` and `summer-sale` are one rule;
+ * a second row for the same meaning could never win and would only confuse the
+ * screen. Shared with the preview, which reports the clash rather than raising
+ * it — a preview that refused to run would be a poor way to learn you already
+ * have the rule.
+ */
+export function matchesExistingRule(
+  existing: readonly CampaignMatchingRule[],
+  field: CampaignRuleField,
+  operator: CampaignRuleOperator,
+  normalized: string,
+): boolean {
+  return existing.some(
+    (rule) =>
+      rule.field === field &&
+      rule.operator === operator &&
+      normalizeMatchValue(rule.value) === normalized,
+  );
 }
 
 /**
@@ -340,26 +375,16 @@ export class CampaignService {
   ): Promise<CampaignMatchingRule> {
     await this.get(orgId, storeId, campaignId);
 
-    const value = canonicalizeRuleValue(input.field, input.value);
-    const normalized = normalizeMatchValue(value);
-    if (normalized === null) {
-      throw new BadRequestException(
-        'A rule value must contain at least one letter or number — punctuation alone can never match a visit.',
-      );
-    }
+    const { value, normalized } = prepareRuleValue(input.field, input.value);
 
     const existing = await this.campaigns.findRulesForCampaign(
       campaignId,
       orgId,
       storeId,
     );
-    const duplicate = existing.some(
-      (rule) =>
-        rule.field === input.field &&
-        rule.operator === input.operator &&
-        normalizeMatchValue(rule.value) === normalized,
-    );
-    if (duplicate) {
+    if (
+      matchesExistingRule(existing, input.field, input.operator, normalized)
+    ) {
       throw new ConflictException(
         'This campaign already matches that value — matching ignores case, hyphens, underscores and spacing.',
       );

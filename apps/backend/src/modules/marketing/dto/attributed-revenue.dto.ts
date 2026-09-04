@@ -1,11 +1,12 @@
 import { IsEnum, IsOptional } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import type {
-  AttributionPeriod,
-  AttributionTouch,
-} from '../services/attributed-revenue.service';
+import type { AttributionTouch } from '../services/attributed-revenue.service';
+import {
+  ATTRIBUTION_PERIODS,
+  type AttributionPeriod,
+} from '../utils/attribution-period.util';
 
-const PERIODS = ['today', '7d', '30d', '90d'] as const;
+const PERIODS = ATTRIBUTION_PERIODS;
 const TOUCHES = ['first', 'last'] as const;
 
 export class AttributedRevenueQueryDto {

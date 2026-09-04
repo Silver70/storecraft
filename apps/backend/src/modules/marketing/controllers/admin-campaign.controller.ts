@@ -33,12 +33,17 @@ import {
   type CampaignTaggedLink,
 } from '../services/campaign.service';
 import {
+  RulePreviewService,
+  type RulePreviewReport,
+} from '../services/rule-preview.service';
+import {
   CreateCampaignDto,
   CreateCampaignRuleDto,
   GenerateCampaignLinkQueryDto,
   ListCampaignsQueryDto,
   UpdateCampaignDto,
 } from '../dto/campaign.dto';
+import { PreviewCampaignRuleQueryDto } from '../dto/rule-preview.dto';
 
 /**
  * Campaign management. There is no DELETE: a Campaign explains Orders that have
@@ -50,7 +55,10 @@ import {
 @UseGuards(AdminAuthGuard, RbacGuard)
 @Controller('admin/campaigns')
 export class AdminCampaignController {
-  constructor(private readonly campaigns: CampaignService) {}
+  constructor(
+    private readonly campaigns: CampaignService,
+    private readonly rulePreview: RulePreviewService,
+  ) {}
 
   @Get()
   @RequirePermission('campaigns.read')
@@ -191,6 +199,36 @@ export class AdminCampaignController {
   ): Promise<CampaignMatchingRule[]> {
     const { organizationId, storeId } = requireStoreContext(tenant);
     return this.campaigns.listRules(organizationId, storeId, id);
+  }
+
+  /**
+   * Declared before any `:id/rules/:ruleId` route: `preview` is a static
+   * segment beside a parameter, and a `GET :id/rules/:ruleId` added below this
+   * would never shadow it, but one added *above* it would.
+   */
+  @Get(':id/rules/preview')
+  @RequirePermission('campaigns.read')
+  @ApiOperation({
+    summary: 'Preview which orders a candidate rule would claim',
+    description:
+      "Runs a candidate rule against the period's orders without saving it. Because campaigns resolve at read time, a saved rule reshapes historical reports immediately — this shows that consequence first. Reports the orders and revenue the rule would move onto the campaign, which part of it is unattributed today, and which other campaigns it overlaps: what it would take from them, and what it matches but loses to a rule that outranks it. Nothing is created and no report changes; the same matcher, rows and period as the attributed-revenue read, so saving produces the figures shown.",
+  })
+  @ApiResponse({ status: 200 })
+  @ApiResponse({ status: 400, description: 'Value can never match anything' })
+  @ApiResponse({ status: 404 })
+  async previewRule(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: PreviewCampaignRuleQueryDto,
+    @CurrentTenant() tenant: TenantContext,
+  ): Promise<RulePreviewReport> {
+    const { organizationId, storeId } = requireStoreContext(tenant);
+    return this.rulePreview.preview(organizationId, storeId, id, {
+      field: query.field,
+      operator: query.operator,
+      value: query.value,
+      period: query.period ?? '30d',
+      touch: query.touch ?? 'last',
+    });
   }
 
   @Post(':id/rules')

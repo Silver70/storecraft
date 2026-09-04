@@ -1,10 +1,12 @@
 import * as React from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
-import { LoaderCircleIcon, LockIcon, PlusIcon, XIcon } from "lucide-react";
+  EyeIcon,
+  LoaderCircleIcon,
+  LockIcon,
+  PlusIcon,
+  XIcon,
+} from "lucide-react";
 
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
@@ -23,8 +25,13 @@ import {
   type CampaignMatchingRule,
   type CampaignRuleField,
   type CampaignRuleOperator,
+  type Period,
 } from "~/types/api";
-import { campaignRulesQueryOptions } from "../queries";
+import {
+  campaignRulesQueryOptions,
+  type RulePreviewCandidate,
+} from "../queries";
+import { RulePreviewPanel } from "./rule-preview-panel";
 import {
   createCampaignRuleServerFn,
   deleteCampaignRuleServerFn,
@@ -52,9 +59,18 @@ export function MatchingRulesCard({ campaignId }: { campaignId: string }) {
   );
 
   const [field, setField] = React.useState<CampaignRuleField>("utm_campaign");
-  const [operator, setOperator] = React.useState<CampaignRuleOperator>("equals");
+  const [operator, setOperator] =
+    React.useState<CampaignRuleOperator>("equals");
   const [value, setValue] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
+
+  // The rule the open preview describes. Cleared whenever any part of the rule
+  // is edited: a preview still on screen for a value the merchant has since
+  // changed would be confidently wrong, which is worse than showing nothing.
+  const [candidate, setCandidate] = React.useState<RulePreviewCandidate | null>(
+    null,
+  );
+  const [previewPeriod, setPreviewPeriod] = React.useState<Period>("30d");
 
   const invalidate = () =>
     queryClient.invalidateQueries({
@@ -69,6 +85,7 @@ export function MatchingRulesCard({ campaignId }: { campaignId: string }) {
     onSuccess: () => {
       setValue("");
       setError(null);
+      setCandidate(null);
       void invalidate();
     },
     onError: (err) => setError(err.message),
@@ -85,6 +102,7 @@ export function MatchingRulesCard({ campaignId }: { campaignId: string }) {
   });
 
   const canAdd = value.trim().length > 0 && !addMutation.isPending;
+  const canPreview = value.trim().length > 0;
 
   return (
     <Card>
@@ -128,7 +146,10 @@ export function MatchingRulesCard({ campaignId }: { campaignId: string }) {
           <div className="flex flex-wrap items-center gap-2">
             <Select
               value={field}
-              onValueChange={(next) => setField(next as CampaignRuleField)}
+              onValueChange={(next) => {
+                setCandidate(null);
+                setField(next as CampaignRuleField);
+              }}
             >
               <SelectTrigger className="w-[220px]" aria-label="Field">
                 <SelectValue />
@@ -144,7 +165,10 @@ export function MatchingRulesCard({ campaignId }: { campaignId: string }) {
 
             <Select
               value={operator}
-              onValueChange={(next) => setOperator(next as CampaignRuleOperator)}
+              onValueChange={(next) => {
+                setCandidate(null);
+                setOperator(next as CampaignRuleOperator);
+              }}
             >
               <SelectTrigger className="w-[130px]" aria-label="Operator">
                 <SelectValue />
@@ -163,11 +187,30 @@ export function MatchingRulesCard({ campaignId }: { campaignId: string }) {
               className="min-w-[180px] flex-1"
               placeholder={RULE_VALUE_PLACEHOLDERS[field]}
               value={value}
-              onChange={(e) => setValue(e.target.value)}
+              onChange={(e) => {
+                setCandidate(null);
+                setValue(e.target.value);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && canAdd) addMutation.mutate();
               }}
             />
+
+            {/* Deliberately not automatic: a preview resolves every order in
+                the period against every rule in the store, which is not a
+                thing to run on each keystroke. */}
+            <Button
+              type="button"
+              variant="outline"
+              className="gap-1.5"
+              disabled={!canPreview}
+              onClick={() =>
+                setCandidate({ field, operator, value: value.trim() })
+              }
+            >
+              <EyeIcon className="h-3.5 w-3.5" />
+              Preview
+            </Button>
 
             <Button
               type="button"
@@ -185,6 +228,15 @@ export function MatchingRulesCard({ campaignId }: { campaignId: string }) {
           </div>
 
           {error && <p className="text-xs text-destructive">{error}</p>}
+
+          {candidate && (
+            <RulePreviewPanel
+              campaignId={campaignId}
+              candidate={candidate}
+              period={previewPeriod}
+              onPeriodChange={setPreviewPeriod}
+            />
+          )}
 
           <p className="text-xs text-muted-foreground">
             If two campaigns could claim the same visit, a campaign-tag rule

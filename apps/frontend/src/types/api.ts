@@ -466,6 +466,79 @@ export type AttributedRevenueReport = {
   totals: RevenueBucket;
 };
 
+// ─── Matching-rule preview ────────────────────────────────────────────────────
+
+/**
+ * What a candidate matching rule would do to a period's orders, before it is
+ * saved.
+ *
+ * Campaigns resolve at read time, so a saved rule reshapes historical reports
+ * the instant it exists. That is what lets a correction repair the past, and it
+ * is what lets an over-broad rule quietly rewrite it — so the consequence is
+ * shown while the rule is still a draft. The backend runs the same matcher over
+ * the same orders for the same period as the revenue report, which is why
+ * saving produces the figures shown here.
+ */
+export type RulePreviewOverlap = {
+  campaignId: string;
+  name: string;
+  tag: string;
+  status: CampaignStatus;
+  /** What this campaign would lose, because the candidate outranks its rule. */
+  taken: RevenueBucket;
+  /** What the candidate matches but this campaign keeps, because it outranks. */
+  blocked: RevenueBucket;
+};
+
+/** One order the rule would claim, named so the merchant can recognise it. */
+export type RulePreviewSampleOrder = {
+  orderId: string;
+  orderNumber: string;
+  placedAt: string;
+  /** Smallest currency unit. The backend never formats money. */
+  total: number;
+  /** The campaign crediting it today. Null is Unattributed. */
+  currentCampaignId: string | null;
+  currentCampaignName: string | null;
+  /** What the order carries in the field this rule compares. */
+  matchedValue: string | null;
+};
+
+export type RulePreviewReport = {
+  campaignId: string;
+  campaignName: string;
+  /** The candidate exactly as it would be stored and compared. */
+  rule: {
+    field: CampaignRuleField;
+    operator: CampaignRuleOperator;
+    /** What would be written — a pasted URL is already reduced to a host. */
+    value: string;
+    /** What both sides of every comparison are actually reduced to. */
+    normalizedValue: string;
+  };
+  /** True when this campaign already has a rule meaning the same thing. */
+  duplicate: boolean;
+  period: Period;
+  touch: AttributionTouch;
+  lookbackDays: number;
+  rangeStart: string;
+  rangeEnd: string;
+  /** Orders the rule would move onto this campaign. The headline figure. */
+  claimed: RevenueBucket;
+  /** The part of `claimed` that is unattributed today. */
+  fromUnattributed: RevenueBucket;
+  /** Every other campaign the rule would meet, in either direction. */
+  overlaps: RulePreviewOverlap[];
+  /** This campaign's figures as they stand, and as they would stand. */
+  campaignBefore: RevenueBucket;
+  campaignAfter: RevenueBucket;
+  /** The period's realized revenue — the scale to judge the claim against. */
+  totals: RevenueBucket;
+  /** How many orders `samples` can hold, so the UI can say "10 of 47". */
+  sampleLimit: number;
+  samples: RulePreviewSampleOrder[];
+};
+
 // ─── Price Lists ──────────────────────────────────────────────────────────────
 
 export type PriceListType = "fixed" | "adjustment";

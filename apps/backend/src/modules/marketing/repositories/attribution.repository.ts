@@ -1,9 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq, gte, inArray, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import type { DrizzleClient } from '../../../shared/database/database.module';
 import { DRIZZLE_CLIENT } from '../../../shared/database/database.module';
 import { orders } from '../../../shared/database/schema';
 import type { AttributableOrder } from '../utils/attributed-revenue.util';
+import type { PreviewableOrder } from '../utils/rule-preview.util';
 
 /** Which Touch a report credits: the ad that discovered the visitor, or the one that closed them. */
 export type AttributionTouch = 'first' | 'last';
@@ -66,6 +67,26 @@ function touchColumns(touch: AttributionTouch) {
 }
 
 /**
+ * The Orders one Store realized in a period. Both reads below share it, so a
+ * rule preview and the report it predicts are computed from the same rows —
+ * which is what makes saving the previewed rule produce the figures shown.
+ */
+function attributableOrders(
+  orgId: string,
+  storeId: string,
+  start: Date,
+  end: Date,
+) {
+  return and(
+    eq(orders.organizationId, orgId),
+    eq(orders.storeId, storeId),
+    inArray(orders.status, [...REVENUE_STATUSES]),
+    gte(orders.createdAt, start),
+    lt(orders.createdAt, end),
+  );
+}
+
+/**
  * Reads the Orders a period's attributed-revenue report is computed from.
  *
  * Deliberately no aggregation in SQL. Resolving an Order to a Campaign means
@@ -99,17 +120,61 @@ export class AttributionRepository {
         isBot: IS_BOT,
       })
       .from(orders)
-      .where(
-        and(
-          eq(orders.organizationId, orgId),
-          eq(orders.storeId, storeId),
-          inArray(orders.status, [...REVENUE_STATUSES]),
-          gte(orders.createdAt, start),
-          lt(orders.createdAt, end),
-        ),
-      );
+      .where(attributableOrders(orgId, storeId, start, end));
 
     return rows.map((row) => ({
+      total: row.total,
+      placedAt: row.placedAt,
+      isBot: row.isBot === true,
+      touch: {
+        utmSource: row.utmSource,
+        utmMedium: row.utmMedium,
+        utmCampaign: row.utmCampaign,
+        referrer: row.referrer,
+        at: row.touchedAt,
+      },
+    }));
+  }
+
+  /**
+   * The same Orders, carrying the identity a preview needs to name a few of
+   * them on screen.
+   *
+   * A separate read rather than two extra columns on the one above: the report
+   * resolves a period into buckets and has no use for an order number, and the
+   * type it hands the tally is deliberately reduced to what deciding a credit
+   * needs. Newest first, so the Orders a preview names are the ones the
+   * merchant most likely recognises.
+   */
+  async findPreviewableOrders(
+    orgId: string,
+    storeId: string,
+    touch: AttributionTouch,
+    start: Date,
+    end: Date,
+  ): Promise<PreviewableOrder[]> {
+    const columns = touchColumns(touch);
+
+    const rows = await this.db
+      .select({
+        id: orders.id,
+        orderNumber: orders.orderNumber,
+        total: orders.total,
+        placedAt: orders.createdAt,
+        utmSource: columns.utmSource,
+        utmMedium: columns.utmMedium,
+        utmCampaign: columns.utmCampaign,
+        referrer: columns.referrer,
+        touchedAt: columns.touchedAt,
+        isBot: IS_BOT,
+      })
+      .from(orders)
+      .where(attributableOrders(orgId, storeId, start, end))
+      .orderBy(desc(orders.createdAt));
+
+    return rows.map((row) => ({
+      id: row.id,
+      orderNumber: row.orderNumber,
       total: row.total,
       placedAt: row.placedAt,
       isBot: row.isBot === true,

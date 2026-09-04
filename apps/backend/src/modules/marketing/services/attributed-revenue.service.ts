@@ -12,19 +12,15 @@ import {
 } from '../repositories/attribution.repository';
 import { createCampaignMatcher } from '../utils/campaign-matching.util';
 import {
+  resolvePeriodRange,
+  type AttributionPeriod,
+} from '../utils/attribution-period.util';
+import {
   tallyAttributedRevenue,
   type RevenueBucket,
 } from '../utils/attributed-revenue.util';
 
-export type { AttributionTouch };
-
-/**
- * The same four windows the dashboard and analytics reports offer, resolved the
- * same way. Marketing owns its own copy rather than importing analytics' —
- * exactly as analytics owns its own rather than importing the dashboard's — so
- * a report module never depends on another report module.
- */
-export type AttributionPeriod = 'today' | '7d' | '30d' | '90d';
+export type { AttributionTouch, AttributionPeriod };
 
 export interface CampaignRevenueLine {
   campaignId: string;
@@ -53,26 +49,6 @@ export interface AttributedRevenueReport {
   unattributed: RevenueBucket;
   /** Attributed plus unattributed — the period's realized revenue. */
   totals: RevenueBucket;
-}
-
-function periodDays(period: AttributionPeriod): number {
-  if (period === 'today') return 1;
-  if (period === '7d') return 7;
-  if (period === '30d') return 30;
-  return 90;
-}
-
-/** `[start, now)`, matching the dashboard and analytics reports exactly. */
-function getRange(period: AttributionPeriod): { start: Date; end: Date } {
-  const now = new Date();
-  if (period === 'today') {
-    const start = new Date(now);
-    start.setHours(0, 0, 0, 0);
-    return { start, end: now };
-  }
-  const start = new Date(now);
-  start.setDate(start.getDate() - periodDays(period));
-  return { start, end: now };
 }
 
 const EMPTY: RevenueBucket = { orders: 0, revenue: 0 };
@@ -108,7 +84,7 @@ export class AttributedRevenueService {
     period: AttributionPeriod,
     touch: AttributionTouch,
   ): Promise<AttributedRevenueReport> {
-    const { start, end } = getRange(period);
+    const { start, end } = resolvePeriodRange(period);
 
     // Tenancy is enforced on all three reads. The matcher itself is pure and
     // will faithfully match whatever rules it is handed, so a Store's rules

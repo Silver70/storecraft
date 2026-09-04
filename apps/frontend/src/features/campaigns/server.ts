@@ -11,6 +11,7 @@ import {
   type Campaign,
   type CampaignMatchingRule,
   type CampaignTaggedLink,
+  type RulePreviewReport,
 } from "~/types/api";
 
 async function storeHeaders() {
@@ -181,6 +182,39 @@ export const deleteCampaignRuleServerFn = createServerFn({ method: "POST" })
         `/api/admin/campaigns/${data.campaignId}/rules/${data.ruleId}`,
         { headers: await storeHeaders() },
       );
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+/**
+ * What a candidate rule would claim, before it is saved.
+ *
+ * A read in the strictest sense — no rule is created and no report changes —
+ * which is why it takes the same three fields the create call takes: previewing
+ * a different rule than the one about to be posted would be worse than not
+ * previewing at all.
+ */
+export const previewCampaignRuleServerFn = createServerFn({ method: "GET" })
+  .inputValidator(
+    z.object({
+      campaignId: z.string().min(1),
+      field: z.enum(CAMPAIGN_RULE_FIELDS),
+      operator: z.enum(CAMPAIGN_RULE_OPERATORS),
+      value: z.string().min(1).max(255),
+      period: z.enum(["today", "7d", "30d", "90d"]),
+      touch: z.enum(["first", "last"]),
+    }),
+  )
+  .handler(async ({ data }): Promise<RulePreviewReport> => {
+    const { campaignId, ...candidate } = data;
+    const params = new URLSearchParams(candidate);
+    try {
+      const res = await apiClient.get<RulePreviewReport>(
+        `/api/admin/campaigns/${campaignId}/rules/preview?${params.toString()}`,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
     } catch (err) {
       throw new Error(getErrorMessage(err));
     }
