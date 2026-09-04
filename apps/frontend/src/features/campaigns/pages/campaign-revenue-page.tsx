@@ -6,6 +6,7 @@ import {
   CalendarClockIcon,
   CircleHelpIcon,
   MegaphoneIcon,
+  ScaleIcon,
 } from "lucide-react";
 
 import { cn } from "~/lib/utils";
@@ -16,6 +17,7 @@ import { Tabs, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import type {
   AttributedRevenueReport,
   AttributionTouch,
+  CampaignRevenueLine,
   Period,
 } from "~/types/api";
 import { attributedRevenueQueryOptions } from "../queries";
@@ -43,7 +45,7 @@ const TOUCHES: { value: AttributionTouch; label: string; hint: string }[] = [
 ];
 
 const COLUMNS =
-  "grid-cols-[minmax(180px,1fr)_110px_104px_76px_112px_124px_88px]";
+  "grid-cols-[minmax(180px,1fr)_110px_104px_76px_112px_124px_88px_150px]";
 
 function share(part: number, whole: number): number {
   return whole > 0 ? (part / whole) * 100 : 0;
@@ -59,6 +61,29 @@ function share(part: number, whole: number): number {
  */
 function formatRoas(roas: number | null): string {
   return roas === null ? "—" : `${roas.toFixed(2)}×`;
+}
+
+/**
+ * The cost coverage behind a margin, said in words rather than left as a bare
+ * percentage.
+ *
+ * Coverage is the caveat on the number beside it, so it is never far from it:
+ * at 60% the margin understates cost and therefore overstates itself, and a
+ * merchant who cannot see that will read a half-costed catalog as a healthy
+ * one. Zero goods revenue is not low coverage — there was nothing to cost — so
+ * it says what actually happened instead of reporting 0%.
+ */
+function coverageNote(line: {
+  goodsRevenue: number;
+  costCoveragePct: number;
+  spend: number;
+}): string | null {
+  if (line.goodsRevenue > 0) {
+    return line.costCoveragePct === 100
+      ? "fully costed"
+      : `${line.costCoveragePct}% costed`;
+  }
+  return line.spend > 0 ? "spend only, no sales" : null;
 }
 
 /** A `YYYY-MM-DD` in the store's timezone, shown as a day and not an instant. */
@@ -82,12 +107,76 @@ function Bar({ value, max }: { value: number; max: number }) {
   );
 }
 
+/**
+ * Contribution margin, with the coverage that qualifies it directly beneath.
+ *
+ * The two are one cell rather than two columns on purpose: a margin read
+ * without its coverage is the failure mode this whole ticket guards against,
+ * and a merchant scanning a table will not look two columns away for the
+ * caveat on the number they are looking at.
+ *
+ * A null margin is an explicit "No cost data", never a dash and never a zero.
+ * A dash would read as "nothing here"; a zero would read as "broke even". What
+ * actually happened is that goods were sold and none of them have a cost price,
+ * which is a thing the merchant can go and fix.
+ */
+function MarginCell({ line }: { line: CampaignRevenueLine }) {
+  const note = coverageNote(line);
+
+  if (line.contributionMargin === null) {
+    return (
+      <div className="text-right">
+        <span className="text-sm text-muted-foreground">No cost data</span>
+        <p className="mt-0.5 text-[11px] leading-tight text-muted-foreground/70">
+          {formatMoney(line.goodsRevenue)} of goods, none costed
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-right">
+      <span
+        className={cn(
+          "text-sm font-semibold tabular-nums",
+          line.contributionMargin < 0 && "text-destructive",
+        )}
+      >
+        {formatMoney(line.contributionMargin)}
+      </span>
+      {note && (
+        <p
+          className={cn(
+            "mt-0.5 text-[11px] leading-tight",
+            // Partial coverage is a qualification on the number above it, not a
+            // footnote — it is the difference between a margin and a guess.
+            line.goodsRevenue > 0 && line.costCoveragePct < 100
+              ? "text-amber-600 dark:text-amber-500"
+              : "text-muted-foreground/70",
+          )}
+        >
+          {note}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function Summary({ report }: { report: AttributedRevenueReport }) {
   const { blended, totals, unattributed } = report;
   const attributedOrders = totals.orders - unattributed.orders;
-  const coverage = share(blended.revenue, totals.revenue);
+  // The share of realized revenue that has a campaign behind it. Named apart
+  // from cost coverage, which is a different share of a different total and now
+  // also lives on this page.
+  const attributedShare = share(blended.revenue, totals.revenue);
 
-  const tiles = [
+  const tiles: {
+    label: string;
+    value: string;
+    hint: string;
+    /** `absent` is a phrase where a figure would be, not a figure. */
+    tone?: "loss" | "absent";
+  }[] = [
     {
       label: "Spend",
       value: formatMoney(blended.spend),
@@ -99,7 +188,7 @@ function Summary({ report }: { report: AttributedRevenueReport }) {
     {
       label: "Attributed revenue",
       value: formatMoney(blended.revenue),
-      hint: `${attributedOrders.toLocaleString()} order${attributedOrders === 1 ? "" : "s"} · ${coverage.toFixed(0)}% of realized revenue`,
+      hint: `${attributedOrders.toLocaleString()} order${attributedOrders === 1 ? "" : "s"} · ${attributedShare.toFixed(0)}% of realized revenue`,
     },
     {
       label: "Blended ROAS",
@@ -110,6 +199,28 @@ function Summary({ report }: { report: AttributedRevenueReport }) {
         blended.roas === null
           ? "Nothing spent, so nothing to divide"
           : "Attributed revenue over spend, across every campaign",
+    },
+    {
+      label: "Contribution margin",
+      // The figure that answers "keep spending?", where ROAS only answers "how
+      // much came back". Built on goods, never on the order total — see the
+      // basis note beneath the tiles.
+      value:
+        blended.contributionMargin === null
+          ? "No cost data"
+          : formatMoney(blended.contributionMargin),
+      hint:
+        blended.contributionMargin === null
+          ? "No variant sold in this period has a cost price yet"
+          : `Goods less discounts, cost of goods and spend · ${blended.costCoveragePct}% of goods revenue costed`,
+      // An account losing money says so in the colour as well as the sign — a
+      // leading minus is easy to read past on a screen of black figures.
+      tone:
+        blended.contributionMargin === null
+          ? ("absent" as const)
+          : blended.contributionMargin < 0
+            ? ("loss" as const)
+            : undefined,
     },
     {
       label: "Realized revenue",
@@ -124,11 +235,21 @@ function Summary({ report }: { report: AttributedRevenueReport }) {
   ];
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {tiles.map((t) => (
         <Card key={t.label} className="gap-0 p-5">
           <p className="text-xs font-medium text-muted-foreground">{t.label}</p>
-          <p className="mt-2 text-2xl font-semibold tabular-nums">{t.value}</p>
+          <p
+            className={cn(
+              "mt-2 font-semibold tabular-nums",
+              t.tone === "absent"
+                ? "text-lg text-muted-foreground"
+                : "text-2xl",
+              t.tone === "loss" && "text-destructive",
+            )}
+          >
+            {t.value}
+          </p>
           <p className="mt-1 text-xs text-muted-foreground">{t.hint}</p>
         </Card>
       ))}
@@ -191,6 +312,32 @@ export function CampaignRevenuePage() {
 
       <Summary report={report} />
 
+      {/* ── Which revenue each figure above is a share of ─────────────────────── */}
+      {/* Two bases, both correct, and not the same number. Leaving a merchant to
+          discover on their own that ROAS and contribution margin do not
+          reconcile is how a report loses their trust for good. */}
+      <div className="flex items-start gap-2 rounded-lg border border-dashed bg-muted/20 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+        <ScaleIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <p>
+          <span className="font-medium text-foreground">
+            Two revenue bases.
+          </span>{" "}
+          <span className="font-medium text-foreground">ROAS</span> divides the{" "}
+          <span className="font-medium text-foreground">order total</span> — tax
+          and shipping included, discounts already taken off — which is the
+          revenue shown in the table.{" "}
+          <span className="font-medium text-foreground">
+            Contribution margin
+          </span>{" "}
+          is built on the{" "}
+          <span className="font-medium text-foreground">goods basis</span>: line
+          totals before discount, less discounts, cost of goods and spend. Tax
+          is collected and remitted and is never profit, and shipping is left
+          out of both sides because shipping cost is not tracked here — so the
+          two figures differ, and both are right.
+        </p>
+      </div>
+
       {/* ── Touch selector + the two caveats on every figure here ─────────────── */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <Tabs
@@ -236,7 +383,7 @@ export function CampaignRevenuePage() {
       {/* ── Table ─────────────────────────────────────────────────────────────── */}
       <Card className="overflow-hidden gap-0 py-0">
         <div className="overflow-x-auto">
-          <div className="min-w-220">
+          <div className="min-w-260">
             <div
               className={cn(
                 "grid items-center border-b bg-muted/20 px-5 py-2.5 text-xs font-medium text-muted-foreground",
@@ -250,6 +397,7 @@ export function CampaignRevenuePage() {
               <span className="text-right">Spend</span>
               <span className="text-right">Revenue</span>
               <span className="text-right">ROAS</span>
+              <span className="text-right">Contribution margin</span>
             </div>
 
             {report.campaigns.length === 0 ? (
@@ -338,6 +486,8 @@ export function CampaignRevenuePage() {
                     >
                       {formatRoas(line.roas)}
                     </span>
+
+                    <MarginCell line={line} />
                   </div>
                 );
               })
@@ -373,6 +523,11 @@ export function CampaignRevenuePage() {
               <span className="text-right text-sm text-muted-foreground">
                 —
               </span>
+              {/* No spend went into this bucket, so there is no contribution to
+                  attribute to one. Not a zero — a zero would be a claim. */}
+              <span className="text-right text-sm text-muted-foreground">
+                —
+              </span>
             </div>
           </div>
         </div>
@@ -387,6 +542,11 @@ export function CampaignRevenuePage() {
         the spend beside it. A campaign appears here if it is active, earned
         revenue in the period, or had spend recorded against it. ROAS is a
         ratio, not an amount: it is blank for a campaign nothing was spent on.
+        Cost of goods counts only the lines whose variant has a cost price, and
+        the percentage under each margin says how much of that campaign&apos;s
+        goods revenue that covers — where nothing is costed the margin is
+        withheld rather than reported, because a margin computed from no cost
+        data would read as pure profit.
       </p>
     </div>
   );

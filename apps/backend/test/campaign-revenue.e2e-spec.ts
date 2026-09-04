@@ -19,10 +19,27 @@
  * the screen: the ratio between the two halves, the absence of a ratio where
  * there was no cost, and the Campaign that spent money and earned nothing being
  * on the page at all.
+ *
+ * And it is a profit report. Cost prices are set on the catalog the same way,
+ * and the Contribution Margin is checked against a figure worked out by hand
+ * from the seeded prices rather than recomputed by the test — including the
+ * case that matters most, where nobody has entered a cost price yet and the
+ * margin has to be withheld instead of invented.
  */
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import type { App } from 'supertest/types';
+import { randomUUID } from 'crypto';
+import { eq } from 'drizzle-orm';
+import {
+  DRIZZLE_CLIENT,
+  type DrizzleClient,
+} from '../src/shared/database/database.module';
+import {
+  coupons,
+  inventoryItems,
+  productVariants,
+} from '../src/shared/database/schema';
 import { createTestApp } from './helpers/test-app';
 import {
   createAdminUser,
@@ -51,6 +68,14 @@ const ADD_TO_CART = /* GraphQL */ `
   }
 `;
 
+const APPLY_COUPON = /* GraphQL */ `
+  mutation ApplyCoupon($cartId: ID!, $code: String!) {
+    applyCoupon(cartId: $cartId, code: $code) {
+      id
+    }
+  }
+`;
+
 const CHECKOUT = /* GraphQL */ `
   mutation Checkout($cartId: ID!, $input: CheckoutInput!) {
     checkout(cartId: $cartId, input: $input) {
@@ -74,6 +99,14 @@ const VARIANT_PRICE = 2500;
 const SHIPPING_PRICE = 500;
 /** What one seeded order is worth, in the smallest currency unit. */
 const ORDER_TOTAL = VARIANT_PRICE + SHIPPING_PRICE;
+/**
+ * The goods basis of the same order: one unit of the variant, no shipping and
+ * no tax. Deliberately a different number from `ORDER_TOTAL` — a fixture where
+ * the two agreed would let the report read either figure and still pass.
+ */
+const ORDER_GOODS = VARIANT_PRICE;
+/** What that unit costs the merchant, where a cost price has been entered. */
+const UNIT_COST = 1000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const daysAgo = (days: number) =>
@@ -94,7 +127,20 @@ interface RevenueBucket {
   revenue: number;
 }
 
-interface CampaignRevenueLine extends RevenueBucket {
+/** The goods basis and the margin built on it, in the smallest currency unit. */
+interface CampaignMargin {
+  /** Line-item totals before discount. Not the order total. */
+  goodsRevenue: number;
+  cost: number;
+  revenueWithCost: number;
+  discount: number;
+  /** Null when goods were sold and none of them have a cost price. */
+  contributionMargin: number | null;
+  /** Whole-number percentage. Display only. */
+  costCoveragePct: number;
+}
+
+interface CampaignRevenueLine extends RevenueBucket, CampaignMargin {
   campaignId: string;
   name: string;
   tag: string;
@@ -105,7 +151,7 @@ interface CampaignRevenueLine extends RevenueBucket {
   roas: number | null;
 }
 
-interface BlendedPerformance {
+interface BlendedPerformance extends CampaignMargin {
   revenue: number;
   spend: number;
   roas: number | null;
@@ -182,6 +228,7 @@ describe('Attributed revenue by campaign (e2e)', () => {
     },
     at: StorefrontFixture = fixture,
     as: AdminUserFixture = admin,
+    opts: { couponCode?: string; variantId?: string } = {},
   ): Promise<string> {
     const { createCart: cart } = await at.storefront.query<{
       createCart: { id: string };
@@ -189,9 +236,16 @@ describe('Attributed revenue by campaign (e2e)', () => {
 
     await at.storefront.query(ADD_TO_CART, {
       cartId: cart.id,
-      variantId: at.variantId,
+      variantId: opts.variantId ?? at.variantId,
       quantity: 1,
     });
+
+    if (opts.couponCode) {
+      await at.storefront.query(APPLY_COUPON, {
+        cartId: cart.id,
+        code: opts.couponCode,
+      });
+    }
 
     const { checkout: result } = await at.storefront.query<{
       checkout: { orderId: string };
@@ -235,6 +289,70 @@ describe('Attributed revenue by campaign (e2e)', () => {
         currency: 'USD',
       })
       .expect(201);
+  }
+
+  /**
+   * Enters a cost price on the seeded variant, the way a merchant filling in
+   * their catalog does.
+   *
+   * Written after the orders in most of these cases on purpose: cost price is
+   * nullable and merchants enter it late, and because the report resolves
+   * everything at read time, entering it has to repair the margin on sales that
+   * already happened rather than only affecting the next ones.
+   */
+  async function setCostPrice(
+    costPrice: number | null,
+    at: StorefrontFixture = fixture,
+  ): Promise<void> {
+    const db = app.get<DrizzleClient>(DRIZZLE_CLIENT);
+    await db
+      .update(productVariants)
+      .set({ costPrice })
+      .where(eq(productVariants.id, at.variantId));
+  }
+
+  /** A coupon the storefront can apply, taking a flat amount off the goods. */
+  async function seedCoupon(amount: number): Promise<string> {
+    const code = `E2E${randomUUID().slice(0, 6).toUpperCase()}`;
+    const db = app.get<DrizzleClient>(DRIZZLE_CLIENT);
+    await db.insert(coupons).values({
+      organizationId: fixture.organizationId,
+      storeId: fixture.storeId,
+      code,
+      type: 'fixed_amount',
+      value: amount,
+    });
+    return code;
+  }
+
+  /** A second sellable variant of the seeded product, stocked and priced. */
+  async function seedVariant(opts: {
+    price: number;
+    costPrice?: number | null;
+  }): Promise<string> {
+    const db = app.get<DrizzleClient>(DRIZZLE_CLIENT);
+    const unique = randomUUID().slice(0, 8);
+    const [variant] = await db
+      .insert(productVariants)
+      .values({
+        organizationId: fixture.organizationId,
+        storeId: fixture.storeId,
+        productId: fixture.productId,
+        sku: `E2E-ALT-${unique}`,
+        name: `Alternate ${unique}`,
+        price: opts.price,
+        costPrice: opts.costPrice ?? null,
+      })
+      .returning();
+
+    await db.insert(inventoryItems).values({
+      organizationId: fixture.organizationId,
+      storeId: fixture.storeId,
+      variantId: variant.id,
+      quantity: 100,
+    });
+
+    return variant.id;
   }
 
   async function readReport(
@@ -551,10 +669,20 @@ describe('Attributed revenue by campaign (e2e)', () => {
 
     // Blended across every campaign line — the account as a whole. Unattributed
     // revenue is not part of it: nobody spent against a bucket with no campaign.
+    // Asserted whole rather than by matching, so a figure appearing on this
+    // object has to be accounted for here.
     expect(report.blended).toEqual({
       revenue: ORDER_TOTAL * 2,
       spend: 1500,
       roas: 4,
+      // The goods basis of the same two orders. No cost prices are set in this
+      // case, so the margin is withheld and the coverage says why.
+      goodsRevenue: ORDER_GOODS * 2,
+      cost: 0,
+      revenueWithCost: 0,
+      discount: 0,
+      contributionMargin: null,
+      costCoveragePct: 0,
     });
   });
 
@@ -576,6 +704,12 @@ describe('Attributed revenue by campaign (e2e)', () => {
       revenue: ORDER_TOTAL,
       spend: 0,
       roas: null,
+      goodsRevenue: ORDER_GOODS,
+      cost: 0,
+      revenueWithCost: 0,
+      discount: 0,
+      contributionMargin: null,
+      costCoveragePct: 0,
     });
   });
 
@@ -691,6 +825,183 @@ describe('Attributed revenue by campaign (e2e)', () => {
     });
 
     expect(byLast.blended.spend).toBe(byFirst.blended.spend);
+  });
+
+  // ─── Contribution margin and cost coverage ──────────────────────────────────
+
+  it('reports contribution margin on the goods basis, with the coverage behind it', async () => {
+    const summer = await createCampaign('Summer Sale');
+    await setCostPrice(UNIT_COST);
+
+    await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
+    await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
+    await recordSpend(summer.id, 1000);
+
+    const line = lineFor(await readReport(), summer.id)!;
+
+    // Worked out by hand from the seeded prices rather than recomputed here: 2
+    // units at $25 of goods, costing $10 each, on $10 of ads.
+    expect(line).toMatchObject({
+      revenue: ORDER_TOTAL * 2,
+      goodsRevenue: ORDER_GOODS * 2,
+      cost: UNIT_COST * 2,
+      revenueWithCost: ORDER_GOODS * 2,
+      discount: 0,
+      spend: 1000,
+      contributionMargin: ORDER_GOODS * 2 - UNIT_COST * 2 - 1000,
+      costCoveragePct: 100,
+    });
+
+    // The two bases are different numbers, and that is the point. Shipping is
+    // in the order total and out of the goods basis; if these ever agreed, the
+    // report would be free to read either one and still look right.
+    expect(line.goodsRevenue).toBeLessThan(line.revenue);
+    expect(line.revenue - line.goodsRevenue).toBe(SHIPPING_PRICE * 2);
+
+    // Every figure is an integer in the smallest currency unit; only the
+    // coverage percentage is rounded, and it is never money.
+    expect(Number.isInteger(line.contributionMargin)).toBe(true);
+    expect(Number.isInteger(line.costCoveragePct)).toBe(true);
+
+    const { blended } = await readReport();
+    expect(blended.contributionMargin).toBe(line.contributionMargin);
+    expect(blended.costCoveragePct).toBe(100);
+  });
+
+  it('withholds the margin when nothing sold has a cost price, and still reports coverage', async () => {
+    // The state most stores are actually in: real sales, no cost prices. The
+    // fixture leaves cost_price null, which is the default for a reason.
+    const summer = await createCampaign('Summer Sale');
+
+    await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
+    await recordSpend(summer.id, 1000);
+
+    const report = await readReport();
+    const line = lineFor(report, summer.id)!;
+
+    // Not a number, and specifically not either of the two numbers someone
+    // might be tempted to report: the whole goods revenue less spend, or zero.
+    expect(line.contributionMargin).toBeNull();
+    expect(line.contributionMargin).not.toBe(0);
+    expect(line.contributionMargin).not.toBe(ORDER_GOODS - 1000);
+
+    // Coverage is still reported, and it is what says why the margin is blank.
+    expect(line.costCoveragePct).toBe(0);
+    expect(line.goodsRevenue).toBe(ORDER_GOODS);
+    expect(line.revenueWithCost).toBe(0);
+    expect(line.cost).toBe(0);
+
+    // Revenue and ROAS are untouched by the missing cost data.
+    expect(line.revenue).toBe(ORDER_TOTAL);
+    expect(line.roas).toBe(3);
+
+    expect(report.blended.contributionMargin).toBeNull();
+    expect(report.blended.costCoveragePct).toBe(0);
+  });
+
+  it('repairs the margin on sales that already happened when a cost price is entered', async () => {
+    // Cost price is read when the report is read, not frozen onto the line item
+    // like the name and the price are. A merchant who enters their costs this
+    // afternoon gets last month's margins, which is the same promise read-time
+    // attribution makes about campaigns.
+    const summer = await createCampaign('Summer Sale');
+    await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
+
+    expect(
+      lineFor(await readReport(), summer.id)!.contributionMargin,
+    ).toBeNull();
+
+    await setCostPrice(UNIT_COST);
+
+    expect(lineFor(await readReport(), summer.id)).toMatchObject({
+      contributionMargin: ORDER_GOODS - UNIT_COST,
+      costCoveragePct: 100,
+    });
+  });
+
+  it("subtracts a discounted order's discount exactly once", async () => {
+    const plain = await createCampaign('Full Price');
+    const cut = await createCampaign('Five Off');
+    await setCostPrice(UNIT_COST);
+    const code = await seedCoupon(500);
+
+    await placeOrder({ lastTouch: { utmCampaign: plain.tag } });
+    await placeOrder({ lastTouch: { utmCampaign: cut.tag } }, fixture, admin, {
+      couponCode: code,
+    });
+
+    const report = await readReport();
+    const full = lineFor(report, plain.id)!;
+    const discounted = lineFor(report, cut.id)!;
+
+    // The discount is already out of the order total — that is exactly why it
+    // is not taken off there a second time. It comes off the goods basis, which
+    // is before discount, and only there.
+    expect(full.revenue).toBe(ORDER_TOTAL);
+    expect(discounted.revenue).toBe(ORDER_TOTAL - 500);
+    expect(discounted.goodsRevenue).toBe(ORDER_GOODS);
+    expect(discounted.discount).toBe(500);
+
+    // Two identical orders but for the $5 off. The margins differ by $5, not by
+    // $10 — which is what subtracting it twice would produce, and what nothing
+    // on the screen would reveal.
+    expect(full.contributionMargin).toBe(ORDER_GOODS - UNIT_COST);
+    expect(discounted.contributionMargin).toBe(ORDER_GOODS - UNIT_COST - 500);
+    expect(full.contributionMargin! - discounted.contributionMargin!).toBe(500);
+  });
+
+  it('charges a campaign that spent and sold nothing exactly what it burned', async () => {
+    // No cost prices are missing here — there are no goods to have priced — so
+    // the margin is a fact rather than an estimate, and it is the row a
+    // merchant most needs to see. Negative, and never clamped to zero.
+    const dud = await createCampaign('Dud Push');
+    await recordSpend(dud.id, 250_00);
+
+    const line = lineFor(await readReport(), dud.id)!;
+
+    expect(line).toMatchObject({
+      revenue: 0,
+      goodsRevenue: 0,
+      contributionMargin: -250_00,
+      costCoveragePct: 0,
+      roas: 0,
+    });
+    expect(line.contributionMargin).toBeLessThan(0);
+  });
+
+  it('blends coverage as the share of all goods revenue, not an average of shares', async () => {
+    const summer = await createCampaign('Summer Sale');
+    await setCostPrice(UNIT_COST);
+    // A second, pricier variant nobody has entered a cost for — the ordinary
+    // half-filled catalog, and the only way coverage is ever an interesting
+    // number.
+    const uncosted = await seedVariant({ price: 7500 });
+
+    await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
+    await placeOrder(
+      { lastTouch: { utmCampaign: summer.tag } },
+      fixture,
+      admin,
+      {
+        variantId: uncosted,
+      },
+    );
+
+    const line = lineFor(await readReport(), summer.id)!;
+
+    expect(line.goodsRevenue).toBe(ORDER_GOODS + 7500);
+    expect(line.revenueWithCost).toBe(ORDER_GOODS);
+    expect(line.cost).toBe(UNIT_COST);
+
+    // $25 of $100 has a cost behind it. An average of the two lines' coverages
+    // would be 50%, which would tell the merchant their catalog is half priced
+    // up when three quarters of the money on this campaign is uncosted.
+    expect(line.costCoveragePct).toBe(25);
+    expect(line.costCoveragePct).not.toBe(50);
+
+    // Partial coverage still reports a margin: it is real as far as it goes and
+    // understates cost, and the 25% beside it is what says how far that is.
+    expect(line.contributionMargin).toBe(ORDER_GOODS + 7500 - UNIT_COST);
   });
 
   // ─── Links generated in the admin ───────────────────────────────────────────

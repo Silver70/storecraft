@@ -27,17 +27,31 @@ import {
   roasFor,
   type BlendedPerformance,
 } from '../utils/performance.util';
+import {
+  blendMargin,
+  marginFor,
+  NO_GOODS,
+  type CampaignMargin,
+  type MarginInput,
+} from '../utils/margin.util';
 
 export type { AttributionTouch, AttributionPeriod };
 
-export interface CampaignRevenueLine {
+export interface CampaignRevenueLine extends MarginInput, CampaignMargin {
   campaignId: string;
   name: string;
   tag: string;
   platform: CampaignPlatform;
   status: CampaignStatus;
   orders: number;
-  /** In the smallest currency unit. Never formatted here. */
+  /**
+   * Attributed revenue on the **Order-total basis** — what Stage 1 reported and
+   * what ROAS divides. It includes tax and shipping and has discounts already
+   * netted out, which is why Contribution Margin is not built on it: see
+   * `goodsRevenue` beside it and `margin.util`.
+   *
+   * In the smallest currency unit. Never formatted here.
+   */
   revenue: number;
   /**
    * Spend recorded against this Campaign for the period, in the smallest
@@ -72,10 +86,11 @@ export interface AttributedRevenueReport {
   spendFrom: string;
   spendTo: string;
   /**
-   * Every Campaign line summed, with the ROAS of the two sums. Unattributed is
-   * not part of it — nobody spent against a bucket that has no Campaign.
+   * Every Campaign line summed, with the ROAS and the Contribution Margin of
+   * the sums. Unattributed is not part of it — nobody spent against a bucket
+   * that has no Campaign.
    */
-  blended: BlendedPerformance;
+  blended: BlendedPerformance & MarginInput & CampaignMargin;
   /** Its own line. Never redistributed across the campaigns above. */
   unattributed: RevenueBucket;
   /** Attributed plus unattributed — the period's realized revenue. */
@@ -99,6 +114,13 @@ const EMPTY: RevenueBucket = { orders: 0, revenue: 0 };
  * basis Stage 1 reported, computed by the same tally over the same rows, so the
  * two stages reconcile and adding Spend moves nobody's revenue numbers. Spend
  * is read alongside it and divided into it; it is never subtracted from it.
+ *
+ * **Two revenue bases leave here, and both are correct.** `revenue` is the
+ * Order total — tax and shipping in, discounts already out — and is what ROAS
+ * divides. `goodsRevenue` is the goods alone, before discount, and is what
+ * Contribution Margin is built on. They are not the same number and nothing
+ * here pretends otherwise; naming which is which is the caller's job, and the
+ * report page does it on screen.
  */
 @Injectable()
 export class AttributedRevenueService {
@@ -168,12 +190,15 @@ export class AttributedRevenueService {
       .map((campaign) => ({
         campaign,
         bucket: tally.byCampaign.get(campaign.id) ?? EMPTY,
+        // The same read-time matching produced both buckets in the same pass,
+        // so a Campaign's margin arrives exactly when its revenue does.
+        goods: tally.goodsByCampaign.get(campaign.id) ?? NO_GOODS,
         spend: spendByCampaign.get(campaign.id) ?? 0,
       }))
       .filter(({ campaign, bucket, spend }) => {
         return campaign.status === 'active' || bucket.orders > 0 || spend > 0;
       })
-      .map(({ campaign, bucket, spend }) => ({
+      .map(({ campaign, bucket, goods, spend }) => ({
         campaignId: campaign.id,
         name: campaign.name,
         tag: campaign.tag,
@@ -183,6 +208,11 @@ export class AttributedRevenueService {
         revenue: bucket.revenue,
         spend,
         roas: roasFor(bucket.revenue, spend),
+        // Both bases travel to the caller. They are different numbers and the
+        // page has to name which is which rather than leave a merchant to
+        // notice that ROAS and margin do not reconcile.
+        ...goods,
+        ...marginFor({ ...goods, spend }),
       }))
       // Spend breaks the tie before order count does, so among the lines that
       // earned nothing the ones burning money sort above the ones that are
@@ -206,8 +236,10 @@ export class AttributedRevenueService {
       spendFrom: from,
       spendTo: to,
       // Summed from the lines the report actually shows, so the totals on
-      // screen are the totals of what is on screen.
-      blended: blendPerformance(campaigns),
+      // screen are the totals of what is on screen. Both blends fold the same
+      // array; each stays a pure function over one basis rather than one
+      // function that has to be read twice to see which figure it is on.
+      blended: { ...blendPerformance(campaigns), ...blendMargin(campaigns) },
       unattributed: tally.unattributed,
       totals: tally.totals,
     };

@@ -14,7 +14,10 @@ import {
   type PreviewableOrder,
   type RulePreviewTally,
 } from './rule-preview.util';
-import { tallyAttributedRevenue } from './attributed-revenue.util';
+import {
+  tallyAttributedRevenue,
+  type CostedOrder,
+} from './attributed-revenue.util';
 import {
   createCampaignMatcher,
   type MatchableRule,
@@ -105,6 +108,19 @@ function preview(
 }
 
 /**
+ * A preview Order as the tally wants it. A preview answers which Campaign wins
+ * an Order and never what the Order cost, so the goods basis is absent from
+ * `PreviewableOrder` and zeroed here; nothing in this file asserts on it.
+ */
+const costless = (order: PreviewableOrder): CostedOrder => ({
+  ...order,
+  goodsRevenue: 0,
+  cost: 0,
+  revenueWithCost: 0,
+  discount: 0,
+});
+
+/**
  * What the attributed-revenue report would actually say once the rule is saved.
  * The preview is only worth anything if it agrees with this.
  */
@@ -114,7 +130,7 @@ function revenueAfterSaving(
   existingRules: MatchableRule[] = SAVED_RULES,
 ) {
   const matcher = createCampaignMatcher([...existingRules, candidate]);
-  return tallyAttributedRevenue(orders, matcher, LOOKBACK);
+  return tallyAttributedRevenue(orders.map(costless), matcher, LOOKBACK);
 }
 
 const EMPTY = { orders: 0, revenue: 0 };

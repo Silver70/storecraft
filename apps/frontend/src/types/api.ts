@@ -495,36 +495,89 @@ export type RevenueBucket = {
   revenue: number;
 };
 
-export type CampaignRevenueLine = RevenueBucket & {
-  campaignId: string;
-  name: string;
-  tag: string;
-  platform: CampaignPlatform;
-  status: CampaignStatus;
+/**
+ * The **goods basis** — the second of the report's two revenue figures, and the
+ * costs against it. All in the smallest currency unit.
+ *
+ * Not the order total and never meant to be: tax is collected and remitted and
+ * is never profit, and shipping is left out of both sides because shipping cost
+ * is modelled nowhere, so counting the charge would inflate every margin. What
+ * is left is the goods — the only part of an order there is a cost price for.
+ */
+export type CampaignGoods = {
+  /** Line-item totals *before* discount. No tax, no shipping. */
+  goodsRevenue: number;
   /**
-   * Spend recorded for the period, in the smallest currency unit. Zero for a
-   * campaign nobody recorded a cost against.
+   * Cost of goods, counted only where the variant has a cost price. An unpriced
+   * line contributes nothing rather than a zero that would read as free.
    */
-  spend: number;
+  cost: number;
+  /** The part of `goodsRevenue` that had a known cost behind it. */
+  revenueWithCost: number;
   /**
-   * Revenue over spend, to two decimal places. A **ratio**, not money — 4.25
-   * means $4.25 back per dollar spent, so it is never passed through the money
-   * formatter. Null when nothing was spent: an organic or email campaign has no
-   * return *on spend*, and a zero would rank it as a failure while an infinity
-   * would rank it as the best thing in the account.
+   * Discounts on those orders. Subtracted from the goods basis exactly once —
+   * the order total already has them netted out, so subtracting there as well
+   * would penalise a discounted order twice.
    */
-  roas: number | null;
+  discount: number;
 };
 
-/** Every campaign line summed, and the ratio between the two sums. */
-export type BlendedPerformance = {
-  /** Smallest currency unit. */
-  revenue: number;
-  /** Smallest currency unit. */
-  spend: number;
-  /** A ratio, not money. Null when nothing was spent anywhere. */
-  roas: number | null;
+export type CampaignMargin = {
+  /**
+   * Goods revenue minus discounts minus cost of goods minus spend, in the
+   * smallest currency unit. **The figure that says whether to keep spending**,
+   * where ROAS only says how much came back — a 3× ROAS on goods costing 70% of
+   * their price loses money on every order.
+   *
+   * Negative when the campaign lost money, and never clamped. Null when goods
+   * were sold and not one of them has a cost price: a margin built on no cost
+   * data is not a conservative estimate, it is fiction, and the blank is what
+   * sends a merchant to fill their cost prices in.
+   */
+  contributionMargin: number | null;
+  /**
+   * How much of the goods revenue had a known cost behind it, as a whole-number
+   * percentage. **Display only** — the same convention the analytics profit
+   * report uses. It is what qualifies the margin beside it: at 60% the figure
+   * understates cost and so overstates margin, and the merchant has to be able
+   * to see that.
+   */
+  costCoveragePct: number;
 };
+
+export type CampaignRevenueLine = RevenueBucket &
+  CampaignGoods &
+  CampaignMargin & {
+    campaignId: string;
+    name: string;
+    tag: string;
+    platform: CampaignPlatform;
+    status: CampaignStatus;
+    /**
+     * Spend recorded for the period, in the smallest currency unit. Zero for a
+     * campaign nobody recorded a cost against.
+     */
+    spend: number;
+    /**
+     * Revenue over spend, to two decimal places. A **ratio**, not money — 4.25
+     * means $4.25 back per dollar spent, so it is never passed through the money
+     * formatter. Null when nothing was spent: an organic or email campaign has no
+     * return *on spend*, and a zero would rank it as a failure while an infinity
+     * would rank it as the best thing in the account.
+     */
+    roas: number | null;
+  };
+
+/** Every campaign line summed, and the figures taken of the sums. */
+export type BlendedPerformance = CampaignGoods &
+  CampaignMargin & {
+    /** The order-total basis. Smallest currency unit. */
+    revenue: number;
+    /** Smallest currency unit. */
+    spend: number;
+    /** A ratio, not money. Null when nothing was spent anywhere. */
+    roas: number | null;
+  };
 
 export type AttributedRevenueReport = {
   period: Period;

@@ -2,8 +2,12 @@ import { Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import type { DrizzleClient } from '../../../shared/database/database.module';
 import { DRIZZLE_CLIENT } from '../../../shared/database/database.module';
-import { orders } from '../../../shared/database/schema';
-import type { AttributableOrder } from '../utils/attributed-revenue.util';
+import {
+  orderLineItems,
+  orders,
+  productVariants,
+} from '../../../shared/database/schema';
+import type { CostedOrder } from '../utils/attributed-revenue.util';
 import type { PreviewableOrder } from '../utils/rule-preview.util';
 
 /** Which Touch a report credits: the ad that discovered the visitor, or the one that closed them. */
@@ -87,13 +91,47 @@ function attributableOrders(
 }
 
 /**
+ * The goods basis of one Order, as three sums over its line items.
+ *
+ * `cost_price` is nullable, and the `CASE` is the whole point of these columns
+ * rather than an edge case in them: a line whose variant has no cost price
+ * contributes to neither `cost` nor `revenue_with_cost`, so an uncosted catalog
+ * produces no cost and no coverage instead of a zero cost that would read as
+ * free goods. This is the same shape the analytics profit report computes, for
+ * the same reason — the two must not come to mean different things by
+ * "coverage".
+ *
+ * `::int` because Postgres sums integers as `bigint`, which reaches the driver
+ * as a string; these are per-Order sums in minor units, so the cast is exact.
+ */
+const GOODS_REVENUE = sql<number>`coalesce(sum(${orderLineItems.totalPrice}), 0)::int`;
+
+const GOODS_COST = sql<number>`coalesce(sum(
+  CASE WHEN ${productVariants.costPrice} IS NOT NULL
+       THEN ${productVariants.costPrice} * ${orderLineItems.quantity} END
+), 0)::int`;
+
+const REVENUE_WITH_COST = sql<number>`coalesce(sum(
+  CASE WHEN ${productVariants.costPrice} IS NOT NULL
+       THEN ${orderLineItems.totalPrice} END
+), 0)::int`;
+
+/**
  * Reads the Orders a period's attributed-revenue report is computed from.
  *
- * Deliberately no aggregation in SQL. Resolving an Order to a Campaign means
- * running the matching rules, which normalize both sides of every comparison —
- * expressible in SQL, but only as something no one could read or unit test.
- * The rows come back raw and the decision happens in
+ * Deliberately no aggregation *of the report* in SQL. Resolving an Order to a
+ * Campaign means running the matching rules, which normalize both sides of
+ * every comparison — expressible in SQL, but only as something no one could
+ * read or unit test. The rows come back raw and the decision happens in
  * `attributed-revenue.util`, where it is exercised without a database.
+ *
+ * The line items *are* summed in SQL, per Order and no further. That is not the
+ * report's aggregation: which Campaign an Order belongs to is still decided in
+ * TypeScript afterwards, and what the query settles is only what the Order
+ * itself is worth on the goods basis — a fact about the Order, the same for
+ * every Campaign that might claim it. Loading each line item to add three
+ * columns up in JavaScript would multiply the rows read by the size of the
+ * average basket for an identical answer.
  */
 @Injectable()
 export class AttributionRepository {
@@ -105,27 +143,59 @@ export class AttributionRepository {
     touch: AttributionTouch,
     start: Date,
     end: Date,
-  ): Promise<AttributableOrder[]> {
+  ): Promise<CostedOrder[]> {
     const columns = touchColumns(touch);
 
     const rows = await this.db
       .select({
         total: orders.total,
         placedAt: orders.createdAt,
+        // The discount is the Order's own, not a sum over the join: it is one
+        // figure per Order already, and summing it across line items would
+        // multiply it by the basket size.
+        discount: orders.discountAmount,
         utmSource: columns.utmSource,
         utmMedium: columns.utmMedium,
         utmCampaign: columns.utmCampaign,
         referrer: columns.referrer,
         touchedAt: columns.touchedAt,
         isBot: IS_BOT,
+        goodsRevenue: GOODS_REVENUE,
+        cost: GOODS_COST,
+        revenueWithCost: REVENUE_WITH_COST,
       })
       .from(orders)
-      .where(attributableOrders(orgId, storeId, start, end));
+      // A left join throughout: an Order with no line items, or a line item
+      // whose variant has since been deleted, still has a total and still has
+      // to reconcile with the sales reports. It contributes no goods and no
+      // cost, which is exactly what a null cost price means anyway.
+      .leftJoin(
+        orderLineItems,
+        and(
+          eq(orderLineItems.orderId, orders.id),
+          eq(orderLineItems.organizationId, orders.organizationId),
+        ),
+      )
+      .leftJoin(
+        productVariants,
+        and(
+          eq(productVariants.id, orderLineItems.variantId),
+          eq(productVariants.organizationId, orderLineItems.organizationId),
+        ),
+      )
+      .where(attributableOrders(orgId, storeId, start, end))
+      // The Order's primary key, so every other `orders` column above is
+      // functionally dependent on the group and the sums are per Order.
+      .groupBy(orders.id);
 
     return rows.map((row) => ({
       total: row.total,
       placedAt: row.placedAt,
       isBot: row.isBot === true,
+      goodsRevenue: row.goodsRevenue,
+      cost: row.cost,
+      revenueWithCost: row.revenueWithCost,
+      discount: row.discount,
       touch: {
         utmSource: row.utmSource,
         utmMedium: row.utmMedium,
@@ -143,8 +213,10 @@ export class AttributionRepository {
    * A separate read rather than two extra columns on the one above: the report
    * resolves a period into buckets and has no use for an order number, and the
    * type it hands the tally is deliberately reduced to what deciding a credit
-   * needs. Newest first, so the Orders a preview names are the ones the
-   * merchant most likely recognises.
+   * needs. It runs the other way too — a preview answers which Campaign wins an
+   * Order, never what the Order cost, so it does not join the line items or the
+   * catalog to compute a goods basis nothing here reads. Newest first, so the
+   * Orders a preview names are the ones the merchant most likely recognises.
    */
   async findPreviewableOrders(
     orgId: string,

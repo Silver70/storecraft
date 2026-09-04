@@ -11,7 +11,7 @@
 import {
   campaignCreditFor,
   tallyAttributedRevenue,
-  type AttributableOrder,
+  type CostedOrder,
 } from './attributed-revenue.util';
 import {
   createCampaignMatcher,
@@ -47,11 +47,18 @@ const RULES: MatchableRule[] = [
 const matcher = createCampaignMatcher(RULES);
 const noRules = createCampaignMatcher([]);
 
-function order(overrides: Partial<AttributableOrder> = {}): AttributableOrder {
+function order(overrides: Partial<CostedOrder> = {}): CostedOrder {
   return {
     total: 3000,
     placedAt: PLACED_AT,
     isBot: false,
+    // A $30 order is $25 of goods plus $5 of shipping, all of it costed at
+    // $10. The two revenue figures differ by construction here, because a
+    // fixture where they agreed would hide every place the wrong one is read.
+    goodsRevenue: 2500,
+    cost: 1000,
+    revenueWithCost: 2500,
+    discount: 0,
     touch: {
       utmSource: 'instagram',
       utmMedium: 'paid_social',
@@ -63,7 +70,7 @@ function order(overrides: Partial<AttributableOrder> = {}): AttributableOrder {
   };
 }
 
-const credit = (o: AttributableOrder, m = matcher) =>
+const credit = (o: CostedOrder, m = matcher) =>
   campaignCreditFor(o, m, DEFAULT_ATTRIBUTION_LOOKBACK_DAYS);
 
 describe('campaignCreditFor', () => {
@@ -163,7 +170,7 @@ describe('campaignCreditFor', () => {
 });
 
 describe('tallyAttributedRevenue', () => {
-  const tally = (orders: AttributableOrder[], m = matcher) =>
+  const tally = (orders: CostedOrder[], m = matcher) =>
     tallyAttributedRevenue(orders, m, DEFAULT_ATTRIBUTION_LOOKBACK_DAYS);
 
   it('sums revenue and order count per campaign', () => {
@@ -231,7 +238,84 @@ describe('tallyAttributedRevenue', () => {
     const result = tally([]);
 
     expect(result.byCampaign.size).toBe(0);
+    expect(result.goodsByCampaign.size).toBe(0);
     expect(result.unattributed).toEqual({ orders: 0, revenue: 0 });
     expect(result.totals).toEqual({ orders: 0, revenue: 0 });
+  });
+
+  // ─── The goods basis ────────────────────────────────────────────────────────
+
+  describe('the goods basis', () => {
+    it('buckets the goods figures by the same campaign as the revenue', () => {
+      const result = tally([
+        order({ goodsRevenue: 2500, cost: 1000, revenueWithCost: 2500 }),
+        order({ goodsRevenue: 1000, cost: 400, revenueWithCost: 1000 }),
+        order({
+          goodsRevenue: 900,
+          cost: 300,
+          revenueWithCost: 900,
+          touch: { ...order().touch, utmCampaign: 'Spring-Sale' },
+        }),
+      ]);
+
+      expect(result.goodsByCampaign.get(SUMMER)).toEqual({
+        goodsRevenue: 3500,
+        cost: 1400,
+        revenueWithCost: 3500,
+        discount: 0,
+      });
+      expect(result.goodsByCampaign.get(SPRING)).toEqual({
+        goodsRevenue: 900,
+        cost: 300,
+        revenueWithCost: 900,
+        discount: 0,
+      });
+    });
+
+    it('keeps the goods basis apart from the order-total basis', () => {
+      // $30 orders holding $25 of goods. Reading either figure where the other
+      // belongs is the mistake this separation exists to prevent, so the two
+      // are asserted as different numbers rather than assumed to agree.
+      const result = tally([order(), order()]);
+
+      expect(result.byCampaign.get(SUMMER)!.revenue).toBe(6000);
+      expect(result.goodsByCampaign.get(SUMMER)!.goodsRevenue).toBe(5000);
+    });
+
+    it('sums the discount once per order, on the goods side only', () => {
+      const result = tally([
+        order({ discount: 500 }),
+        order({ discount: 250 }),
+      ]);
+
+      expect(result.goodsByCampaign.get(SUMMER)!.discount).toBe(750);
+      // The order total already has the discount netted out at checkout, so
+      // nothing subtracts it from the revenue bucket as well.
+      expect(result.byCampaign.get(SUMMER)!.revenue).toBe(6000);
+    });
+
+    it('carries uncosted goods as revenue with no cost behind it', () => {
+      // The variant has no cost price. The sale is real and the cost is
+      // unknown, which is a different thing from a cost of zero.
+      const result = tally([
+        order({ goodsRevenue: 2500, cost: 0, revenueWithCost: 0 }),
+      ]);
+
+      expect(result.goodsByCampaign.get(SUMMER)).toEqual({
+        goodsRevenue: 2500,
+        cost: 0,
+        revenueWithCost: 0,
+        discount: 0,
+      });
+    });
+
+    it('gives an uncredited order no goods bucket at all', () => {
+      // Unattributed carries no cost data: nobody spent against it, so there
+      // is no margin to build and a cost figure there would only invite one.
+      const result = tally([order({ isBot: true })]);
+
+      expect(result.goodsByCampaign.size).toBe(0);
+      expect(result.unattributed).toEqual({ orders: 1, revenue: 3000 });
+    });
   });
 });

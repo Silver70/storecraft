@@ -36,6 +36,13 @@ export interface SeedStorefrontOptions {
   shippingPrice?: number;
   /** Units of the variant on hand. */
   stockQuantity?: number;
+  /**
+   * Cost price of the seeded variant, in minor units. Omitted by default,
+   * because that is the state most stores are actually in — `cost_price` is
+   * nullable and merchants fill it in late, and a fixture that always set one
+   * would hide every path that has to cope without it.
+   */
+  variantCostPrice?: number;
   currency?: string;
 }
 
@@ -48,6 +55,8 @@ export interface StorefrontFixture {
   sku: string;
   productName: string;
   variantPrice: number;
+  /** What the seeded variant costs, or null where no cost price was set. */
+  variantCostPrice: number | null;
   shippingMethodId: string;
   shippingPrice: number;
   currency: string;
@@ -63,6 +72,7 @@ export async function seedStorefront(
     variantPrice = 2500,
     shippingPrice = 500,
     stockQuantity = 100,
+    variantCostPrice = null,
     currency = 'USD',
   } = options;
 
@@ -110,6 +120,7 @@ export async function seedStorefront(
       sku,
       name: 'Default',
       price: variantPrice,
+      costPrice: variantCostPrice,
     })
     .returning();
 
@@ -158,6 +169,7 @@ export async function seedStorefront(
     sku,
     productName,
     variantPrice,
+    variantCostPrice,
     shippingMethodId: method.id,
     shippingPrice,
     currency,

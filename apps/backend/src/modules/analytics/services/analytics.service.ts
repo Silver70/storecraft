@@ -2,6 +2,7 @@ import { Injectable, Inject } from '@nestjs/common';
 import { sql, type SQL } from 'drizzle-orm';
 import { DRIZZLE_CLIENT } from '../../../shared/database/database.module';
 import type { DrizzleClient } from '../../../shared/database/database.module';
+import { pct } from '../../../shared/utils/percent.util';
 
 /**
  * Time window for analytics aggregation. Owned by this module so analytics
@@ -37,11 +38,6 @@ function getRange(period: AnalyticsPeriod): { start: Date; end: Date } {
   const start = new Date(now);
   start.setDate(start.getDate() - periodDays(period));
   return { start, end: now };
-}
-
-function pct(numerator: number, denominator: number): number {
-  if (denominator === 0) return 0;
-  return Math.round((numerator / denominator) * 100);
 }
 
 // ─── Response shapes ──────────────────────────────────────────────────────────
