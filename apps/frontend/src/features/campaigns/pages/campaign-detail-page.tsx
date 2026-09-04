@@ -26,6 +26,7 @@ import { CampaignFields } from "../components/campaign-fields";
 import { CampaignStatusBadge } from "../components/campaign-status-badge";
 import { CopyTagButton } from "../components/copy-tag-button";
 import { ArchiveCampaignButton } from "../components/archive-campaign-button";
+import { MatchingRulesCard } from "../components/matching-rules-card";
 
 const updateCampaignSchema = z.object({
   name: z.string().min(1, "Name is required").max(255),
@@ -184,6 +185,9 @@ export function CampaignDetailPage() {
             </p>
           </CardContent>
         </Card>
+
+        {/* ── Matching rules ────────────────────────────────────────────────── */}
+        <MatchingRulesCard campaignId={campaignId} />
 
         {/* ── Retire ────────────────────────────────────────────────────────── */}
         <div className="flex items-center justify-between gap-4 rounded-lg border border-dashed px-4 py-3">

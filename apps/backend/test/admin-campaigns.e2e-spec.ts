@@ -21,7 +21,12 @@ import {
   campaignMatchingRules,
   campaigns,
 } from '../src/shared/database/schema';
-import type { Campaign } from '../src/shared/database/schema';
+import type {
+  Campaign,
+  CampaignMatchingRule,
+} from '../src/shared/database/schema';
+import { CampaignService } from '../src/modules/marketing/services/campaign.service';
+import type { AttributionTuple } from '../src/modules/marketing/utils/campaign-matching.util';
 import { createTestApp } from './helpers/test-app';
 import {
   destroyAdmin,
@@ -340,6 +345,333 @@ describe('Admin campaigns (e2e)', () => {
     });
   });
 
+  describe('matching rules', () => {
+    /**
+     * Resolves an attribution tuple the way a report will: through the service,
+     * over the rules actually persisted for one organization and store.
+     *
+     * Matching has no HTTP surface of its own until attributed revenue lands, so
+     * these assertions reach one layer in. They are still behavioural — real
+     * rows, real scoping, and the answer a merchant's report would print.
+     */
+    async function resolve(
+      tuple: AttributionTuple,
+      orgId = fixture.organizationId,
+      storeId = fixture.storeId,
+    ): Promise<string | null> {
+      const matcher = await app
+        .get(CampaignService)
+        .buildMatcher(orgId, storeId);
+      return matcher(tuple)?.campaignId ?? null;
+    }
+
+    async function addRule(
+      campaignId: string,
+      body: Record<string, unknown>,
+    ): Promise<CampaignMatchingRule> {
+      const res = await fixture.admin.client
+        .post(`/campaigns/${campaignId}/rules`, body)
+        .expect(201);
+      return res.body as CampaignMatchingRule;
+    }
+
+    it('adds a rule and lists it after the campaign’s own tag rule', async () => {
+      const campaign = await createCampaign({
+        name: 'Summer Sale',
+        platform: 'meta',
+      });
+
+      const rule = await addRule(campaign.id, {
+        field: 'utm_source',
+        operator: 'equals',
+        value: 'instagram',
+      });
+
+      expect(rule).toMatchObject({
+        campaignId: campaign.id,
+        organizationId: fixture.organizationId,
+        storeId: fixture.storeId,
+        field: 'utm_source',
+        operator: 'equals',
+        value: 'instagram',
+        isCanonical: false,
+      });
+
+      const list = await fixture.admin.client
+        .get(`/campaigns/${campaign.id}/rules`)
+        .expect(200);
+      expect(list.body).toEqual([
+        expect.objectContaining({ value: campaign.tag, isCanonical: true }),
+        expect.objectContaining({ id: rule.id }),
+      ]);
+    });
+
+    it('claims every variant of the value the links actually went out with', async () => {
+      // The whole point of the feature: one push tagged inconsistently is one
+      // campaign, not three each looking a third as profitable as it was.
+      const campaign = await createCampaign({
+        name: 'Summer Push 2026',
+        platform: 'meta',
+      });
+      await addRule(campaign.id, {
+        field: 'utm_campaign',
+        operator: 'equals',
+        value: 'Summer_Sale',
+      });
+
+      for (const utmCampaign of [
+        'summer_sale',
+        'Summer-Sale',
+        'summer sale',
+        '  SUMMER-SALE  ',
+      ]) {
+        await expect(resolve({ utmCampaign })).resolves.toBe(campaign.id);
+      }
+    });
+
+    it('reduces a pasted referrer URL to the host it means', async () => {
+      const campaign = await createCampaign({
+        name: 'Instagram Bio',
+        platform: 'instagram',
+      });
+
+      const rule = await addRule(campaign.id, {
+        field: 'referrer_host',
+        operator: 'equals',
+        value: 'https://www.instagram.com/p/abc123/',
+      });
+      expect(rule.value).toBe('instagram.com');
+
+      await expect(
+        resolve({ referrer: 'https://instagram.com/stories/xyz' }),
+      ).resolves.toBe(campaign.id);
+    });
+
+    it('refuses a rule that already means the same as one on the campaign', async () => {
+      const campaign = await createCampaign({
+        name: 'Summer Sale',
+        platform: 'meta',
+      });
+      await addRule(campaign.id, {
+        field: 'utm_source',
+        operator: 'equals',
+        value: 'paid_social',
+      });
+
+      await fixture.admin.client
+        .post(`/campaigns/${campaign.id}/rules`, {
+          field: 'utm_source',
+          operator: 'equals',
+          value: 'Paid-Social',
+        })
+        .expect(409);
+
+      // Including the tag rule it was created with.
+      await fixture.admin.client
+        .post(`/campaigns/${campaign.id}/rules`, {
+          field: 'utm_campaign',
+          operator: 'equals',
+          value: campaign.tag.toUpperCase(),
+        })
+        .expect(409);
+    });
+
+    it('refuses a rule value that could never match a visit', async () => {
+      const campaign = await createCampaign({
+        name: 'Summer Sale',
+        platform: 'meta',
+      });
+
+      await fixture.admin.client
+        .post(`/campaigns/${campaign.id}/rules`, {
+          field: 'utm_source',
+          operator: 'equals',
+          value: '---',
+        })
+        .expect(400);
+      await fixture.admin.client
+        .post(`/campaigns/${campaign.id}/rules`, {
+          field: 'utm_source',
+          operator: 'equals',
+          value: '   ',
+        })
+        .expect(400);
+    });
+
+    it('removes a rule, and the traffic it claimed goes back to unattributed', async () => {
+      const campaign = await createCampaign({
+        name: 'Summer Sale',
+        platform: 'meta',
+      });
+      const rule = await addRule(campaign.id, {
+        field: 'utm_source',
+        operator: 'equals',
+        value: 'instagram',
+      });
+      await expect(resolve({ utmSource: 'Instagram' })).resolves.toBe(
+        campaign.id,
+      );
+
+      await fixture.admin.client
+        .delete(`/campaigns/${campaign.id}/rules/${rule.id}`)
+        .expect(204);
+
+      await expect(resolve({ utmSource: 'Instagram' })).resolves.toBeNull();
+      const rows = await db
+        .select()
+        .from(campaignMatchingRules)
+        .where(eq(campaignMatchingRules.campaignId, campaign.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].isCanonical).toBe(true);
+    });
+
+    it('will not remove the campaign’s own tag rule', async () => {
+      // Every link generated from the campaign carries that tag: removing the
+      // rule would unattribute every ad already running under it.
+      const campaign = await createCampaign({
+        name: 'Summer Sale',
+        platform: 'meta',
+      });
+      const [canonical] = await db
+        .select()
+        .from(campaignMatchingRules)
+        .where(eq(campaignMatchingRules.campaignId, campaign.id));
+
+      await fixture.admin.client
+        .delete(`/campaigns/${campaign.id}/rules/${canonical.id}`)
+        .expect(409);
+
+      await expect(resolve({ utmCampaign: campaign.tag })).resolves.toBe(
+        campaign.id,
+      );
+    });
+
+    it('resolves to unattributed rather than erroring when nothing claims a tuple', async () => {
+      // A store with no campaigns at all — an empty rule set is unattributed,
+      // not a failure.
+      await expect(resolve({ utmCampaign: 'anything' })).resolves.toBeNull();
+
+      await createCampaign({ name: 'Summer Sale', platform: 'meta' });
+      await expect(resolve({ utmCampaign: 'winter-sale' })).resolves.toBeNull();
+      await expect(resolve({})).resolves.toBeNull();
+    });
+
+    it('lets the documented precedence decide when two campaigns could claim a tuple', async () => {
+      const older = await createCampaign({ name: 'Spring', platform: 'meta' });
+      const newer = await createCampaign({ name: 'Summer', platform: 'meta' });
+      await addRule(older.id, {
+        field: 'utm_source',
+        operator: 'equals',
+        value: 'instagram',
+      });
+      await addRule(newer.id, {
+        field: 'utm_campaign',
+        operator: 'starts_with',
+        value: 'summer',
+      });
+
+      // A campaign-field rule outranks a source rule, even a broader one on a
+      // campaign created later.
+      await expect(
+        resolve({ utmCampaign: 'summer-sale', utmSource: 'instagram' }),
+      ).resolves.toBe(newer.id);
+
+      // With no campaign tag to go on, the source rule claims it.
+      await expect(resolve({ utmSource: 'instagram' })).resolves.toBe(older.id);
+    });
+
+    describe('tenancy', () => {
+      it('never lets one organization’s rules claim another’s traffic', async () => {
+        const other = await seedAdmin(app);
+        try {
+          const mine = await createCampaign({
+            name: 'Summer Sale',
+            platform: 'meta',
+          });
+          const theirsRes = await other.admin.client
+            .post('/campaigns', { name: 'Summer Sale', platform: 'meta' })
+            .expect(201);
+          const theirs = theirsRes.body as Campaign;
+          expect(theirs.tag).toBe(mine.tag);
+
+          // The same tuple resolves to each merchant's own campaign, and never
+          // to the other's, even though both stores tagged it identically.
+          await expect(resolve({ utmCampaign: 'summer-sale' })).resolves.toBe(
+            mine.id,
+          );
+          await expect(
+            resolve(
+              { utmCampaign: 'summer-sale' },
+              other.organizationId,
+              other.storeId,
+            ),
+          ).resolves.toBe(theirs.id);
+        } finally {
+          await destroyAdmin(app, other);
+        }
+      });
+
+      it('hides another organization’s rules from every verb', async () => {
+        const other = await seedAdmin(app);
+        try {
+          const mine = await createCampaign({
+            name: 'Summer Sale',
+            platform: 'meta',
+          });
+          const rule = await addRule(mine.id, {
+            field: 'utm_source',
+            operator: 'equals',
+            value: 'instagram',
+          });
+
+          await other.admin.client
+            .get(`/campaigns/${mine.id}/rules`)
+            .expect(404);
+          await other.admin.client
+            .post(`/campaigns/${mine.id}/rules`, {
+              field: 'utm_source',
+              operator: 'equals',
+              value: 'stolen',
+            })
+            .expect(404);
+          await other.admin.client
+            .delete(`/campaigns/${mine.id}/rules/${rule.id}`)
+            .expect(404);
+
+          const rows = await db
+            .select()
+            .from(campaignMatchingRules)
+            .where(eq(campaignMatchingRules.campaignId, mine.id));
+          expect(rows).toHaveLength(2);
+        } finally {
+          await destroyAdmin(app, other);
+        }
+      });
+
+      it('scopes rules to the store, not just the organization', async () => {
+        const mine = await createCampaign({
+          name: 'Summer Sale',
+          platform: 'meta',
+        });
+        await addRule(mine.id, {
+          field: 'utm_source',
+          operator: 'equals',
+          value: 'instagram',
+        });
+        const second = await fixture.addStore();
+
+        await second.client.get(`/campaigns/${mine.id}/rules`).expect(404);
+        await expect(
+          resolve(
+            { utmSource: 'instagram' },
+            fixture.organizationId,
+            second.storeId,
+          ),
+        ).resolves.toBeNull();
+      });
+    });
+  });
+
   describe('permissions', () => {
     it('rejects a request carrying no admin token', async () => {
       await request(app.getHttpServer())
@@ -354,9 +686,15 @@ describe('Admin campaigns (e2e)', () => {
         .post('/campaigns', { name: 'PM Campaign', platform: 'google' })
         .expect(201);
       await pm.client.get('/campaigns').expect(200);
+      const campaignId = (created.body as Campaign).id;
       await pm.client
-        .post(`/campaigns/${(created.body as Campaign).id}/archive`)
+        .post(`/campaigns/${campaignId}/rules`, {
+          field: 'utm_source',
+          operator: 'equals',
+          value: 'instagram',
+        })
         .expect(201);
+      await pm.client.post(`/campaigns/${campaignId}/archive`).expect(201);
     });
 
     it('refuses a support agent, who has no marketing permission', async () => {
@@ -374,6 +712,14 @@ describe('Admin campaigns (e2e)', () => {
         .patch(`/campaigns/${created.id}`, { name: 'Nope' })
         .expect(403);
       await support.client.post(`/campaigns/${created.id}/archive`).expect(403);
+      await support.client.get(`/campaigns/${created.id}/rules`).expect(403);
+      await support.client
+        .post(`/campaigns/${created.id}/rules`, {
+          field: 'utm_source',
+          operator: 'equals',
+          value: 'instagram',
+        })
+        .expect(403);
     });
   });
 });

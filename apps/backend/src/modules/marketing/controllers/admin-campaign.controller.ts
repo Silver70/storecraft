@@ -1,7 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -21,10 +24,14 @@ import { RequirePermission } from '../../auth/decorators/require-permission.deco
 import { CurrentTenant } from '../../auth/decorators/current-tenant.decorator';
 import type { TenantContext } from '../../../shared/tenant/tenant-context';
 import { requireStoreContext } from '../../../shared/tenant/tenant.util';
-import type { Campaign } from '../../../shared/database/schema';
+import type {
+  Campaign,
+  CampaignMatchingRule,
+} from '../../../shared/database/schema';
 import { CampaignService } from '../services/campaign.service';
 import {
   CreateCampaignDto,
+  CreateCampaignRuleDto,
   ListCampaignsQueryDto,
   UpdateCampaignDto,
 } from '../dto/campaign.dto';
@@ -137,5 +144,64 @@ export class AdminCampaignController {
   ): Promise<Campaign> {
     const { organizationId, storeId } = requireStoreContext(tenant);
     return this.campaigns.unarchive(organizationId, storeId, id);
+  }
+
+  // ─── Matching rules ─────────────────────────────────────────────────────────
+
+  @Get(':id/rules')
+  @RequirePermission('campaigns.read')
+  @ApiOperation({
+    summary: "List a campaign's matching rules",
+    description:
+      'The canonical rule on the campaign tag first, then whatever the merchant has added.',
+  })
+  @ApiResponse({ status: 200 })
+  @ApiResponse({ status: 404 })
+  async listRules(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentTenant() tenant: TenantContext,
+  ): Promise<CampaignMatchingRule[]> {
+    const { organizationId, storeId } = requireStoreContext(tenant);
+    return this.campaigns.listRules(organizationId, storeId, id);
+  }
+
+  @Post(':id/rules')
+  @RequirePermission('campaigns.write')
+  @ApiOperation({
+    summary: 'Add a matching rule',
+    description:
+      'Teaches the campaign to claim a UTM variant. Comparison ignores case, hyphens, underscores and spacing, so one rule covers every way the same value was tagged. Adding a rule repairs historical reports as well as future ones, because attribution is resolved at read time.',
+  })
+  @ApiResponse({ status: 201 })
+  @ApiResponse({ status: 400, description: 'Value can never match anything' })
+  @ApiResponse({ status: 404 })
+  @ApiResponse({ status: 409, description: 'Already matched by another rule' })
+  async addRule(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CreateCampaignRuleDto,
+    @CurrentTenant() tenant: TenantContext,
+  ): Promise<CampaignMatchingRule> {
+    const { organizationId, storeId } = requireStoreContext(tenant);
+    return this.campaigns.addRule(organizationId, storeId, id, dto);
+  }
+
+  @Delete(':id/rules/:ruleId')
+  @RequirePermission('campaigns.write')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'Remove a matching rule',
+    description:
+      "The campaign's own tag rule is not removable: every link generated from the campaign carries that tag.",
+  })
+  @ApiResponse({ status: 204 })
+  @ApiResponse({ status: 404 })
+  @ApiResponse({ status: 409, description: 'The canonical tag rule' })
+  async removeRule(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('ruleId', ParseUUIDPipe) ruleId: string,
+    @CurrentTenant() tenant: TenantContext,
+  ): Promise<void> {
+    const { organizationId, storeId } = requireStoreContext(tenant);
+    await this.campaigns.removeRule(organizationId, storeId, id, ruleId);
   }
 }

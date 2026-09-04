@@ -47,6 +47,14 @@ where applicable, an external ad-platform id. Deliberately *not* the same object
 as a UTM string: one Campaign absorbs many UTM variants via its matching rules.
 _Avoid_: Ad, ad campaign, promotion (a Discount is not a Campaign)
 
+**Matching Rule**:
+One statement by a merchant that a Campaign owns a value — a UTM field or a
+referrer host, compared with `equals` or `starts_with`. Both sides are compared
+normalized (trimmed, lowercased, hyphens/underscores/whitespace collapsed), so
+`summer_sale` and `Summer-Sale` are one rule, not two. Applied at read time, so
+adding one repairs past reports as well as future ones.
+_Avoid_: Filter, mapping, pattern, alias
+
 **Touch**:
 A single recorded instance of a Visitor arriving from a traffic source, carrying
 its UTM tuple and referrer. A Session may contain several Touches.

@@ -364,6 +364,47 @@ export type Campaign = {
   updatedAt: string;
 };
 
+/**
+ * The attribution field a matching rule compares against. Order matters: when
+ * more than one rule could claim a visit, a `utm_campaign` rule wins over
+ * `utm_source` or `utm_medium`, which win over `referrer_host`.
+ */
+export const CAMPAIGN_RULE_FIELDS = [
+  "utm_campaign",
+  "utm_source",
+  "utm_medium",
+  "referrer_host",
+] as const;
+
+export type CampaignRuleField = (typeof CAMPAIGN_RULE_FIELDS)[number];
+
+/** `equals` wins over `starts_with` when both could claim the same visit. */
+export const CAMPAIGN_RULE_OPERATORS = ["equals", "starts_with"] as const;
+
+export type CampaignRuleOperator = (typeof CAMPAIGN_RULE_OPERATORS)[number];
+
+// Raw campaign_matching_rules row from backend
+export type CampaignMatchingRule = {
+  id: string;
+  organizationId: string;
+  storeId: string;
+  campaignId: string;
+  field: CampaignRuleField;
+  operator: CampaignRuleOperator;
+  /**
+   * Compared with case, hyphens, underscores and spacing ignored, so one rule
+   * covers `summer_sale`, `Summer-Sale` and `summer sale`.
+   */
+  value: string;
+  /**
+   * The rule on the campaign's own tag, created with the campaign. Not
+   * removable — every generated link carries that tag.
+   */
+  isCanonical: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 // ─── Price Lists ──────────────────────────────────────────────────────────────
 
 export type PriceListType = "fixed" | "adjustment";

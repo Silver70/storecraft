@@ -1,11 +1,15 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import type {
   Campaign,
+  CampaignMatchingRule,
   CampaignPlatform,
+  CampaignRuleField,
+  CampaignRuleOperator,
   CampaignStatus,
 } from '../../../shared/database/schema';
 import { CampaignRepository } from '../repositories/campaign.repository';
@@ -13,6 +17,12 @@ import {
   campaignTagCandidate,
   deriveCampaignTag,
 } from '../utils/campaign-tag.util';
+import {
+  createCampaignMatcher,
+  normalizeMatchValue,
+  referrerHost,
+  type CampaignMatcher,
+} from '../utils/campaign-matching.util';
 
 export interface CreateCampaignInput {
   name: string;
@@ -26,14 +36,38 @@ export interface UpdateCampaignInput {
   externalId?: string | null;
 }
 
+export interface CreateCampaignRuleInput {
+  field: CampaignRuleField;
+  operator: CampaignRuleOperator;
+  value: string;
+}
+
 /** How many tags to try before giving up on finding a free one. */
 const MAX_TAG_ATTEMPTS = 25;
 
 const UNIQUE_VIOLATION = '23505';
 
-function isTagCollision(error: unknown): boolean {
+function isUniqueViolation(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
   return code === UNIQUE_VIOLATION;
+}
+
+/**
+ * What to store for a rule the merchant typed.
+ *
+ * Values are stored as written rather than normalized, so the rules screen shows
+ * the merchant their own words back; normalization happens on both sides at
+ * comparison time. The one exception is a referrer host, where a merchant
+ * pastes the link they were given — `https://www.instagram.com/p/abc/` — and
+ * means the host it is on.
+ */
+function canonicalizeRuleValue(
+  field: CampaignRuleField,
+  value: string,
+): string {
+  const trimmed = value.trim();
+  if (field !== 'referrer_host') return trimmed;
+  return referrerHost(trimmed) ?? trimmed;
 }
 
 /**
@@ -108,7 +142,7 @@ export class CampaignService {
         });
         break;
       } catch (error) {
-        if (!isTagCollision(error)) throw error;
+        if (!isUniqueViolation(error)) throw error;
       }
     }
 
@@ -176,5 +210,125 @@ export class CampaignService {
     });
     if (!updated) throw new NotFoundException('Campaign not found');
     return updated;
+  }
+
+  // ─── Matching rules ─────────────────────────────────────────────────────────
+
+  /**
+   * The rules that teach a Campaign to recognise the links the merchant actually
+   * sent out — the canonical one it was created with, plus whatever variants
+   * their tagging turned out to use.
+   */
+  async listRules(
+    orgId: string,
+    storeId: string,
+    campaignId: string,
+  ): Promise<CampaignMatchingRule[]> {
+    await this.get(orgId, storeId, campaignId);
+    return this.campaigns.findRulesForCampaign(campaignId, orgId, storeId);
+  }
+
+  /**
+   * Adds a rule. Because matching compares normalized values, a rule is a
+   * duplicate when it *means* the same as an existing one, not only when it
+   * reads the same: `Summer_Sale` and `summer-sale` are one rule, and telling
+   * the merchant so is more use than storing a second row that can never win.
+   */
+  async addRule(
+    orgId: string,
+    storeId: string,
+    campaignId: string,
+    input: CreateCampaignRuleInput,
+  ): Promise<CampaignMatchingRule> {
+    await this.get(orgId, storeId, campaignId);
+
+    const value = canonicalizeRuleValue(input.field, input.value);
+    const normalized = normalizeMatchValue(value);
+    if (normalized === null) {
+      throw new BadRequestException(
+        'A rule value must contain at least one letter or number — punctuation alone can never match a visit.',
+      );
+    }
+
+    const existing = await this.campaigns.findRulesForCampaign(
+      campaignId,
+      orgId,
+      storeId,
+    );
+    const duplicate = existing.some(
+      (rule) =>
+        rule.field === input.field &&
+        rule.operator === input.operator &&
+        normalizeMatchValue(rule.value) === normalized,
+    );
+    if (duplicate) {
+      throw new ConflictException(
+        'This campaign already matches that value — matching ignores case, hyphens, underscores and spacing.',
+      );
+    }
+
+    try {
+      return await this.campaigns.createRule({
+        organizationId: orgId,
+        storeId,
+        campaignId,
+        field: input.field,
+        operator: input.operator,
+        value,
+        isCanonical: false,
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new ConflictException(
+          'This campaign already matches that value.',
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Removes a merchant-authored rule.
+   *
+   * The canonical rule is not among them: it matches the Campaign's own tag,
+   * which every link generated from the Campaign carries, so removing it would
+   * silently unattribute every ad already running under it.
+   */
+  async removeRule(
+    orgId: string,
+    storeId: string,
+    campaignId: string,
+    ruleId: string,
+  ): Promise<void> {
+    await this.get(orgId, storeId, campaignId);
+
+    const rule = await this.campaigns.findRuleById(
+      ruleId,
+      campaignId,
+      orgId,
+      storeId,
+    );
+    if (!rule) throw new NotFoundException('Matching rule not found');
+
+    if (rule.isCanonical) {
+      throw new ConflictException(
+        "A campaign's own tag rule cannot be removed — every link generated from this campaign carries that tag.",
+      );
+    }
+
+    await this.campaigns.deleteRule(ruleId, campaignId, orgId, storeId);
+  }
+
+  /**
+   * A matcher over every rule in one Store.
+   *
+   * Tenancy is enforced here, at the load: the matcher itself is pure and will
+   * faithfully match whatever rules it is handed, so the only thing standing
+   * between one merchant's traffic and another merchant's Campaigns is that this
+   * read is scoped to a single Organization and Store.
+   */
+  async buildMatcher(orgId: string, storeId: string): Promise<CampaignMatcher> {
+    const rules = await this.campaigns.findMatchableRules(orgId, storeId);
+    return createCampaignMatcher(rules);
   }
 }
