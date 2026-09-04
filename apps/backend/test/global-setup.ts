@@ -8,6 +8,7 @@
 import { Client } from 'pg';
 import { runMigrations } from '../src/shared/database/migrate';
 import {
+  TEST_ADMIN_EMAIL_DOMAIN,
   TEST_ORG_SLUG_PREFIX,
   databaseName,
   loadTestEnv,
@@ -47,10 +48,13 @@ export default async function globalSetup(): Promise<void> {
 }
 
 /**
- * Removes Organizations left behind by a run that died before its teardown.
- * Every tenant-scoped table cascades from organizations, so this is enough.
- * Without it a crashed run would leave rows that accumulate silently — the
- * suite is meant to need no manual cleanup, ever.
+ * Removes fixtures left behind by a run that died before its teardown. Without
+ * it a crashed run would leave rows that accumulate silently — the suite is
+ * meant to need no manual cleanup, ever.
+ *
+ * Organizations are enough for everything tenant-scoped, which cascades from
+ * them. Admin users are the exception: they are global identities carrying no
+ * `organization_id`, so they are swept by their reserved email domain.
  */
 async function sweepStaleFixtures(databaseUrl: string): Promise<void> {
   const client = new Client({ connectionString: databaseUrl });
@@ -58,6 +62,9 @@ async function sweepStaleFixtures(databaseUrl: string): Promise<void> {
   try {
     await client.query('DELETE FROM organizations WHERE slug LIKE $1', [
       `${TEST_ORG_SLUG_PREFIX}%`,
+    ]);
+    await client.query('DELETE FROM admin_users WHERE email LIKE $1', [
+      `%@${TEST_ADMIN_EMAIL_DOMAIN}`,
     ]);
   } finally {
     await client.end();

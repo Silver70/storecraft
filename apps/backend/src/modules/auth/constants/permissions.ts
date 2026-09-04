@@ -14,6 +14,8 @@ export const PERMISSIONS = {
   'customers.update': ['super_admin', 'support_agent'],
   'discounts.read': ['super_admin', 'product_manager'],
   'discounts.write': ['super_admin', 'product_manager'],
+  'campaigns.read': ['super_admin', 'product_manager'],
+  'campaigns.write': ['super_admin', 'product_manager'],
   'price_lists.read': ['super_admin', 'product_manager'],
   'price_lists.write': ['super_admin', 'product_manager'],
   'shipping.read': ['super_admin', 'product_manager'],

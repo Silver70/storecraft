@@ -16,6 +16,7 @@ import {
   UsersRoundIcon,
   PercentIcon,
   TagsIcon,
+  MegaphoneIcon,
   TruckIcon,
   SettingsIcon,
   ChevronsUpDownIcon,
@@ -39,6 +40,7 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
+  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
@@ -68,6 +70,12 @@ const primaryNav: NavItem[] = [
   },
   { title: "Discounts", url: "/admin/discounts", icon: PercentIcon },
   { title: "Price Lists", url: "/admin/price-lists", icon: TagsIcon },
+];
+
+// Campaigns are managed objects with full CRUD, like Discounts — not another
+// tab on the read-only Analytics page — so Marketing is its own section.
+const marketingNav: NavItem[] = [
+  { title: "Campaigns", url: "/admin/campaigns", icon: MegaphoneIcon },
 ];
 
 const secondaryNav: NavItem[] = [
@@ -147,6 +155,18 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <SidebarGroup>
           <SidebarMenu className="group-data-[collapsible=icon]:gap-1.5">
             {primaryNav.map((item) => (
+              <NavLink key={item.title} item={item} />
+            ))}
+          </SidebarMenu>
+        </SidebarGroup>
+
+        <SidebarSeparator />
+
+        {/* Marketing: Campaigns */}
+        <SidebarGroup>
+          <SidebarGroupLabel>Marketing</SidebarGroupLabel>
+          <SidebarMenu className="group-data-[collapsible=icon]:gap-1.5">
+            {marketingNav.map((item) => (
               <NavLink key={item.title} item={item} />
             ))}
           </SidebarMenu>

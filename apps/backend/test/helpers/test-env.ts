@@ -20,6 +20,15 @@ const BACKEND_ROOT = resolve(__dirname, '../..');
  */
 export const TEST_ORG_SLUG_PREFIX = 'e2e-test-';
 
+/**
+ * Admin users are global identities with no `organization_id`, so deleting a
+ * fixture's Organization does not cascade to them. Every admin the suite creates
+ * carries this email domain instead, which is what lets the sweep below find and
+ * remove the ones a crashed run left behind. `.invalid` is reserved by RFC 2606
+ * and can never be a real address.
+ */
+export const TEST_ADMIN_EMAIL_DOMAIN = 'e2e-test.invalid';
+
 const LOCAL_HOSTS = new Set([
   'localhost',
   '127.0.0.1',

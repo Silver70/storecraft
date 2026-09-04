@@ -33,6 +33,7 @@ import { Route as AdminPriceListsIndexRouteImport } from './routes/admin/price-l
 import { Route as AdminOrdersIndexRouteImport } from './routes/admin/orders_/index'
 import { Route as AdminDiscountsIndexRouteImport } from './routes/admin/discounts_/index'
 import { Route as AdminCustomersIndexRouteImport } from './routes/admin/customers_/index'
+import { Route as AdminCampaignsIndexRouteImport } from './routes/admin/campaigns_/index'
 import { Route as AdminProductsNewRouteImport } from './routes/admin/products_/new'
 import { Route as AdminProductsProductIdRouteImport } from './routes/admin/products_/$productId'
 import { Route as AdminPriceListsNewRouteImport } from './routes/admin/price-lists_/new'
@@ -42,6 +43,8 @@ import { Route as AdminOrdersOrderIdRouteImport } from './routes/admin/orders_/$
 import { Route as AdminDiscountsNewRouteImport } from './routes/admin/discounts_/new'
 import { Route as AdminDiscountsDiscountIdRouteImport } from './routes/admin/discounts_/$discountId'
 import { Route as AdminCustomersCustomerIdRouteImport } from './routes/admin/customers_/$customerId'
+import { Route as AdminCampaignsNewRouteImport } from './routes/admin/campaigns_/new'
+import { Route as AdminCampaignsCampaignIdRouteImport } from './routes/admin/campaigns_/$campaignId'
 
 const OnboardingRouteRoute = OnboardingRouteRouteImport.update({
   id: '/onboarding',
@@ -163,6 +166,11 @@ const AdminCustomersIndexRoute = AdminCustomersIndexRouteImport.update({
   path: '/customers/',
   getParentRoute: () => AdminRouteRoute,
 } as any)
+const AdminCampaignsIndexRoute = AdminCampaignsIndexRouteImport.update({
+  id: '/campaigns_/',
+  path: '/campaigns/',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
 const AdminProductsNewRoute = AdminProductsNewRouteImport.update({
   id: '/products_/new',
   path: '/products/new',
@@ -211,6 +219,17 @@ const AdminCustomersCustomerIdRoute =
     path: '/customers/$customerId',
     getParentRoute: () => AdminRouteRoute,
   } as any)
+const AdminCampaignsNewRoute = AdminCampaignsNewRouteImport.update({
+  id: '/campaigns_/new',
+  path: '/campaigns/new',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
+const AdminCampaignsCampaignIdRoute =
+  AdminCampaignsCampaignIdRouteImport.update({
+    id: '/campaigns_/$campaignId',
+    path: '/campaigns/$campaignId',
+    getParentRoute: () => AdminRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -232,6 +251,8 @@ export interface FileRoutesByFullPath {
   '/onboarding/step1': typeof OnboardingStep1Route
   '/onboarding/step2': typeof OnboardingStep2Route
   '/onboarding/step3': typeof OnboardingStep3Route
+  '/admin/campaigns/$campaignId': typeof AdminCampaignsCampaignIdRoute
+  '/admin/campaigns/new': typeof AdminCampaignsNewRoute
   '/admin/customers/$customerId': typeof AdminCustomersCustomerIdRoute
   '/admin/discounts/$discountId': typeof AdminDiscountsDiscountIdRoute
   '/admin/discounts/new': typeof AdminDiscountsNewRoute
@@ -241,6 +262,7 @@ export interface FileRoutesByFullPath {
   '/admin/price-lists/new': typeof AdminPriceListsNewRoute
   '/admin/products/$productId': typeof AdminProductsProductIdRoute
   '/admin/products/new': typeof AdminProductsNewRoute
+  '/admin/campaigns/': typeof AdminCampaignsIndexRoute
   '/admin/customers/': typeof AdminCustomersIndexRoute
   '/admin/discounts/': typeof AdminDiscountsIndexRoute
   '/admin/orders/': typeof AdminOrdersIndexRoute
@@ -267,6 +289,8 @@ export interface FileRoutesByTo {
   '/onboarding/step1': typeof OnboardingStep1Route
   '/onboarding/step2': typeof OnboardingStep2Route
   '/onboarding/step3': typeof OnboardingStep3Route
+  '/admin/campaigns/$campaignId': typeof AdminCampaignsCampaignIdRoute
+  '/admin/campaigns/new': typeof AdminCampaignsNewRoute
   '/admin/customers/$customerId': typeof AdminCustomersCustomerIdRoute
   '/admin/discounts/$discountId': typeof AdminDiscountsDiscountIdRoute
   '/admin/discounts/new': typeof AdminDiscountsNewRoute
@@ -276,6 +300,7 @@ export interface FileRoutesByTo {
   '/admin/price-lists/new': typeof AdminPriceListsNewRoute
   '/admin/products/$productId': typeof AdminProductsProductIdRoute
   '/admin/products/new': typeof AdminProductsNewRoute
+  '/admin/campaigns': typeof AdminCampaignsIndexRoute
   '/admin/customers': typeof AdminCustomersIndexRoute
   '/admin/discounts': typeof AdminDiscountsIndexRoute
   '/admin/orders': typeof AdminOrdersIndexRoute
@@ -303,6 +328,8 @@ export interface FileRoutesById {
   '/onboarding/step1': typeof OnboardingStep1Route
   '/onboarding/step2': typeof OnboardingStep2Route
   '/onboarding/step3': typeof OnboardingStep3Route
+  '/admin/campaigns_/$campaignId': typeof AdminCampaignsCampaignIdRoute
+  '/admin/campaigns_/new': typeof AdminCampaignsNewRoute
   '/admin/customers_/$customerId': typeof AdminCustomersCustomerIdRoute
   '/admin/discounts_/$discountId': typeof AdminDiscountsDiscountIdRoute
   '/admin/discounts_/new': typeof AdminDiscountsNewRoute
@@ -312,6 +339,7 @@ export interface FileRoutesById {
   '/admin/price-lists_/new': typeof AdminPriceListsNewRoute
   '/admin/products_/$productId': typeof AdminProductsProductIdRoute
   '/admin/products_/new': typeof AdminProductsNewRoute
+  '/admin/campaigns_/': typeof AdminCampaignsIndexRoute
   '/admin/customers_/': typeof AdminCustomersIndexRoute
   '/admin/discounts_/': typeof AdminDiscountsIndexRoute
   '/admin/orders_/': typeof AdminOrdersIndexRoute
@@ -340,6 +368,8 @@ export interface FileRouteTypes {
     | '/onboarding/step1'
     | '/onboarding/step2'
     | '/onboarding/step3'
+    | '/admin/campaigns/$campaignId'
+    | '/admin/campaigns/new'
     | '/admin/customers/$customerId'
     | '/admin/discounts/$discountId'
     | '/admin/discounts/new'
@@ -349,6 +379,7 @@ export interface FileRouteTypes {
     | '/admin/price-lists/new'
     | '/admin/products/$productId'
     | '/admin/products/new'
+    | '/admin/campaigns/'
     | '/admin/customers/'
     | '/admin/discounts/'
     | '/admin/orders/'
@@ -375,6 +406,8 @@ export interface FileRouteTypes {
     | '/onboarding/step1'
     | '/onboarding/step2'
     | '/onboarding/step3'
+    | '/admin/campaigns/$campaignId'
+    | '/admin/campaigns/new'
     | '/admin/customers/$customerId'
     | '/admin/discounts/$discountId'
     | '/admin/discounts/new'
@@ -384,6 +417,7 @@ export interface FileRouteTypes {
     | '/admin/price-lists/new'
     | '/admin/products/$productId'
     | '/admin/products/new'
+    | '/admin/campaigns'
     | '/admin/customers'
     | '/admin/discounts'
     | '/admin/orders'
@@ -410,6 +444,8 @@ export interface FileRouteTypes {
     | '/onboarding/step1'
     | '/onboarding/step2'
     | '/onboarding/step3'
+    | '/admin/campaigns_/$campaignId'
+    | '/admin/campaigns_/new'
     | '/admin/customers_/$customerId'
     | '/admin/discounts_/$discountId'
     | '/admin/discounts_/new'
@@ -419,6 +455,7 @@ export interface FileRouteTypes {
     | '/admin/price-lists_/new'
     | '/admin/products_/$productId'
     | '/admin/products_/new'
+    | '/admin/campaigns_/'
     | '/admin/customers_/'
     | '/admin/discounts_/'
     | '/admin/orders_/'
@@ -603,6 +640,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminCustomersIndexRouteImport
       parentRoute: typeof AdminRouteRoute
     }
+    '/admin/campaigns_/': {
+      id: '/admin/campaigns_/'
+      path: '/campaigns'
+      fullPath: '/admin/campaigns/'
+      preLoaderRoute: typeof AdminCampaignsIndexRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
     '/admin/products_/new': {
       id: '/admin/products_/new'
       path: '/products/new'
@@ -666,6 +710,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminCustomersCustomerIdRouteImport
       parentRoute: typeof AdminRouteRoute
     }
+    '/admin/campaigns_/new': {
+      id: '/admin/campaigns_/new'
+      path: '/campaigns/new'
+      fullPath: '/admin/campaigns/new'
+      preLoaderRoute: typeof AdminCampaignsNewRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
+    '/admin/campaigns_/$campaignId': {
+      id: '/admin/campaigns_/$campaignId'
+      path: '/campaigns/$campaignId'
+      fullPath: '/admin/campaigns/$campaignId'
+      preLoaderRoute: typeof AdminCampaignsCampaignIdRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
   }
 }
 
@@ -677,6 +735,8 @@ interface AdminRouteRouteChildren {
   AdminInventoryRoute: typeof AdminInventoryRoute
   AdminSettingsRoute: typeof AdminSettingsRoute
   AdminShippingRoute: typeof AdminShippingRoute
+  AdminCampaignsCampaignIdRoute: typeof AdminCampaignsCampaignIdRoute
+  AdminCampaignsNewRoute: typeof AdminCampaignsNewRoute
   AdminCustomersCustomerIdRoute: typeof AdminCustomersCustomerIdRoute
   AdminDiscountsDiscountIdRoute: typeof AdminDiscountsDiscountIdRoute
   AdminDiscountsNewRoute: typeof AdminDiscountsNewRoute
@@ -686,6 +746,7 @@ interface AdminRouteRouteChildren {
   AdminPriceListsNewRoute: typeof AdminPriceListsNewRoute
   AdminProductsProductIdRoute: typeof AdminProductsProductIdRoute
   AdminProductsNewRoute: typeof AdminProductsNewRoute
+  AdminCampaignsIndexRoute: typeof AdminCampaignsIndexRoute
   AdminCustomersIndexRoute: typeof AdminCustomersIndexRoute
   AdminDiscountsIndexRoute: typeof AdminDiscountsIndexRoute
   AdminOrdersIndexRoute: typeof AdminOrdersIndexRoute
@@ -701,6 +762,8 @@ const AdminRouteRouteChildren: AdminRouteRouteChildren = {
   AdminInventoryRoute: AdminInventoryRoute,
   AdminSettingsRoute: AdminSettingsRoute,
   AdminShippingRoute: AdminShippingRoute,
+  AdminCampaignsCampaignIdRoute: AdminCampaignsCampaignIdRoute,
+  AdminCampaignsNewRoute: AdminCampaignsNewRoute,
   AdminCustomersCustomerIdRoute: AdminCustomersCustomerIdRoute,
   AdminDiscountsDiscountIdRoute: AdminDiscountsDiscountIdRoute,
   AdminDiscountsNewRoute: AdminDiscountsNewRoute,
@@ -710,6 +773,7 @@ const AdminRouteRouteChildren: AdminRouteRouteChildren = {
   AdminPriceListsNewRoute: AdminPriceListsNewRoute,
   AdminProductsProductIdRoute: AdminProductsProductIdRoute,
   AdminProductsNewRoute: AdminProductsNewRoute,
+  AdminCampaignsIndexRoute: AdminCampaignsIndexRoute,
   AdminCustomersIndexRoute: AdminCustomersIndexRoute,
   AdminDiscountsIndexRoute: AdminDiscountsIndexRoute,
   AdminOrdersIndexRoute: AdminOrdersIndexRoute,

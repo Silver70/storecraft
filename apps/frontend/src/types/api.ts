@@ -318,6 +318,52 @@ export type Coupon = {
   updatedAt: string;
 };
 
+// ─── Campaigns ────────────────────────────────────────────────────────────────
+
+/**
+ * Kept in sync with the `campaign_platform` enum in the backend schema. Adding
+ * one is an `ALTER TYPE ... ADD VALUE` there and a line here.
+ */
+export const CAMPAIGN_PLATFORMS = [
+  "meta",
+  "google",
+  "tiktok",
+  "instagram",
+  "youtube",
+  "x",
+  "linkedin",
+  "pinterest",
+  "email",
+  "sms",
+  "affiliate",
+  "influencer",
+  "other",
+] as const;
+
+export type CampaignPlatform = (typeof CAMPAIGN_PLATFORMS)[number];
+
+/** There is no deleted state — a campaign explains orders already reported. */
+export type CampaignStatus = "active" | "archived";
+
+// Raw campaigns row from backend
+export type Campaign = {
+  id: string;
+  organizationId: string;
+  storeId: string;
+  name: string;
+  /**
+   * The canonical `utm_campaign` value. Assigned at creation, unique within the
+   * store, and unchanged by a rename so links already live keep matching.
+   */
+  tag: string;
+  platform: CampaignPlatform;
+  externalId: string | null;
+  status: CampaignStatus;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 // ─── Price Lists ──────────────────────────────────────────────────────────────
 
 export type PriceListType = "fixed" | "adjustment";

@@ -64,6 +64,13 @@
       "when": 1788495965898,
       "tag": "0008_attribution_on_cart_and_order",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788498194919,
+      "tag": "0009_campaigns_and_matching_rules",
+      "breakpoints": true
     }
   ]
 }
