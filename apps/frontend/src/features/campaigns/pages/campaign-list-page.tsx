@@ -54,7 +54,7 @@ export function CampaignListPage() {
           <Button variant="outline" className="gap-2 px-4 py-2.5" asChild>
             <Link to="/admin/campaigns/revenue">
               <ChartColumnIcon className="h-4 w-4" />
-              Attributed revenue
+              Performance
             </Link>
           </Button>
           <Button className="gap-2 px-5 py-2.5" asChild>

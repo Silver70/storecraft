@@ -501,6 +501,29 @@ export type CampaignRevenueLine = RevenueBucket & {
   tag: string;
   platform: CampaignPlatform;
   status: CampaignStatus;
+  /**
+   * Spend recorded for the period, in the smallest currency unit. Zero for a
+   * campaign nobody recorded a cost against.
+   */
+  spend: number;
+  /**
+   * Revenue over spend, to two decimal places. A **ratio**, not money — 4.25
+   * means $4.25 back per dollar spent, so it is never passed through the money
+   * formatter. Null when nothing was spent: an organic or email campaign has no
+   * return *on spend*, and a zero would rank it as a failure while an infinity
+   * would rank it as the best thing in the account.
+   */
+  roas: number | null;
+};
+
+/** Every campaign line summed, and the ratio between the two sums. */
+export type BlendedPerformance = {
+  /** Smallest currency unit. */
+  revenue: number;
+  /** Smallest currency unit. */
+  spend: number;
+  /** A ratio, not money. Null when nothing was spent anywhere. */
+  roas: number | null;
 };
 
 export type AttributedRevenueReport = {
@@ -514,6 +537,18 @@ export type AttributedRevenueReport = {
   rangeStart: string;
   rangeEnd: string;
   campaigns: CampaignRevenueLine[];
+  /**
+   * The inclusive calendar days spend was counted over, in the store's
+   * timezone. Spend is recorded per day and revenue to the second, so the two
+   * windows are named separately rather than assumed to be the same shape.
+   */
+  spendFrom: string;
+  spendTo: string;
+  /**
+   * The account as a whole. Unattributed is not part of it — nobody spent
+   * against a bucket that has no campaign.
+   */
+  blended: BlendedPerformance;
   /** Its own line. Never spread across the campaigns above. */
   unattributed: RevenueBucket;
   /** Attributed plus unattributed — the period's realized revenue. */

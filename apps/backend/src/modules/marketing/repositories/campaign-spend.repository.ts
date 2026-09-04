@@ -60,6 +60,45 @@ export class CampaignSpendRepository {
       .orderBy(asc(campaignSpend.day));
   }
 
+  /**
+   * Total Spend per Campaign for an inclusive range of calendar days, for the
+   * whole Store.
+   *
+   * Summed in SQL rather than by loading every row: the report needs one figure
+   * per Campaign, and a period of 90 days across a Store's Campaigns is a page
+   * of rows nobody looks at. Campaigns with no Spend in the range are simply
+   * absent from the map — the caller reads that as zero, which is the same
+   * answer without inventing rows.
+   *
+   * `::int` because the column is an integer in minor units and Postgres sums
+   * integers as `bigint`, which reaches the driver as a string. The cast keeps
+   * the money a number all the way through, as every other summed money column
+   * in this codebase does.
+   */
+  async sumByCampaign(
+    orgId: string,
+    storeId: string,
+    from: SpendDay,
+    to: SpendDay,
+  ): Promise<Map<string, number>> {
+    const rows = await this.db
+      .select({
+        campaignId: campaignSpend.campaignId,
+        amount: sql<number>`coalesce(sum(${campaignSpend.amount}), 0)::int`,
+      })
+      .from(campaignSpend)
+      .where(
+        and(
+          eq(campaignSpend.organizationId, orgId),
+          eq(campaignSpend.storeId, storeId),
+          between(campaignSpend.day, from, to),
+        ),
+      )
+      .groupBy(campaignSpend.campaignId);
+
+    return new Map(rows.map((row) => [row.campaignId, row.amount]));
+  }
+
   async findById(
     id: string,
     campaignId: string,

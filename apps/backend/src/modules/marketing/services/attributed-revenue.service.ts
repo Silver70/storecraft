@@ -1,11 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
   CampaignPlatform,
   CampaignStatus,
 } from '../../../shared/database/schema';
 import { resolveLookbackDays } from '../../../shared/attribution/lookback';
+import { StoreService } from '../../tenant/services/store.service';
 import { CampaignRepository } from '../repositories/campaign.repository';
+import { CampaignSpendRepository } from '../repositories/campaign-spend.repository';
 import {
   AttributionRepository,
   type AttributionTouch,
@@ -19,6 +21,12 @@ import {
   tallyAttributedRevenue,
   type RevenueBucket,
 } from '../utils/attributed-revenue.util';
+import { spendDayRange } from '../utils/spend-day.util';
+import {
+  blendPerformance,
+  roasFor,
+  type BlendedPerformance,
+} from '../utils/performance.util';
 
 export type { AttributionTouch, AttributionPeriod };
 
@@ -31,6 +39,17 @@ export interface CampaignRevenueLine {
   orders: number;
   /** In the smallest currency unit. Never formatted here. */
   revenue: number;
+  /**
+   * Spend recorded against this Campaign for the period, in the smallest
+   * currency unit. Zero for a Campaign nobody recorded a cost against.
+   */
+  spend: number;
+  /**
+   * Revenue over Spend, to two decimal places. A **ratio**, not money — 4.25
+   * means $4.25 back per dollar spent — so the integer-cents rule does not
+   * apply to it. Null when nothing was spent: see `roasFor`.
+   */
+  roas: number | null;
 }
 
 export interface AttributedRevenueReport {
@@ -45,6 +64,18 @@ export interface AttributedRevenueReport {
   rangeStart: string;
   rangeEnd: string;
   campaigns: CampaignRevenueLine[];
+  /**
+   * The inclusive calendar day range Spend was counted over, in the Store's
+   * timezone. Spend is recorded per day while revenue is recorded to the
+   * second, so the two windows are named separately rather than implied.
+   */
+  spendFrom: string;
+  spendTo: string;
+  /**
+   * Every Campaign line summed, with the ROAS of the two sums. Unattributed is
+   * not part of it — nobody spent against a bucket that has no Campaign.
+   */
+  blended: BlendedPerformance;
   /** Its own line. Never redistributed across the campaigns above. */
   unattributed: RevenueBucket;
   /** Attributed plus unattributed — the period's realized revenue. */
@@ -54,8 +85,8 @@ export interface AttributedRevenueReport {
 const EMPTY: RevenueBucket = { orders: 0, revenue: 0 };
 
 /**
- * Revenue and Order count per Campaign for a period — the question this whole
- * feature exists to answer.
+ * What each Campaign returned for a period, and what it cost — the question
+ * this whole feature exists to answer.
  *
  * Nothing is precomputed. Every read loads the period's Orders and the Store's
  * matching rules and resolves one against the other, which is what makes a
@@ -63,6 +94,11 @@ const EMPTY: RevenueBucket = { orders: 0, revenue: 0 };
  * repair the report rather than only changing what happens next. The cost is a
  * scan per read, traded deliberately for that correctness (ADR-0001); if it
  * ever matters, a resolved-campaign cache column is a rebuildable optimization.
+ *
+ * **Revenue is untouched by the cost figures.** It is still the Order-total
+ * basis Stage 1 reported, computed by the same tally over the same rows, so the
+ * two stages reconcile and adding Spend moves nobody's revenue numbers. Spend
+ * is read alongside it and divided into it; it is never subtracted from it.
  */
 @Injectable()
 export class AttributedRevenueService {
@@ -71,6 +107,8 @@ export class AttributedRevenueService {
   constructor(
     private readonly campaigns: CampaignRepository,
     private readonly attribution: AttributionRepository,
+    private readonly spend: CampaignSpendRepository,
+    private readonly stores: StoreService,
     config: ConfigService,
   ) {
     this.lookbackDays = resolveLookbackDays(
@@ -86,20 +124,33 @@ export class AttributedRevenueService {
   ): Promise<AttributedRevenueReport> {
     const { start, end } = resolvePeriodRange(period);
 
-    // Tenancy is enforced on all three reads. The matcher itself is pure and
+    // Spend is a calendar date and revenue is an instant, so the period has to
+    // be read as days as well. Converted from the same `[start, end)` the
+    // orders are read over rather than resolved a second way: two definitions
+    // of "the last 30 days" that disagreed by an hour would make a Campaign's
+    // Spend and its revenue describe different windows, and the ratio between
+    // them would be wrong in a way nothing could detect.
+    const store = await this.stores.findById(storeId, orgId);
+    if (!store) throw new NotFoundException('Store not found');
+    const { from, to } = spendDayRange(start, end, store.timezone);
+
+    // Tenancy is enforced on all four reads. The matcher itself is pure and
     // will faithfully match whatever rules it is handed, so a Store's rules
     // never meeting another Store's orders is a property of this method.
-    const [campaignRows, rules, orderRows] = await Promise.all([
-      this.campaigns.findMany(orgId, storeId),
-      this.campaigns.findMatchableRules(orgId, storeId),
-      this.attribution.findAttributableOrders(
-        orgId,
-        storeId,
-        touch,
-        start,
-        end,
-      ),
-    ]);
+    const [campaignRows, rules, orderRows, spendByCampaign] = await Promise.all(
+      [
+        this.campaigns.findMany(orgId, storeId),
+        this.campaigns.findMatchableRules(orgId, storeId),
+        this.attribution.findAttributableOrders(
+          orgId,
+          storeId,
+          touch,
+          start,
+          end,
+        ),
+        this.spend.sumByCampaign(orgId, storeId, from, to),
+      ],
+    );
 
     const tally = tallyAttributedRevenue(
       orderRows,
@@ -107,19 +158,22 @@ export class AttributedRevenueService {
       this.lookbackDays,
     );
 
-    // An archived campaign appears only if it earned something in the period —
-    // it keeps explaining the orders it drove without cluttering the report
-    // forever. An active one appears at zero, because "this push produced
-    // nothing" is exactly what a merchant is reading the report to find out.
+    // Three reasons to appear, and the third is the point of the cost report:
+    // an archived Campaign that quietly spent money in the period must not
+    // vanish from it. Archived and silent, it stays out — it keeps explaining
+    // the orders it drove without cluttering the report forever. An active one
+    // appears at zero, because "this push produced nothing" is exactly what a
+    // merchant is reading the report to find out.
     const campaigns = campaignRows
       .map((campaign) => ({
         campaign,
         bucket: tally.byCampaign.get(campaign.id) ?? EMPTY,
+        spend: spendByCampaign.get(campaign.id) ?? 0,
       }))
-      .filter(({ campaign, bucket }) => {
-        return campaign.status === 'active' || bucket.orders > 0;
+      .filter(({ campaign, bucket, spend }) => {
+        return campaign.status === 'active' || bucket.orders > 0 || spend > 0;
       })
-      .map(({ campaign, bucket }) => ({
+      .map(({ campaign, bucket, spend }) => ({
         campaignId: campaign.id,
         name: campaign.name,
         tag: campaign.tag,
@@ -127,10 +181,17 @@ export class AttributedRevenueService {
         status: campaign.status,
         orders: bucket.orders,
         revenue: bucket.revenue,
+        spend,
+        roas: roasFor(bucket.revenue, spend),
       }))
+      // Spend breaks the tie before order count does, so among the lines that
+      // earned nothing the ones burning money sort above the ones that are
+      // merely idle. That row is the most actionable in an ad account and it
+      // should not be found at the bottom of a list of empty Campaigns.
       .sort(
         (a, b) =>
           b.revenue - a.revenue ||
+          b.spend - a.spend ||
           b.orders - a.orders ||
           a.name.localeCompare(b.name),
       );
@@ -142,6 +203,11 @@ export class AttributedRevenueService {
       rangeStart: start.toISOString(),
       rangeEnd: end.toISOString(),
       campaigns,
+      spendFrom: from,
+      spendTo: to,
+      // Summed from the lines the report actually shows, so the totals on
+      // screen are the totals of what is on screen.
+      blended: blendPerformance(campaigns),
       unattributed: tally.unattributed,
       totals: tally.totals,
     };

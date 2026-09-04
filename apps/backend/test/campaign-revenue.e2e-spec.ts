@@ -13,6 +13,12 @@
  * their Orders, a matching rule added today repairs yesterday's report, and
  * switching between First and Last Touch is a different answer from the same
  * rows rather than a migration.
+ *
+ * The report is also a cost report. Spend is recorded through the admin API the
+ * way a merchant records it, and what is asserted is what they would read off
+ * the screen: the ratio between the two halves, the absence of a ratio where
+ * there was no cost, and the Campaign that spent money and earned nothing being
+ * on the page at all.
  */
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
@@ -73,6 +79,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const daysAgo = (days: number) =>
   new Date(Date.now() - days * DAY_MS).toISOString();
 
+/**
+ * The same instant as a calendar day. The seeded store's timezone is UTC, which
+ * is the timezone the API reads a spend day in, so the two agree.
+ */
+const dayAgo = (days: number): string => daysAgo(days).slice(0, 10);
+
 /** A user agent the ingest classifier recognises as a crawler. */
 const CRAWLER_UA =
   'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)';
@@ -87,6 +99,16 @@ interface CampaignRevenueLine extends RevenueBucket {
   name: string;
   tag: string;
   status: string;
+  /** Spend recorded for the period, in the smallest currency unit. */
+  spend: number;
+  /** A ratio, not money. Null when nothing was spent. */
+  roas: number | null;
+}
+
+interface BlendedPerformance {
+  revenue: number;
+  spend: number;
+  roas: number | null;
 }
 
 interface AttributedRevenueReport {
@@ -95,7 +117,10 @@ interface AttributedRevenueReport {
   lookbackDays: number;
   rangeStart: string;
   rangeEnd: string;
+  spendFrom: string;
+  spendTo: string;
   campaigns: CampaignRevenueLine[];
+  blended: BlendedPerformance;
   unattributed: RevenueBucket;
   totals: RevenueBucket;
 }
@@ -194,6 +219,22 @@ describe('Attributed revenue by campaign (e2e)', () => {
       .post('/campaigns', { name, platform: 'meta' })
       .expect(201);
     return res.body as { id: string; tag: string; name: string };
+  }
+
+  /** Records one day's spend the way the campaign page does. */
+  async function recordSpend(
+    campaignId: string,
+    amount: number,
+    day: string = dayAgo(0),
+    as: AdminUserFixture = admin,
+  ): Promise<void> {
+    await as.client
+      .post(`/campaigns/${campaignId}/spend`, {
+        day,
+        amount,
+        currency: 'USD',
+      })
+      .expect(201);
   }
 
   async function readReport(
@@ -452,26 +493,206 @@ describe('Attributed revenue by campaign (e2e)', () => {
         otherAdmin,
       );
 
+      // And their costs are as separate as their revenue.
+      await recordSpend(summer.id, 1_000);
+      await recordSpend(otherSummer.id, 50_000, dayAgo(0), otherAdmin);
+
       const mine = await readReport();
       expect(lineFor(mine, summer.id)).toMatchObject({
         orders: 1,
         revenue: ORDER_TOTAL,
+        spend: 1_000,
       });
       expect(lineFor(mine, otherSummer.id)).toBeUndefined();
       expect(mine.totals).toEqual({ orders: 1, revenue: ORDER_TOTAL });
+      expect(mine.blended.spend).toBe(1_000);
 
       const theirs = await readReport('last', otherAdmin);
       expect(lineFor(theirs, otherSummer.id)).toMatchObject({
         orders: 1,
         revenue: ORDER_TOTAL,
+        spend: 50_000,
       });
       expect(lineFor(theirs, summer.id)).toBeUndefined();
       expect(theirs.totals).toEqual({ orders: 1, revenue: ORDER_TOTAL });
+      expect(theirs.blended.spend).toBe(50_000);
     } finally {
       await destroyStorefront(app, other.organizationId);
       await destroyAdminUsers(app, [otherAdmin.id]);
     }
   });
+  // ─── Spend and ROAS ─────────────────────────────────────────────────────────
+
+  it('reports the spend recorded for the period beside the revenue it earned', async () => {
+    const summer = await createCampaign('Summer Sale');
+
+    await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
+    await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
+    await placeOrder();
+
+    // $15 spent against $60 earned.
+    await recordSpend(summer.id, 1500);
+
+    const report = await readReport();
+
+    expect(lineFor(report, summer.id)).toMatchObject({
+      orders: 2,
+      revenue: ORDER_TOTAL * 2,
+      spend: 1500,
+      roas: 4,
+    });
+
+    // A ratio, not money. 400 would be this figure "corrected" into cents.
+    expect(lineFor(report, summer.id)!.roas).not.toBe(400);
+
+    // Unattributed keeps its own line, carries neither figure, and is still
+    // never spread across the campaigns above it.
+    expect(report.unattributed).toEqual({ orders: 1, revenue: ORDER_TOTAL });
+
+    // Blended across every campaign line — the account as a whole. Unattributed
+    // revenue is not part of it: nobody spent against a bucket with no campaign.
+    expect(report.blended).toEqual({
+      revenue: ORDER_TOTAL * 2,
+      spend: 1500,
+      roas: 4,
+    });
+  });
+
+  it('reports no roas at all for a campaign nobody spent against', async () => {
+    // The organic and email case. A zero would rank it as a failure and an
+    // infinity as the best thing in the account; it is neither.
+    const newsletter = await createCampaign('November Newsletter');
+
+    await placeOrder({ lastTouch: { utmCampaign: newsletter.tag } });
+
+    const report = await readReport();
+
+    expect(lineFor(report, newsletter.id)).toMatchObject({
+      revenue: ORDER_TOTAL,
+      spend: 0,
+      roas: null,
+    });
+    expect(report.blended).toEqual({
+      revenue: ORDER_TOTAL,
+      spend: 0,
+      roas: null,
+    });
+  });
+
+  it('shows an archived campaign that spent money and earned nothing', async () => {
+    // The most actionable row in an ad account, and the one the revenue-only
+    // report could not represent: archived, so it fails the active test, and
+    // earning nothing, so it fails the revenue test.
+    const burning = await createCampaign('Burning Budget');
+    const finished = await createCampaign('Finished Push');
+
+    await recordSpend(burning.id, 25_000);
+    await admin.client.post(`/campaigns/${burning.id}/archive`).expect(201);
+    await admin.client.post(`/campaigns/${finished.id}/archive`).expect(201);
+
+    const report = await readReport();
+
+    expect(lineFor(report, burning.id)).toMatchObject({
+      status: 'archived',
+      orders: 0,
+      revenue: 0,
+      spend: 25_000,
+      // A real zero, not an absence: money went out and nothing came back.
+      roas: 0,
+    });
+
+    // The control. Archived, silent, and cost nothing — it stays off the report
+    // rather than cluttering it forever.
+    expect(lineFor(report, finished.id)).toBeUndefined();
+  });
+
+  it('counts only the spend recorded inside the period', async () => {
+    const summer = await createCampaign('Summer Sale');
+
+    await recordSpend(summer.id, 1000);
+    // Two months ago: real spend, outside the 30-day window being read.
+    await recordSpend(summer.id, 999_99, dayAgo(60));
+
+    const report = await readReport();
+
+    expect(lineFor(report, summer.id)).toMatchObject({ spend: 1000 });
+
+    // The calendar days the spend half of the report covers are the same
+    // `[start, end)` the orders were read over, converted to days in the
+    // store's timezone — which the fixture seeds as UTC. Two windows that
+    // disagreed by an hour would divide one period's cost into another's
+    // revenue, and nothing would ever throw.
+    expect(report.spendFrom).toBe(report.rangeStart.slice(0, 10));
+    expect(report.spendTo).toBe(report.rangeEnd.slice(0, 10));
+    expect(report.spendTo).toBe(dayAgo(0));
+  });
+
+  it('leaves revenue exactly as it was before any spend was recorded', async () => {
+    const summer = await createCampaign('Summer Sale');
+
+    await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
+    await placeOrder();
+
+    const before = await readReport();
+    await recordSpend(summer.id, 4_000);
+    const after = await readReport();
+
+    // Cost is divided into revenue, never subtracted from it.
+    expect(
+      after.campaigns.map((c) => [c.campaignId, c.orders, c.revenue]),
+    ).toEqual(before.campaigns.map((c) => [c.campaignId, c.orders, c.revenue]));
+    expect(after.unattributed).toEqual(before.unattributed);
+    expect(after.totals).toEqual(before.totals);
+
+    // And still the same revenue the sales reporting has for the period, which
+    // is what makes the two stages reconcile.
+    const stats = await admin.client
+      .get('/dashboard/stats?period=30d')
+      .expect(200);
+    const { revenue } = stats.body as { revenue: { current: number } };
+    expect(after.totals.revenue).toBe(revenue.current);
+  });
+
+  it('recomputes roas from the same rows when the touch changes', async () => {
+    const discovery = await createCampaign('Discovery Push');
+    const closer = await createCampaign('Retargeting Push');
+
+    await placeOrder({
+      firstTouch: { utmCampaign: discovery.tag, occurredAt: daysAgo(7) },
+      lastTouch: { utmCampaign: closer.tag, occurredAt: daysAgo(1) },
+    });
+
+    await recordSpend(discovery.id, 1000);
+    await recordSpend(closer.id, ORDER_TOTAL);
+
+    const byFirst = await readReport('first');
+    expect(lineFor(byFirst, discovery.id)).toMatchObject({
+      revenue: ORDER_TOTAL,
+      spend: 1000,
+      roas: 3,
+    });
+    expect(lineFor(byFirst, closer.id)).toMatchObject({
+      revenue: 0,
+      spend: ORDER_TOTAL,
+      roas: 0,
+    });
+
+    // Same orders, same spend rows, a different reading of both.
+    const byLast = await readReport('last');
+    expect(lineFor(byLast, closer.id)).toMatchObject({
+      revenue: ORDER_TOTAL,
+      spend: ORDER_TOTAL,
+      roas: 1,
+    });
+    expect(lineFor(byLast, discovery.id)).toMatchObject({
+      revenue: 0,
+      spend: 1000,
+      roas: 0,
+    });
+
+    expect(byLast.blended.spend).toBe(byFirst.blended.spend);
+  });
+
   // ─── Links generated in the admin ───────────────────────────────────────────
 
   /**

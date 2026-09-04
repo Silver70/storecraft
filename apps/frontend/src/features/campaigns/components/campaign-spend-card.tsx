@@ -85,10 +85,18 @@ function countDays(from: string, to: string): number {
     return span < 0 ? 0 : Math.round(span / DAY_MS) + 1;
 }
 
-/** Every period of this campaign's spend, since a write can land in any of them. */
+/**
+ * Every period of this campaign's spend, since a write can land in any of them,
+ * and the performance report beside it — that report divides spend into revenue
+ * now, so a figure typed here is stale there the moment it is saved.
+ */
 function useInvalidateSpend(campaignId: string) {
     const queryClient = useQueryClient();
-    return () => queryClient.invalidateQueries({ queryKey: ["campaigns", "detail", campaignId, "spend"] });
+    return () =>
+        Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["campaigns", "detail", campaignId, "spend"] }),
+            queryClient.invalidateQueries({ queryKey: ["campaigns", "revenue"] }),
+        ]);
 }
 
 /** Which of the two entry forms is showing. */

@@ -33,9 +33,9 @@ export class AdminAttributionController {
   @Get('attributed-revenue')
   @RequirePermission('campaigns.read')
   @ApiOperation({
-    summary: 'Attributed revenue and order count by campaign',
+    summary: 'Attributed revenue, spend and ROAS by campaign',
     description:
-      "Resolves each order in the period to a campaign by running the store's matching rules against the touch it froze at checkout, so a campaign created after its ads ran still claims them and a corrected rule repairs history. Unattributed is its own bucket and is never spread across campaigns. Touches older than the returned lookback window, and visitors the event log classified as bots, receive no credit but still count in the totals — which reconcile with the dashboard and analytics sales figures for the same period. Revenue is in the smallest currency unit.",
+      "Resolves each order in the period to a campaign by running the store's matching rules against the touch it froze at checkout, so a campaign created after its ads ran still claims them and a corrected rule repairs history. Unattributed is its own bucket, is never spread across campaigns, and carries no spend or ROAS. Touches older than the returned lookback window, and visitors the event log classified as bots, receive no credit but still count in the totals — which reconcile with the dashboard and analytics sales figures for the same period. Revenue is in the smallest currency unit and is unchanged by the cost figures. Each line also carries the spend recorded for the period and the ROAS between the two: a ratio to two decimal places, not a money value, and null rather than zero or infinity when nothing was spent. A campaign appears if it is active, earned revenue in the period, or recorded spend in the period — an archived campaign quietly burning budget is the row this report exists to show. Spend is recorded per calendar day in the store's timezone while revenue is timestamped, so a partial current day compares a full day of cost against part of a day of revenue.",
   })
   @ApiResponse({ status: 200 })
   async attributedRevenue(
