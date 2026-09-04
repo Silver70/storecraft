@@ -5,6 +5,7 @@ import type {
   CampaignStatus,
 } from '../../../shared/database/schema';
 import { resolveLookbackDays } from '../../../shared/attribution/lookback';
+import { pct } from '../../../shared/utils/percent.util';
 import { StoreService } from '../../tenant/services/store.service';
 import { CampaignRepository } from '../repositories/campaign.repository';
 import { CampaignSpendRepository } from '../repositories/campaign-spend.repository';
@@ -95,6 +96,61 @@ export interface AttributedRevenueReport {
   unattributed: RevenueBucket;
   /** Attributed plus unattributed — the period's realized revenue. */
   totals: RevenueBucket;
+}
+
+/**
+ * The whole account in one read — what was spent, what came back, and the ratio
+ * between them, with the caveat that qualifies it.
+ *
+ * Derived from the report rather than computed a second way. Everything here is
+ * a field of `AttributedRevenueReport` or a share of two of them, which is the
+ * point: a card on the dashboard and the report it links to disagreeing about
+ * what was spent this week would discredit both, and there is no arithmetic in
+ * this shape that could drift.
+ */
+export interface MarketingSummary {
+  period: AttributionPeriod;
+  touch: AttributionTouch;
+  /** The active Lookback Window — the reason these figures differ from an ad platform's. */
+  lookbackDays: number;
+  /** The `[start, end)` revenue was read over. */
+  rangeStart: string;
+  rangeEnd: string;
+  /** The inclusive calendar days Spend was counted over, in the Store's timezone. */
+  spendFrom: string;
+  spendTo: string;
+  /** Total Spend across every Campaign for the period, in the smallest currency unit. */
+  spend: number;
+  /**
+   * Attributed revenue on the Order-total basis — the same `blended.revenue`
+   * the report shows, and what the blended ROAS divides.
+   */
+  revenue: number;
+  /** Revenue over Spend, to two decimal places. A ratio, not money. Null when nothing was spent. */
+  roas: number | null;
+  /** Attributed plus unattributed: the period's realized revenue. */
+  realizedRevenue: number;
+  /** The revenue no Campaign explains. Never folded into the figures above it. */
+  unattributedRevenue: number;
+  /**
+   * Unattributed as a whole-number share of realized revenue. **Display only**,
+   * on the same `pct` convention as every other reported percentage.
+   *
+   * It travels beside the ROAS because it is the caveat on it: a blended ROAS
+   * computed over 30% of a Store's revenue is not wrong, but read without this
+   * number it looks like an account-wide verdict when it is a minority report.
+   */
+  unattributedPct: number;
+  /**
+   * Whether this Store has ever recorded Spend at all.
+   *
+   * The difference between "you have not set this up" and "this period cost
+   * nothing", which a period total of zero cannot express. The card says
+   * different things for the two, and saying the wrong one either nags a
+   * merchant who is already recording their costs or leaves one who is not
+   * staring at a $0.00 that looks broken.
+   */
+  spendEverRecorded: boolean;
 }
 
 const EMPTY: RevenueBucket = { orders: 0, revenue: 0 };
@@ -242,6 +298,50 @@ export class AttributedRevenueService {
       blended: { ...blendPerformance(campaigns), ...blendMargin(campaigns) },
       unattributed: tally.unattributed,
       totals: tally.totals,
+    };
+  }
+
+  /**
+   * The same period, reduced to the handful of figures that fit on a card.
+   *
+   * **It runs the report and reads fields off it.** That is a deliberate cost:
+   * a summary that queried Spend and revenue itself would be a second
+   * implementation of the same question, free to drift from the first, and the
+   * failure would be a dashboard quietly contradicting the report one click
+   * away — which is worse than either number being wrong on its own, because a
+   * merchant cannot tell which to believe. The period helper, the matcher, the
+   * Lookback Window and the Spend day range are therefore not reused *like* the
+   * report's; they are the report's.
+   *
+   * The only figure computed here is the Unattributed share, which is a share
+   * of two numbers the report already returns.
+   */
+  async summary(
+    orgId: string,
+    storeId: string,
+    period: AttributionPeriod,
+    touch: AttributionTouch,
+  ): Promise<MarketingSummary> {
+    const [report, spendEverRecorded] = await Promise.all([
+      this.byCampaign(orgId, storeId, period, touch),
+      this.spend.hasAny(orgId, storeId),
+    ]);
+
+    return {
+      period: report.period,
+      touch: report.touch,
+      lookbackDays: report.lookbackDays,
+      rangeStart: report.rangeStart,
+      rangeEnd: report.rangeEnd,
+      spendFrom: report.spendFrom,
+      spendTo: report.spendTo,
+      spend: report.blended.spend,
+      revenue: report.blended.revenue,
+      roas: report.blended.roas,
+      realizedRevenue: report.totals.revenue,
+      unattributedRevenue: report.unattributed.revenue,
+      unattributedPct: pct(report.unattributed.revenue, report.totals.revenue),
+      spendEverRecorded,
     };
   }
 }

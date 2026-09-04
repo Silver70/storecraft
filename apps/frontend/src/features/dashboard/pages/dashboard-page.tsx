@@ -15,6 +15,7 @@ import { KpiCard } from "../components/kpi-card";
 import { OpsSnapshot } from "../components/ops-snapshot";
 import { RevenueTrend } from "../components/revenue-trend";
 import { RecentOrders } from "../components/recent-orders";
+import { SpendSummary } from "../components/spend-summary";
 
 const PERIOD_LABELS: { value: Period; label: string }[] = [
   { value: "today", label: "Today" },
@@ -97,6 +98,13 @@ export function DashboardPage() {
         processingOrders={stats.processingOrders}
         lowStockItems={stats.lowStockItems}
       /> */}
+
+      {/* What the ads cost, from the marketing module's own summary read.
+          Composed here rather than served by the dashboard backend: a report
+          module never depends on another report module, so the coupling lives
+          on this page. It fetches independently and fails independently — see
+          SpendSummary — so a marketing outage costs one card, not this page. */}
+      <SpendSummary period={period} />
 
       {/* Revenue Chart — full width */}
       <RevenueTrend data={revenueTrend} />

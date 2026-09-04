@@ -13,6 +13,7 @@ import {
   getCampaignRulesServerFn,
   getCampaignSpendServerFn,
   getCampaignsServerFn,
+  getMarketingSummaryServerFn,
   previewCampaignRuleServerFn,
 } from "./server";
 
@@ -61,6 +62,26 @@ export const attributedRevenueQueryOptions = (
     queryKey: ["campaigns", "revenue", period, touch],
     queryFn: () => getAttributedRevenueServerFn({ data: { period, touch } }),
     staleTime: 60 * 1000,
+  });
+
+/**
+ * Blended spend, revenue and ROAS for a period — what the dashboard card shows.
+ *
+ * Keyed apart from the full report even though the backend derives one from the
+ * other, so the dashboard's copy is not invalidated by the report page and vice
+ * versa. `retry: false` because this query has a visible failure state: the card
+ * says it could not load and the dashboard around it carries on, and three
+ * silent retries would only make it say so a few seconds later.
+ */
+export const marketingSummaryQueryOptions = (
+  period: Period,
+  touch: AttributionTouch = "last",
+) =>
+  queryOptions({
+    queryKey: ["campaigns", "summary", period, touch],
+    queryFn: () => getMarketingSummaryServerFn({ data: { period, touch } }),
+    staleTime: 60 * 1000,
+    retry: false,
   });
 
 /** A rule the merchant has typed but not saved. */

@@ -171,6 +171,27 @@ interface AttributedRevenueReport {
   totals: RevenueBucket;
 }
 
+/** The dashboard card's figures — a smaller answer to the report's question. */
+interface MarketingSummary {
+  period: string;
+  touch: 'first' | 'last';
+  lookbackDays: number;
+  rangeStart: string;
+  rangeEnd: string;
+  spendFrom: string;
+  spendTo: string;
+  spend: number;
+  revenue: number;
+  /** A ratio, not money. Null when nothing was spent. */
+  roas: number | null;
+  realizedRevenue: number;
+  unattributedRevenue: number;
+  /** Whole-number percentage of realized revenue with no campaign behind it. */
+  unattributedPct: number;
+  /** Whether this store has ever recorded spend at all, in any period. */
+  spendEverRecorded: boolean;
+}
+
 interface Touch {
   utmSource?: string;
   utmMedium?: string;
@@ -363,6 +384,17 @@ describe('Attributed revenue by campaign (e2e)', () => {
       .get(`/marketing/attributed-revenue?period=30d&touch=${touch}`)
       .expect(200);
     return res.body as AttributedRevenueReport;
+  }
+
+  /** The dashboard card's read, over the same period as `readReport`. */
+  async function readSummary(
+    touch: 'first' | 'last' = 'last',
+    as: AdminUserFixture = admin,
+  ): Promise<MarketingSummary> {
+    const res = await as.client
+      .get(`/marketing/summary?period=30d&touch=${touch}`)
+      .expect(200);
+    return res.body as MarketingSummary;
   }
 
   const lineFor = (report: AttributedRevenueReport, campaignId: string) =>
@@ -1086,5 +1118,159 @@ describe('Attributed revenue by campaign (e2e)', () => {
       revenue: ORDER_TOTAL * 3,
     });
     expect(report.campaigns.filter((c) => c.orders > 0)).toHaveLength(1);
+  });
+
+  // ─── The dashboard summary ──────────────────────────────────────────────────
+
+  /**
+   * The card on the dashboard and the report it links to are one click apart. A
+   * merchant who sees one figure on the page they open first and a different
+   * one on the page that explains it has no way to tell which is lying, so what
+   * is asserted here is not that the summary is *correct* — the cases above
+   * already establish the report's arithmetic — but that it is the *same*.
+   */
+  describe('dashboard summary', () => {
+    it('summarises exactly what the report reports for the same period', async () => {
+      const summer = await createCampaign('Summer Sale');
+      // Spend and no revenue: it belongs in the blended total even though it
+      // has no line of its own worth reading on a card.
+      const dud = await createCampaign('Dud Push');
+
+      await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
+      await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
+      await placeOrder();
+
+      await recordSpend(summer.id, 1500);
+      await recordSpend(dud.id, 500);
+
+      const report = await readReport();
+      const summary = await readSummary();
+
+      // Every figure on the card is the report's own. The two reads happen at
+      // different instants, so the period's end — and only that — is allowed to
+      // differ between them.
+      expect(summary).toEqual({
+        period: '30d',
+        touch: 'last',
+        lookbackDays: report.lookbackDays,
+        rangeStart: expect.any(String),
+        rangeEnd: expect.any(String),
+        spendFrom: report.spendFrom,
+        spendTo: report.spendTo,
+        spend: report.blended.spend,
+        revenue: report.blended.revenue,
+        roas: report.blended.roas,
+        realizedRevenue: report.totals.revenue,
+        unattributedRevenue: report.unattributed.revenue,
+        unattributedPct: 33,
+        spendEverRecorded: true,
+      });
+
+      // And worked out by hand, so a report that started returning the wrong
+      // figures could not drag the summary along with it and still pass: $20
+      // spent across two campaigns against $60 the tags explain, of $90 taken.
+      expect(summary.spend).toBe(2000);
+      expect(summary.revenue).toBe(ORDER_TOTAL * 2);
+      expect(summary.roas).toBe(3);
+      expect(summary.realizedRevenue).toBe(ORDER_TOTAL * 3);
+      expect(summary.unattributedRevenue).toBe(ORDER_TOTAL);
+    });
+
+    it('follows the touch the report was read with', async () => {
+      const discovery = await createCampaign('Discovery');
+      const closer = await createCampaign('Retargeting');
+
+      // Found the store a season ago, bought after yesterday's retargeting ad.
+      // First touch is outside the 30-day lookback window and last touch is
+      // inside it, so the two readings genuinely disagree about whether this
+      // sale had a campaign behind it.
+      await placeOrder({
+        firstTouch: { utmCampaign: discovery.tag, occurredAt: daysAgo(45) },
+        lastTouch: { utmCampaign: closer.tag, occurredAt: daysAgo(1) },
+      });
+      await recordSpend(discovery.id, 1000);
+      await recordSpend(closer.id, 4000);
+
+      const first = await readSummary('first');
+      const last = await readSummary();
+
+      // Spend is a fact about campaigns and not about orders, so the money out
+      // is the same under either reading. What changes is what came back.
+      expect(first).toMatchObject({ touch: 'first', spend: 5000 });
+      expect(last).toMatchObject({ touch: 'last', spend: 5000 });
+
+      expect(first).toMatchObject({
+        revenue: 0,
+        roas: 0,
+        unattributedRevenue: ORDER_TOTAL,
+        unattributedPct: 100,
+      });
+      expect(last).toMatchObject({
+        revenue: ORDER_TOTAL,
+        roas: 0.6,
+        unattributedRevenue: 0,
+        unattributedPct: 0,
+      });
+
+      // And under each reading it is still the report's own figure.
+      expect(first.roas).toBe((await readReport('first')).blended.roas);
+      expect(last.roas).toBe((await readReport()).blended.roas);
+    });
+
+    it('tells a store that never recorded spend apart from one that spent nothing', async () => {
+      const newsletter = await createCampaign('November Newsletter');
+      await placeOrder({ lastTouch: { utmCampaign: newsletter.tag } });
+
+      // Nothing has ever been recorded, so the card invites the merchant to
+      // record something rather than showing a $0.00 that reads as broken.
+      const before = await readSummary();
+      expect(before).toMatchObject({
+        spend: 0,
+        revenue: ORDER_TOTAL,
+        // Not zero and not infinity: nothing was spent, so there is no return
+        // on spend to report.
+        roas: null,
+        spendEverRecorded: false,
+      });
+
+      // A day outside the 30-day period. The period still cost nothing, but the
+      // store is plainly recording its costs now, and the two states must not
+      // look alike.
+      await recordSpend(newsletter.id, 2500, dayAgo(60));
+
+      expect(await readSummary()).toMatchObject({
+        spend: 0,
+        roas: null,
+        spendEverRecorded: true,
+      });
+    });
+
+    it('reports no unattributed share when every order has a campaign behind it', async () => {
+      const summer = await createCampaign('Summer Sale');
+      await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
+      await recordSpend(summer.id, 1000);
+
+      expect(await readSummary()).toMatchObject({
+        unattributedRevenue: 0,
+        unattributedPct: 0,
+        realizedRevenue: ORDER_TOTAL,
+      });
+    });
+
+    it("keeps cost data out of a support agent's hands", async () => {
+      // The same permission as the report it summarises: a role that may not
+      // see what campaigns cost may not see the account total either.
+      const support = await createAdminUser(
+        app,
+        fixture.organizationId,
+        fixture.storeId,
+        'support_agent',
+      );
+      try {
+        await support.client.get('/marketing/summary?period=30d').expect(403);
+      } finally {
+        await destroyAdminUsers(app, [support.id]);
+      }
+    });
   });
 });

@@ -608,6 +608,48 @@ export type AttributedRevenueReport = {
   totals: RevenueBucket;
 };
 
+/**
+ * The account as a whole for a period — the dashboard card's figures.
+ *
+ * Every value here is read off the campaign performance report on the backend
+ * rather than computed a second way, which is what lets the card link straight
+ * to that report: the number on the dashboard and the number one click away are
+ * the same number, resolved once.
+ */
+export type MarketingSummary = {
+  period: Period;
+  touch: AttributionTouch;
+  /** The active lookback window in days — why these figures differ from an ad platform's. */
+  lookbackDays: number;
+  rangeStart: string;
+  rangeEnd: string;
+  /** The inclusive calendar days spend was counted over, in the store's timezone. */
+  spendFrom: string;
+  spendTo: string;
+  /** Total spend across every campaign. Smallest currency unit. */
+  spend: number;
+  /** Attributed revenue on the order-total basis — what the ROAS divides. */
+  revenue: number;
+  /** A ratio, not money. Null when nothing was spent: never formatted as currency. */
+  roas: number | null;
+  /** Attributed plus unattributed — the period's realized revenue. */
+  realizedRevenue: number;
+  /** The revenue no campaign explains. */
+  unattributedRevenue: number;
+  /**
+   * Unattributed as a whole-number share of realized revenue. Display only, and
+   * shown beside the ROAS because it is the caveat on it — a blended ratio over
+   * a third of the revenue is not an account-wide verdict.
+   */
+  unattributedPct: number;
+  /**
+   * Whether any spend has ever been recorded for this store. Tells "not set up
+   * yet" apart from "this period cost nothing", which a zero cannot, and is
+   * what the card's empty state turns on.
+   */
+  spendEverRecorded: boolean;
+};
+
 // ─── Matching-rule preview ────────────────────────────────────────────────────
 
 /**

@@ -13,6 +13,7 @@ import {
   type CampaignSpend,
   type CampaignSpendReport,
   type CampaignTaggedLink,
+  type MarketingSummary,
   type RulePreviewReport,
 } from "~/types/api";
 
@@ -280,6 +281,36 @@ export const getAttributedRevenueServerFn = createServerFn({ method: "GET" })
     try {
       const res = await apiClient.get<AttributedRevenueReport>(
         `/api/admin/marketing/attributed-revenue?period=${data.period}&touch=${data.touch}`,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+/**
+ * The same period as the report above, reduced to the figures on the dashboard
+ * card.
+ *
+ * A separate request rather than a slice of the report, because the dashboard
+ * asks for it and must not be taken down if it fails. The backend derives every
+ * figure from the report itself, so this is a smaller answer to the same
+ * question and never a second one.
+ */
+export const getMarketingSummaryServerFn = createServerFn({ method: "GET" })
+  .inputValidator(
+    z.object({
+      period: z.enum(["today", "7d", "30d", "90d"]),
+      touch: z.enum(["first", "last"]).optional(),
+    }),
+  )
+  .handler(async ({ data }): Promise<MarketingSummary> => {
+    const params = new URLSearchParams({ period: data.period });
+    if (data.touch) params.set("touch", data.touch);
+    try {
+      const res = await apiClient.get<MarketingSummary>(
+        `/api/admin/marketing/summary?${params.toString()}`,
         { headers: await storeHeaders() },
       );
       return res.data;

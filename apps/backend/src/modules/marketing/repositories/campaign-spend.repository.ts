@@ -99,6 +99,34 @@ export class CampaignSpendRepository {
     return new Map(rows.map((row) => [row.campaignId, row.amount]));
   }
 
+  /**
+   * Whether this Store has ever recorded Spend at all, for any Campaign on any
+   * day.
+   *
+   * Not a sum and deliberately not one: it exists to tell a Store that has
+   * never recorded a cost apart from one that simply spent nothing in the
+   * period being read. The dashboard card asks it because those two states
+   * deserve different words — an invitation to record some Spend, versus a
+   * period that honestly cost nothing — and a period total of zero cannot tell
+   * them apart.
+   *
+   * `limit(1)` because the answer is existence, not a count. A Store with four
+   * years of daily rows costs the same as one with none.
+   */
+  async hasAny(orgId: string, storeId: string): Promise<boolean> {
+    const [row] = await this.db
+      .select({ id: campaignSpend.id })
+      .from(campaignSpend)
+      .where(
+        and(
+          eq(campaignSpend.organizationId, orgId),
+          eq(campaignSpend.storeId, storeId),
+        ),
+      )
+      .limit(1);
+    return row !== undefined;
+  }
+
   async findById(
     id: string,
     campaignId: string,
