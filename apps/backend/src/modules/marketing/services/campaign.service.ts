@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import type {
   Campaign,
   CampaignMatchingRule,
@@ -23,6 +24,12 @@ import {
   referrerHost,
   type CampaignMatcher,
 } from '../utils/campaign-matching.util';
+import {
+  buildTaggedLink,
+  DEFAULT_STOREFRONT_URL,
+  type TaggedLink,
+  type TaggedLinkProblem,
+} from '../utils/tagged-link.util';
 
 export interface CreateCampaignInput {
   name: string;
@@ -41,6 +48,37 @@ export interface CreateCampaignRuleInput {
   operator: CampaignRuleOperator;
   value: string;
 }
+
+export interface GenerateCampaignLinkInput {
+  /** A page of the store. Defaults to its home page. */
+  destination?: string;
+  source: string;
+  medium: string;
+  content?: string | null;
+}
+
+export interface CampaignTaggedLink extends TaggedLink {
+  campaignId: string;
+  campaignName: string;
+}
+
+/**
+ * Why a link could not be composed, said in the merchant's terms. A generated
+ * link is a convenience, so a refusal has to explain what to type instead
+ * rather than send them back to composing UTM parameters by hand.
+ */
+const LINK_PROBLEM_MESSAGES: Record<TaggedLinkProblem, string> = {
+  destination:
+    'A destination must be a page of your store — a path like /products/summer-tee, or a full https:// URL.',
+  source:
+    'A source must contain at least one letter or number — it names where the link is being placed, such as instagram.',
+  medium:
+    'A medium must contain at least one letter or number — it names the kind of placement, such as paid_social.',
+  content:
+    'A content label must contain at least one letter or number, or be left empty.',
+  campaignTag:
+    'This campaign has no usable tag, so no link can be generated from it.',
+};
 
 /** How many tags to try before giving up on finding a free one. */
 const MAX_TAG_ATTEMPTS = 25;
@@ -89,7 +127,10 @@ function canonicalizeRuleValue(
  */
 @Injectable()
 export class CampaignService {
-  constructor(private readonly campaigns: CampaignRepository) {}
+  constructor(
+    private readonly campaigns: CampaignRepository,
+    private readonly config: ConfigService,
+  ) {}
 
   async list(
     orgId: string,
@@ -210,6 +251,63 @@ export class CampaignService {
     });
     if (!updated) throw new NotFoundException('Campaign not found');
     return updated;
+  }
+
+  // ─── Tagged links ───────────────────────────────────────────────────────────
+
+  /**
+   * Composes the tagged URL a merchant pastes into an ad platform.
+   *
+   * The link carries the Campaign's own canonical tag, which the Campaign's
+   * canonical rule already matches, so traffic arriving through it is attributed
+   * without a rule being authored and without a UTM string being typed
+   * correctly. Several links differing only by source or medium therefore all
+   * report as one Campaign, which is what lets one push run on more than one
+   * platform.
+   *
+   * Nothing is persisted: a link is derived from the Campaign, so generating the
+   * same one twice gives the same URL, and a link tagged by hand before the
+   * Campaign existed is still claimable by a rule. The generator is a
+   * convenience, not a precondition.
+   *
+   * An archived Campaign can still generate one — a finished push is sometimes
+   * revived, and refusing would be a surprise with no safety behind it.
+   */
+  async generateLink(
+    orgId: string,
+    storeId: string,
+    id: string,
+    input: GenerateCampaignLinkInput,
+  ): Promise<CampaignTaggedLink> {
+    const campaign = await this.get(orgId, storeId, id);
+
+    const result = buildTaggedLink({
+      baseUrl: this.storefrontUrl(),
+      destination: input.destination ?? '/',
+      campaignTag: campaign.tag,
+      source: input.source,
+      medium: input.medium,
+      content: input.content ?? null,
+    });
+
+    if (!result.ok) {
+      throw new BadRequestException(LINK_PROBLEM_MESSAGES[result.problem]);
+    }
+
+    return {
+      ...result.link,
+      campaignId: campaign.id,
+      campaignName: campaign.name,
+    };
+  }
+
+  /**
+   * The storefront a destination path is resolved against — the same base the
+   * rest of the engine builds customer-facing links from. A store on its own
+   * domain is served by passing that domain as an absolute destination.
+   */
+  private storefrontUrl(): string {
+    return this.config.get<string>('STOREFRONT_URL', DEFAULT_STOREFRONT_URL);
   }
 
   // ─── Matching rules ─────────────────────────────────────────────────────────

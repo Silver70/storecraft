@@ -28,10 +28,14 @@ import type {
   Campaign,
   CampaignMatchingRule,
 } from '../../../shared/database/schema';
-import { CampaignService } from '../services/campaign.service';
+import {
+  CampaignService,
+  type CampaignTaggedLink,
+} from '../services/campaign.service';
 import {
   CreateCampaignDto,
   CreateCampaignRuleDto,
+  GenerateCampaignLinkQueryDto,
   ListCampaignsQueryDto,
   UpdateCampaignDto,
 } from '../dto/campaign.dto';
@@ -144,6 +148,30 @@ export class AdminCampaignController {
   ): Promise<Campaign> {
     const { organizationId, storeId } = requireStoreContext(tenant);
     return this.campaigns.unarchive(organizationId, storeId, id);
+  }
+
+  // ─── Tagged links ───────────────────────────────────────────────────────────
+
+  @Get(':id/link')
+  @RequirePermission('campaigns.read')
+  @ApiOperation({
+    summary: 'Generate a tagged link for a campaign',
+    description:
+      "Composes the URL to paste into an ad platform: a page of the store, the chosen source and medium, and the campaign's own canonical tag. Because the tag comes from the campaign rather than from typing, traffic through the link is attributed with no rule authored by hand — and links differing only by source or medium all report as the same campaign. Nothing is stored: the link is derived, so generating it again gives the same URL.",
+  })
+  @ApiResponse({ status: 200 })
+  @ApiResponse({
+    status: 400,
+    description: 'Unusable destination or parameter',
+  })
+  @ApiResponse({ status: 404 })
+  async generateLink(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: GenerateCampaignLinkQueryDto,
+    @CurrentTenant() tenant: TenantContext,
+  ): Promise<CampaignTaggedLink> {
+    const { organizationId, storeId } = requireStoreContext(tenant);
+    return this.campaigns.generateLink(organizationId, storeId, id, query);
   }
 
   // ─── Matching rules ─────────────────────────────────────────────────────────

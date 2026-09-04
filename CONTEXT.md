@@ -55,6 +55,21 @@ normalized (trimmed, lowercased, hyphens/underscores/whitespace collapsed), so
 adding one repairs past reports as well as future ones.
 _Avoid_: Filter, mapping, pattern, alias
 
+**Campaign Tag**:
+The canonical `utm_campaign` value one Campaign owns — a slug derived from its
+name at creation, unique within the Store, and fixed thereafter so links already
+running in an ad platform keep matching after a rename. Every Campaign is
+created already owning a Matching Rule on its own Tag.
+_Avoid_: Slug, code, campaign id (that is the ad platform's `external_id`)
+
+**Tagged Link**:
+A URL generated from a Campaign for a page of the Store, carrying that
+Campaign's Tag alongside a chosen source and medium. Derived rather than stored:
+the same choices always produce the same URL, and links differing only by source
+or medium report as one Campaign. A convenience, not a precondition — a link
+tagged by hand before its Campaign existed is still claimable by a Matching Rule.
+_Avoid_: Tracking link, UTM builder, short link
+
 **Touch**:
 A single recorded instance of a Visitor arriving from a traffic source, carrying
 its UTM tuple and referrer. A Session may contain several Touches.

@@ -10,6 +10,7 @@ import {
   type AttributedRevenueReport,
   type Campaign,
   type CampaignMatchingRule,
+  type CampaignTaggedLink,
 } from "~/types/api";
 
 async function storeHeaders() {
@@ -180,6 +181,43 @@ export const deleteCampaignRuleServerFn = createServerFn({ method: "POST" })
         `/api/admin/campaigns/${data.campaignId}/rules/${data.ruleId}`,
         { headers: await storeHeaders() },
       );
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+// ─── Tagged links ─────────────────────────────────────────────────────────────
+
+/**
+ * The tagged URL for a campaign, composed by the backend.
+ *
+ * The campaign tag is not sent — it comes from the campaign being generated
+ * for, which is the point: the one value matching depends on is never typed.
+ * Composing the URL here instead would be a second implementation of it, free
+ * to drift from the rule that claims the traffic.
+ */
+export const generateCampaignLinkServerFn = createServerFn({ method: "GET" })
+  .inputValidator(
+    z.object({
+      campaignId: z.string().min(1),
+      destination: z.string().max(1024).optional(),
+      source: z.string().min(1).max(255),
+      medium: z.string().min(1).max(255),
+      content: z.string().max(255).optional(),
+    }),
+  )
+  .handler(async ({ data }): Promise<CampaignTaggedLink> => {
+    const { campaignId, ...choices } = data;
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(choices)) {
+      if (value !== undefined && value !== "") params.set(key, value);
+    }
+    try {
+      const res = await apiClient.get<CampaignTaggedLink>(
+        `/api/admin/campaigns/${campaignId}/link?${params.toString()}`,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
     } catch (err) {
       throw new Error(getErrorMessage(err));
     }

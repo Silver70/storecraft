@@ -24,9 +24,10 @@ import { campaignQueryOptions } from "../queries";
 import { updateCampaignServerFn } from "../server";
 import { CampaignFields } from "../components/campaign-fields";
 import { CampaignStatusBadge } from "../components/campaign-status-badge";
-import { CopyTagButton } from "../components/copy-tag-button";
+import { CopyButton } from "../components/copy-button";
 import { ArchiveCampaignButton } from "../components/archive-campaign-button";
 import { MatchingRulesCard } from "../components/matching-rules-card";
+import { TaggedLinkCard } from "../components/tagged-link-card";
 
 const updateCampaignSchema = z.object({
   name: z.string().min(1, "Name is required").max(255),
@@ -175,7 +176,7 @@ export function CampaignDetailPage() {
               <code className="min-w-0 flex-1 truncate font-mono text-sm">
                 {campaign.tag}
               </code>
-              <CopyTagButton value={campaign.tag} />
+              <CopyButton value={campaign.tag} label="tag" />
             </div>
             <p className="text-xs text-muted-foreground">
               Any visit arriving with this <code>utm_campaign</code> value is
@@ -185,6 +186,9 @@ export function CampaignDetailPage() {
             </p>
           </CardContent>
         </Card>
+
+        {/* ── Tagged links ──────────────────────────────────────────────────── */}
+        <TaggedLinkCard campaign={campaign} />
 
         {/* ── Matching rules ────────────────────────────────────────────────── */}
         <MatchingRulesCard campaignId={campaignId} />

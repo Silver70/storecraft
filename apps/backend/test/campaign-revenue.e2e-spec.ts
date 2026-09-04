@@ -104,6 +104,7 @@ interface Touch {
   utmSource?: string;
   utmMedium?: string;
   utmCampaign?: string;
+  utmContent?: string;
   referrer?: string;
   landingPath?: string;
   occurredAt?: string;
@@ -470,5 +471,88 @@ describe('Attributed revenue by campaign (e2e)', () => {
       await destroyStorefront(app, other.organizationId);
       await destroyAdminUsers(app, [otherAdmin.id]);
     }
+  });
+  // ─── Links generated in the admin ───────────────────────────────────────────
+
+  /**
+   * Generates a tagged link the way the admin screen does, and reads it back as
+   * the touch a visitor arriving through it would land with. Nothing in between
+   * is retyped — that is the property the generator exists to provide.
+   */
+  async function landingFrom(
+    campaignId: string,
+    choices: Record<string, string>,
+  ): Promise<Touch> {
+    const params = new URLSearchParams(choices).toString();
+    const res = await admin.client
+      .get(`/campaigns/${campaignId}/link?${params}`)
+      .expect(200);
+
+    const url = new URL((res.body as { url: string }).url);
+    return {
+      utmSource: url.searchParams.get('utm_source') ?? undefined,
+      utmMedium: url.searchParams.get('utm_medium') ?? undefined,
+      utmCampaign: url.searchParams.get('utm_campaign') ?? undefined,
+      utmContent: url.searchParams.get('utm_content') ?? undefined,
+      landingPath: url.pathname,
+    };
+  }
+
+  it('credits a campaign for a sale that arrived through a link generated for it', async () => {
+    const summer = await createCampaign('Summer Sale');
+
+    // The merchant generated a link, pasted it into an ad, and a visitor bought
+    // through it. No rule was authored beyond the one the campaign was born
+    // with — matching is exact because the tag was never typed.
+    await placeOrder({
+      lastTouch: await landingFrom(summer.id, {
+        destination: '/products/summer-tee',
+        source: 'instagram',
+        medium: 'paid_social',
+      }),
+    });
+
+    const report = await readReport();
+
+    expect(lineFor(report, summer.id)).toMatchObject({
+      orders: 1,
+      revenue: ORDER_TOTAL,
+    });
+    expect(report.unattributed).toEqual({ orders: 0, revenue: 0 });
+  });
+
+  it('reports one campaign for links that differ only by source or medium', async () => {
+    // One push running on three placements. Reported as three campaigns it
+    // would look a third as profitable in each.
+    const launch = await createCampaign('Spring Launch');
+
+    await placeOrder({
+      lastTouch: await landingFrom(launch.id, {
+        source: 'instagram',
+        medium: 'paid_social',
+      }),
+    });
+    await placeOrder({
+      lastTouch: await landingFrom(launch.id, {
+        source: 'google',
+        medium: 'cpc',
+      }),
+    });
+    await placeOrder({
+      lastTouch: await landingFrom(launch.id, {
+        destination: '/collections/spring',
+        source: 'newsletter',
+        medium: 'email',
+        content: 'hero',
+      }),
+    });
+
+    const report = await readReport();
+
+    expect(lineFor(report, launch.id)).toMatchObject({
+      orders: 3,
+      revenue: ORDER_TOTAL * 3,
+    });
+    expect(report.campaigns.filter((c) => c.orders > 0)).toHaveLength(1);
   });
 });

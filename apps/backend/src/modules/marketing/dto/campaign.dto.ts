@@ -7,6 +7,7 @@ import {
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ATTRIBUTION_LIMITS,
   CAMPAIGN_LIMITS,
   CAMPAIGN_RULE_VALUE_LIMIT,
   campaignPlatformEnum,
@@ -113,4 +114,50 @@ export class ListCampaignsQueryDto {
   @IsOptional()
   @IsEnum([...STATUSES, 'all'])
   declare status?: CampaignStatus | 'all';
+}
+
+/**
+ * The choices behind one tagged link. The campaign tag is deliberately not among
+ * them — it comes from the campaign the link is generated for, which is the
+ * whole point: the merchant cannot mistype the one value matching depends on.
+ */
+export class GenerateCampaignLinkQueryDto {
+  @ApiPropertyOptional({
+    example: '/products/summer-tee',
+    description:
+      'A page of the store — a path, or a full https:// URL for a store on its own domain. Defaults to the home page. Query parameters and fragments are kept; any utm_* already on it is replaced.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(ATTRIBUTION_LIMITS.landingPath)
+  declare destination?: string;
+
+  @ApiProperty({
+    example: 'instagram',
+    description:
+      'Where the link is being placed. Emitted lower-cased with separators collapsed to hyphens, which is the form matching compares in.',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(ATTRIBUTION_LIMITS.utm)
+  declare source: string;
+
+  @ApiProperty({
+    example: 'paid_social',
+    description: 'The kind of placement. Normalized like the source.',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(ATTRIBUTION_LIMITS.utm)
+  declare medium: string;
+
+  @ApiPropertyOptional({
+    example: 'video-a',
+    description:
+      'Optional utm_content, for telling two creatives in the same campaign apart.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(ATTRIBUTION_LIMITS.utm)
+  declare content?: string;
 }

@@ -405,6 +405,28 @@ export type CampaignMatchingRule = {
   updatedAt: string;
 };
 
+// ─── Tagged links ─────────────────────────────────────────────────────────────
+
+/**
+ * A URL generated for a campaign, ready to paste into an ad platform.
+ *
+ * Composed by the backend rather than here: the `utm_campaign` value is the
+ * campaign's canonical tag, and having one place that builds it is what makes a
+ * generated link match by construction instead of by two implementations
+ * agreeing. Nothing is stored — the same choices always give the same link.
+ */
+export type CampaignTaggedLink = {
+  url: string;
+  /** Where it points, before any tagging. */
+  destination: string;
+  utmSource: string;
+  utmMedium: string;
+  utmCampaign: string;
+  utmContent: string | null;
+  campaignId: string;
+  campaignName: string;
+};
+
 // ─── Attributed revenue ───────────────────────────────────────────────────────
 
 /**

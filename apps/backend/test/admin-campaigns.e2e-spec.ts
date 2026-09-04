@@ -10,6 +10,7 @@
  * and a local Postgres database, and asserts on the rows as persisted.
  */
 import type { INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { and, eq } from 'drizzle-orm';
 import type { App } from 'supertest/types';
 import request from 'supertest';
@@ -672,6 +673,240 @@ describe('Admin campaigns (e2e)', () => {
     });
   });
 
+  describe('tagged links', () => {
+    /** The storefront a path destination resolves against — read from the
+     * running application rather than restated, so the assertion is that the
+     * configured storefront was used, not that a literal was matched. */
+    const storefront = () =>
+      app.get(ConfigService).get<string>('STOREFRONT_URL')!;
+
+    interface TaggedLink {
+      url: string;
+      destination: string;
+      utmSource: string;
+      utmMedium: string;
+      utmCampaign: string;
+      utmContent: string | null;
+      campaignId: string;
+      campaignName: string;
+    }
+
+    async function generateLink(
+      campaignId: string,
+      query: Record<string, string>,
+    ): Promise<TaggedLink> {
+      const params = new URLSearchParams(query).toString();
+      const res = await fixture.admin.client
+        .get(`/campaigns/${campaignId}/link?${params}`)
+        .expect(200);
+      return res.body as TaggedLink;
+    }
+
+    /** Resolves the link the way a report will: through the persisted rules. */
+    async function resolveLink(link: TaggedLink): Promise<string | null> {
+      const params = new URL(link.url).searchParams;
+      const matcher = await app
+        .get(CampaignService)
+        .buildMatcher(fixture.organizationId, fixture.storeId);
+      return (
+        matcher({
+          utmCampaign: params.get('utm_campaign'),
+          utmSource: params.get('utm_source'),
+          utmMedium: params.get('utm_medium'),
+        })?.campaignId ?? null
+      );
+    }
+
+    it('generates a tagged URL for a campaign from a destination, source and medium', async () => {
+      const campaign = await createCampaign({
+        name: 'Summer Sale',
+        platform: 'meta',
+      });
+
+      const link = await generateLink(campaign.id, {
+        destination: '/products/summer-tee',
+        source: 'Instagram',
+        medium: 'paid_social',
+      });
+
+      expect(new URL(link.url).origin).toBe(storefront());
+      expect(new URL(link.url).pathname).toBe('/products/summer-tee');
+      expect(link.destination).toBe(`${storefront()}/products/summer-tee`);
+      expect(Object.fromEntries(new URL(link.url).searchParams)).toEqual({
+        utm_source: 'instagram',
+        utm_medium: 'paid-social',
+        utm_campaign: campaign.tag,
+      });
+    });
+
+    it("uses the campaign's canonical tag, which the merchant never types", async () => {
+      const campaign = await createCampaign({
+        name: 'Été Promo!',
+        platform: 'meta',
+      });
+
+      const link = await generateLink(campaign.id, {
+        source: 'instagram',
+        medium: 'paid_social',
+      });
+
+      expect(link.utmCampaign).toBe(campaign.tag);
+      expect(new URL(link.url).searchParams.get('utm_campaign')).toBe(
+        campaign.tag,
+      );
+    });
+
+    it('attributes to its campaign with no rule authored by hand', async () => {
+      const campaign = await createCampaign({
+        name: 'Flash Friday',
+        platform: 'meta',
+      });
+
+      const link = await generateLink(campaign.id, {
+        source: 'instagram',
+        medium: 'paid_social',
+      });
+
+      // The campaign has only the rule it was created with.
+      const rules = await fixture.admin.client
+        .get(`/campaigns/${campaign.id}/rules`)
+        .expect(200);
+      expect(rules.body).toHaveLength(1);
+
+      expect(await resolveLink(link)).toBe(campaign.id);
+    });
+
+    it('reports several links differing by source or medium as one campaign', async () => {
+      // The same push running on more than one platform. Splitting it across
+      // buckets would make each half look a fraction as profitable as it was.
+      const campaign = await createCampaign({
+        name: 'Spring Launch',
+        platform: 'meta',
+      });
+
+      const links = await Promise.all([
+        generateLink(campaign.id, {
+          source: 'instagram',
+          medium: 'paid_social',
+        }),
+        generateLink(campaign.id, { source: 'facebook', medium: 'cpc' }),
+        generateLink(campaign.id, {
+          source: 'newsletter',
+          medium: 'email',
+          destination: '/collections/spring',
+          content: 'Hero Banner',
+        }),
+      ]);
+
+      expect(links.map((l) => l.utmCampaign)).toEqual([
+        campaign.tag,
+        campaign.tag,
+        campaign.tag,
+      ]);
+      const resolved = await Promise.all(links.map(resolveLink));
+      expect(resolved).toEqual([campaign.id, campaign.id, campaign.id]);
+    });
+
+    it('points at any page of the store, not only the home page', async () => {
+      const campaign = await createCampaign({ name: 'Deep', platform: 'meta' });
+
+      const home = await generateLink(campaign.id, {
+        source: 'instagram',
+        medium: 'paid_social',
+      });
+      const product = await generateLink(campaign.id, {
+        destination: '/products/tee?variant=large#reviews',
+        source: 'instagram',
+        medium: 'paid_social',
+      });
+
+      expect(new URL(home.url).pathname).toBe('/');
+      expect(new URL(product.url).pathname).toBe('/products/tee');
+      // A link to one variant of a product, anchored at its reviews, survives
+      // being tagged — that is the whole reason for sending an ad deep.
+      expect(new URL(product.url).searchParams.get('variant')).toBe('large');
+      expect(new URL(product.url).hash).toBe('#reviews');
+    });
+
+    it('labels a creative with utm_content when one is given', async () => {
+      const campaign = await createCampaign({
+        name: 'Creative Test',
+        platform: 'meta',
+      });
+
+      const link = await generateLink(campaign.id, {
+        source: 'instagram',
+        medium: 'paid_social',
+        content: 'Video A',
+      });
+
+      expect(link.utmContent).toBe('video-a');
+      expect(new URL(link.url).searchParams.get('utm_content')).toBe('video-a');
+    });
+
+    it('refuses a destination that is not a page of the store', async () => {
+      const campaign = await createCampaign({ name: 'Bad', platform: 'meta' });
+
+      await fixture.admin.client
+        .get(
+          `/campaigns/${campaign.id}/link?source=instagram&medium=paid_social&destination=${encodeURIComponent('javascript:alert(1)')}`,
+        )
+        .expect(400);
+    });
+
+    it('refuses a link with no source or medium to identify it', async () => {
+      const campaign = await createCampaign({ name: 'Bare', platform: 'meta' });
+
+      await fixture.admin.client
+        .get(`/campaigns/${campaign.id}/link?medium=paid_social`)
+        .expect(400);
+      await fixture.admin.client
+        .get(`/campaigns/${campaign.id}/link?source=instagram&medium=%20`)
+        .expect(400);
+    });
+
+    it('stores nothing, so the same choices give the same link', async () => {
+      // A link is derived from the campaign, which is why one tagged by hand
+      // before the campaign existed is still claimable by a rule.
+      const campaign = await createCampaign({
+        name: 'Stable',
+        platform: 'meta',
+      });
+      const query = { source: 'instagram', medium: 'paid_social' };
+
+      const first = await generateLink(campaign.id, query);
+      const second = await generateLink(campaign.id, query);
+
+      expect(second.url).toBe(first.url);
+    });
+
+    it('still generates a link for an archived campaign', async () => {
+      const campaign = await createCampaign({ name: 'Done', platform: 'meta' });
+      await fixture.admin.client
+        .post(`/campaigns/${campaign.id}/archive`)
+        .expect(201);
+
+      const link = await generateLink(campaign.id, {
+        source: 'instagram',
+        medium: 'paid_social',
+      });
+      expect(link.utmCampaign).toBe(campaign.tag);
+    });
+
+    it('never generates a link for another organization’s campaign', async () => {
+      const other = await seedAdmin(app);
+      try {
+        const mine = await createCampaign({ name: 'Mine', platform: 'meta' });
+
+        await other.admin.client
+          .get(`/campaigns/${mine.id}/link?source=instagram&medium=paid_social`)
+          .expect(404);
+      } finally {
+        await destroyAdmin(app, other);
+      }
+    });
+  });
+
   describe('permissions', () => {
     it('rejects a request carrying no admin token', async () => {
       await request(app.getHttpServer())
@@ -713,6 +948,11 @@ describe('Admin campaigns (e2e)', () => {
         .expect(403);
       await support.client.post(`/campaigns/${created.id}/archive`).expect(403);
       await support.client.get(`/campaigns/${created.id}/rules`).expect(403);
+      await support.client
+        .get(
+          `/campaigns/${created.id}/link?source=instagram&medium=paid_social`,
+        )
+        .expect(403);
       await support.client
         .post(`/campaigns/${created.id}/rules`, {
           field: 'utm_source',
