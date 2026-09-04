@@ -81,6 +81,16 @@ snapshot on the Order at checkout, in the same spirit as line-item snapshots —
 it reflects acquisition conditions at purchase time and never changes afterward.
 _Avoid_: Source, tracking, origin
 
+**Declared Attribution** / **Correlated Attribution**:
+Where an Order's evidence came from. *Declared* was passed by the storefront on
+cart creation and is authoritative (ADR-0001). *Correlated* was inferred at
+checkout from the tracked events of the Cart's Session, so an integrator who has
+not implemented pass-through still gets partial reporting — a backstop, never
+the primary source, because the event stream behind it is ad-blockable and is
+eventually deleted by the retention purge. Recorded on every Order so a merchant
+can tell a fact from an inference and judge how far to trust it.
+_Avoid_: Inferred, guessed, auto-attribution, fallback attribution
+
 **First Touch** / **Last Touch**:
 The earliest and the latest non-direct Touch within the Lookback Window before
 an Order. Both are stored on every Order; neither is privileged in the data

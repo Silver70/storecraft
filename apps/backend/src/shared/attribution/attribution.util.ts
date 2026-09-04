@@ -98,6 +98,37 @@ export function applyDeclaredAttribution(
   input: DeclaredAttributionInput | null | undefined,
   now: Date = new Date(),
 ): AttributionPatch {
+  return applyTouches(current, input, 'declared', now);
+}
+
+/**
+ * The same fold, for touches the system *inferred* from the tracked event log
+ * because the storefront declared none — marking the result `correlated` so a
+ * merchant can tell a guess from a fact and judge how much to trust it.
+ *
+ * A backstop, never the primary source: the event stream it reads can be
+ * blocked by the client and is eventually deleted by the retention purge, which
+ * is precisely why ADR-0001 makes the declared snapshot authoritative. Callers
+ * apply this only to a cart that declared nothing.
+ */
+export function applyCorrelatedAttribution(
+  current: Partial<AttributionSnapshot> | null | undefined,
+  input: DeclaredAttributionInput | null | undefined,
+  now: Date = new Date(),
+): AttributionPatch {
+  return applyTouches(current, input, 'correlated', now);
+}
+
+/**
+ * The fold itself. Identical for both sources — where a touch came from changes
+ * only the marker written alongside it, never which touch wins.
+ */
+function applyTouches(
+  current: Partial<AttributionSnapshot> | null | undefined,
+  input: DeclaredAttributionInput | null | undefined,
+  source: 'declared' | 'correlated',
+  now: Date,
+): AttributionPatch {
   if (!input) return {};
 
   const patch: AttributionPatch = {};
@@ -147,8 +178,7 @@ export function applyDeclaredAttribution(
       lastTouchAt = touch.occurredAt;
     }
 
-    // Declared always wins over a correlated guess (ADR-0001).
-    patch.attributionSource = 'declared';
+    patch.attributionSource = source;
   }
 
   return patch;

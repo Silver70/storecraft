@@ -19,6 +19,7 @@ import {
 } from '../src/shared/database/database.module';
 import { carts, orders } from '../src/shared/database/schema';
 import { CartAttributionService } from '../src/modules/cart/services/cart-attribution.service';
+import { SessionTouchService } from '../src/modules/analytics/services/session-touch.service';
 import { createTestApp } from './helpers/test-app';
 import {
   destroyStorefront,
@@ -83,6 +84,13 @@ const CHECKOUT = /* GraphQL */ `
     }
   }
 `;
+
+/** Older than the 30-day default Lookback Window, so it can never qualify. */
+const LAST_QUARTER = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+
+/** A crawler, so the ingest API classifies the batch it sends as bot traffic. */
+const CRAWLER_UA =
+  'Mozilla/5.0 (compatible; GPTBot/1.0; +https://openai.com/gptbot)';
 
 const SHIPPING_ADDRESS = {
   firstName: 'Ada',
@@ -172,6 +180,16 @@ describe('Storefront attribution (e2e)', () => {
       },
     });
     return result.orderId;
+  }
+
+  /** Sends events through the public ingest API, as the tracking script does. */
+  async function track(
+    at: StorefrontFixture,
+    events: Record<string, unknown>[],
+    userAgent?: string,
+  ): Promise<void> {
+    const response = await at.storefront.track(events, userAgent);
+    expect(response.status).toBe(202);
   }
 
   const readCart = async (cartId: string) =>
@@ -398,6 +416,219 @@ describe('Storefront attribution (e2e)', () => {
     } finally {
       await destroyStorefront(app, other.organizationId);
     }
+  });
+
+  it('infers the touches from the session\u2019s events when nothing was declared', async () => {
+    // The integrator who has not implemented pass-through yet: their storefront
+    // embeds the tracking script and passes a session id, and nothing else.
+    const sessionId = 'session-correlated';
+    await track(fixture, [
+      {
+        type: 'page_view',
+        sessionId,
+        visitorId: 'visitor-from-events',
+        path: '/products/desk-fan',
+        referrer: 'https://l.instagram.com/',
+        utmSource: 'instagram',
+        utmMedium: 'paid_social',
+        utmCampaign: 'summer_sale',
+        occurredAt: A_WEEK_AGO.toISOString(),
+      },
+      {
+        type: 'page_view',
+        sessionId,
+        visitorId: 'visitor-from-events',
+        path: '/cart',
+        referrer: 'https://www.google.com/',
+        utmSource: 'google',
+        utmMedium: 'cpc',
+        utmCampaign: 'retargeting_q3',
+        occurredAt: YESTERDAY.toISOString(),
+      },
+      // The most recent event in the session, and evidence of nothing: a direct
+      // arrival must not become the last touch.
+      { type: 'checkout_start', sessionId, path: '/checkout' },
+    ]);
+
+    const cartId = await createCart(fixture, { sessionId });
+    // Nothing is correlated while the cart is open — only the order it becomes
+    // carries the inference, and the cart keeps recording what it was told.
+    expect(await readCart(cartId)).toMatchObject({
+      attributionSource: 'none',
+      sessionId,
+      firstTouchAt: null,
+    });
+
+    const orderId = await checkout(fixture, cartId);
+    const order = await readOrder(orderId);
+
+    expect(order.attributionSource).toBe('correlated');
+    expect(order.sessionId).toBe(sessionId);
+    // The cart was never told the visitor id; the session's events know it.
+    expect(order.visitorId).toBe('visitor-from-events');
+
+    expect(order.firstTouchUtmSource).toBe('instagram');
+    expect(order.firstTouchUtmMedium).toBe('paid_social');
+    expect(order.firstTouchUtmCampaign).toBe('summer_sale');
+    expect(order.firstTouchReferrer).toBe('https://l.instagram.com/');
+    expect(order.firstTouchLandingPath).toBe('/products/desk-fan');
+
+    expect(order.lastTouchUtmSource).toBe('google');
+    expect(order.lastTouchUtmMedium).toBe('cpc');
+    expect(order.lastTouchUtmCampaign).toBe('retargeting_q3');
+    expect(order.lastTouchLandingPath).toBe('/cart');
+
+    expect(order.firstTouchAt!.getTime()).toBeLessThan(
+      order.lastTouchAt!.getTime(),
+    );
+    expect(order.total).toBe(fixture.variantPrice + fixture.shippingPrice);
+  });
+
+  it('keeps a declared touch rather than correlating one from events', async () => {
+    // Declared always wins (ADR-0001): correlation is a backstop, and an event
+    // stream the client can block never overwrites what the storefront said.
+    const sessionId = 'session-declared-wins';
+    await track(fixture, [
+      {
+        type: 'page_view',
+        sessionId,
+        utmSource: 'tiktok',
+        utmMedium: 'paid_social',
+        utmCampaign: 'winter_clearance',
+        occurredAt: YESTERDAY.toISOString(),
+      },
+    ]);
+
+    const cartId = await createCart(fixture, {
+      lastTouch: DISCOVERY_TOUCH,
+      sessionId,
+    });
+    const order = await readOrder(await checkout(fixture, cartId));
+
+    expect(order.attributionSource).toBe('declared');
+    expect(order.firstTouchUtmCampaign).toBe('summer_sale');
+    expect(order.lastTouchUtmCampaign).toBe('summer_sale');
+    expect(order.lastTouchUtmSource).toBe('instagram');
+  });
+
+  it('does not correlate from a touch older than the lookback window', async () => {
+    const sessionId = 'session-stale';
+    await track(fixture, [
+      {
+        type: 'page_view',
+        sessionId,
+        path: '/products/desk-fan',
+        utmSource: 'instagram',
+        utmCampaign: 'spring_sale',
+        occurredAt: LAST_QUARTER.toISOString(),
+      },
+    ]);
+
+    const order = await readOrder(
+      await checkout(fixture, await createCart(fixture, { sessionId })),
+    );
+
+    // A visit a quarter ago did not drive today's order; it lands Unattributed
+    // rather than being credited to a campaign that has long since stopped.
+    expect(order.attributionSource).toBe('none');
+    expect(order.firstTouchUtmCampaign).toBeNull();
+    expect(order.firstTouchAt).toBeNull();
+    expect(order.lastTouchAt).toBeNull();
+  });
+
+  it('never correlates from bot events', async () => {
+    const sessionId = 'session-crawler';
+    await track(
+      fixture,
+      [
+        {
+          type: 'page_view',
+          sessionId,
+          path: '/products/desk-fan',
+          referrer: 'https://l.instagram.com/',
+          utmSource: 'instagram',
+          utmCampaign: 'summer_sale',
+          occurredAt: YESTERDAY.toISOString(),
+        },
+      ],
+      CRAWLER_UA,
+    );
+
+    const order = await readOrder(
+      await checkout(fixture, await createCart(fixture, { sessionId })),
+    );
+
+    expect(order.attributionSource).toBe('none');
+    expect(order.firstTouchUtmCampaign).toBeNull();
+  });
+
+  it('records no attribution for a cart with neither a declaration nor a session id', async () => {
+    // Events exist for a session this cart knows nothing about. Without the
+    // join key there is nothing to correlate, and guessing is not on offer.
+    await track(fixture, [
+      {
+        type: 'page_view',
+        sessionId: 'session-someone-else',
+        utmSource: 'instagram',
+        utmCampaign: 'summer_sale',
+        occurredAt: YESTERDAY.toISOString(),
+      },
+    ]);
+
+    const order = await readOrder(
+      await checkout(fixture, await createCart(fixture)),
+    );
+
+    expect(order.attributionSource).toBe('none');
+    expect(order.sessionId).toBeNull();
+    expect(order.firstTouchUtmCampaign).toBeNull();
+  });
+
+  it('never correlates from another organization\u2019s events', async () => {
+    const other = await seedStorefront(app);
+    try {
+      // Two tenants' storefronts generate session ids independently, so a
+      // collision is a coincidence — never a reason to credit their campaign.
+      const sessionId = 'session-shared-by-coincidence';
+      await track(other, [
+        {
+          type: 'page_view',
+          sessionId,
+          utmSource: 'instagram',
+          utmCampaign: 'their_campaign',
+          occurredAt: YESTERDAY.toISOString(),
+        },
+      ]);
+
+      const order = await readOrder(
+        await checkout(fixture, await createCart(fixture, { sessionId })),
+      );
+
+      expect(order.organizationId).toBe(fixture.organizationId);
+      expect(order.attributionSource).toBe('none');
+      expect(order.firstTouchUtmCampaign).toBeNull();
+    } finally {
+      await destroyStorefront(app, other.organizationId);
+    }
+  });
+
+  it('still completes the sale when the event log cannot be read', async () => {
+    const logged = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    jest
+      .spyOn(app.get(SessionTouchService), 'findTouches')
+      .mockRejectedValue(new Error('the event log is unreachable'));
+
+    const cartId = await createCart(fixture, { sessionId: 'session-broken' });
+    const order = await readOrder(await checkout(fixture, cartId));
+
+    expect(order.total).toBe(fixture.variantPrice + fixture.shippingPrice);
+    expect(order.attributionSource).toBe('none');
+    expect(order.sessionId).toBe('session-broken');
+    expect(logged).toHaveBeenCalledWith(
+      expect.stringContaining('could not be correlated'),
+    );
   });
 
   it('still completes the sale when attribution cannot be resolved', async () => {

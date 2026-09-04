@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { AnalyticsModule } from '../analytics/analytics.module';
 import { PricingModule } from '../pricing/pricing.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { ShippingModule } from '../shipping/shipping.module';
@@ -14,6 +15,9 @@ import { CartResolver } from './resolvers/cart.resolver';
 @Module({
   imports: [
     AuthModule,
+    // Read-only, for the attribution correlation fallback: a cart that
+    // declared nothing infers its touches from this session's events.
+    AnalyticsModule,
     PricingModule,
     InventoryModule,
     ShippingModule,

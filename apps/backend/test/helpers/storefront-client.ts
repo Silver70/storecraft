@@ -36,6 +36,19 @@ export class StorefrontClient {
     return body.data;
   }
 
+  /**
+   * Posts a batch of events to the public ingest API, the way the tracking
+   * script does. The device classification is derived from the User-Agent, so
+   * passing a crawler's is how a test gets its events recorded as bot traffic.
+   */
+  track(events: Record<string, unknown>[], userAgent?: string) {
+    const req = request(this.app.getHttpServer())
+      .post('/api/events')
+      .set('X-API-Key', this.apiKey);
+    if (userAgent !== undefined) req.set('User-Agent', userAgent);
+    return req.send({ events });
+  }
+
   /** The unprocessed response, for tests asserting on failure. */
   raw(document: string, variables: Record<string, unknown> = {}) {
     return request(this.app.getHttpServer())

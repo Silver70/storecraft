@@ -1,4 +1,5 @@
 import {
+  applyCorrelatedAttribution,
   applyDeclaredAttribution,
   emptyAttribution,
   pickAttribution,
@@ -175,6 +176,58 @@ describe('applyDeclaredAttribution', () => {
       NOW,
     );
     expect(broken.lastTouchAt).toEqual(NOW);
+  });
+});
+
+describe('applyCorrelatedAttribution', () => {
+  it('marks touches inferred from the event log as correlated, not declared', () => {
+    const patch = applyCorrelatedAttribution(
+      null,
+      {
+        firstTouch: {
+          utmSource: 'instagram',
+          utmCampaign: 'summer_sale',
+          occurredAt: LAST_WEEK,
+        },
+        lastTouch: {
+          utmSource: 'google',
+          utmCampaign: 'retargeting_q3',
+          occurredAt: YESTERDAY,
+        },
+        visitorId: 'visitor-from-events',
+      },
+      NOW,
+    );
+
+    // A merchant reading the report has to be able to tell an inference from a
+    // fact, because the event stream behind it can be blocked or purged.
+    expect(patch).toMatchObject({
+      attributionSource: 'correlated',
+      visitorId: 'visitor-from-events',
+      firstTouchUtmCampaign: 'summer_sale',
+      firstTouchAt: LAST_WEEK,
+      lastTouchUtmCampaign: 'retargeting_q3',
+      lastTouchAt: YESTERDAY,
+    });
+  });
+
+  it('records no source when the session yielded nothing to correlate', () => {
+    // "We looked and found nothing" is Unattributed, never a correlation.
+    expect(
+      applyCorrelatedAttribution(
+        null,
+        { firstTouch: null, lastTouch: null },
+        NOW,
+      ),
+    ).not.toHaveProperty('attributionSource');
+
+    expect(
+      applyCorrelatedAttribution(
+        null,
+        { lastTouch: { landingPath: '/' }, visitorId: 'visitor-1' },
+        NOW,
+      ),
+    ).toEqual({ visitorId: 'visitor-1' });
   });
 });
 
