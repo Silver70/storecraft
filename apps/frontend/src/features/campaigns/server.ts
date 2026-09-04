@@ -7,6 +7,7 @@ import {
   CAMPAIGN_PLATFORMS,
   CAMPAIGN_RULE_FIELDS,
   CAMPAIGN_RULE_OPERATORS,
+  type AttributedRevenueReport,
   type Campaign,
   type CampaignMatchingRule,
 } from "~/types/api";
@@ -179,6 +180,35 @@ export const deleteCampaignRuleServerFn = createServerFn({ method: "POST" })
         `/api/admin/campaigns/${data.campaignId}/rules/${data.ruleId}`,
         { headers: await storeHeaders() },
       );
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+// ─── Attributed revenue ───────────────────────────────────────────────────────
+
+/**
+ * Revenue and order count per campaign for a period.
+ *
+ * Resolved on every read by running the store's matching rules over the touch
+ * each order froze at checkout, which is why a campaign created after its ads
+ * ran claims them and why adding a rule repairs history. The touch selector
+ * chooses which of the two stored touches to credit; nothing is migrated.
+ */
+export const getAttributedRevenueServerFn = createServerFn({ method: "GET" })
+  .inputValidator(
+    z.object({
+      period: z.enum(["today", "7d", "30d", "90d"]),
+      touch: z.enum(["first", "last"]),
+    }),
+  )
+  .handler(async ({ data }): Promise<AttributedRevenueReport> => {
+    try {
+      const res = await apiClient.get<AttributedRevenueReport>(
+        `/api/admin/marketing/attributed-revenue?period=${data.period}&touch=${data.touch}`,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
     } catch (err) {
       throw new Error(getErrorMessage(err));
     }

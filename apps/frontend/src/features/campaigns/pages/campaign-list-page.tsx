@@ -1,7 +1,12 @@
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { ChevronRightIcon, MegaphoneIcon, PlusIcon } from "lucide-react";
+import {
+  ChartColumnIcon,
+  ChevronRightIcon,
+  MegaphoneIcon,
+  PlusIcon,
+} from "lucide-react";
 
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
@@ -45,12 +50,20 @@ export function CampaignListPage() {
             back to them from the tags on the links visitors arrive through.
           </p>
         </div>
-        <Button className="gap-2 px-5 py-2.5" asChild>
-          <Link to="/admin/campaigns/new">
-            <PlusIcon className="h-4 w-4" />
-            Create campaign
-          </Link>
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button variant="outline" className="gap-2 px-4 py-2.5" asChild>
+            <Link to="/admin/campaigns/revenue">
+              <ChartColumnIcon className="h-4 w-4" />
+              Attributed revenue
+            </Link>
+          </Button>
+          <Button className="gap-2 px-5 py-2.5" asChild>
+            <Link to="/admin/campaigns/new">
+              <PlusIcon className="h-4 w-4" />
+              Create campaign
+            </Link>
+          </Button>
+        </div>
       </div>
 
       {/* ── Tabs ──────────────────────────────────────────────────────────────── */}

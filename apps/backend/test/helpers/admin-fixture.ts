@@ -59,11 +59,68 @@ export interface AdminFixture {
   addStore(): Promise<{ storeId: string; client: AdminClient }>;
 }
 
+/**
+ * Mints a real admin identity inside an Organization that already exists, and
+ * returns a client authenticated as them against `storeId`.
+ *
+ * Separate from `seedAdmin` so a test that seeded its Organization some other
+ * way — a storefront fixture, say — can still reach the admin API for the same
+ * Store. Attributed revenue is exactly that shape of test: the sale arrives
+ * through the storefront and the report is read through the admin.
+ */
+export async function createAdminUser(
+  app: INestApplication<App>,
+  organizationId: string,
+  storeId: string,
+  role: AdminRole = 'super_admin',
+): Promise<AdminUserFixture> {
+  const db = app.get<DrizzleClient>(DRIZZLE_CLIENT);
+  const auth = app.get(AdminAuthService);
+
+  const email = `${role}-${randomUUID().slice(0, 8)}@${TEST_ADMIN_EMAIL_DOMAIN}`;
+  const [user] = await db
+    .insert(adminUsers)
+    .values({
+      email,
+      passwordHash: await bcrypt.hash(PASSWORD, BCRYPT_TEST_ROUNDS),
+      emailVerified: true,
+    })
+    .returning();
+
+  await db.insert(organizationMembers).values({
+    organizationId,
+    adminUserId: user.id,
+    role,
+  });
+
+  const session = await auth.login(email, PASSWORD);
+  return {
+    id: user.id,
+    email,
+    role,
+    accessToken: session.accessToken,
+    client: new AdminClient(app, session.accessToken, storeId),
+  };
+}
+
+/**
+ * Removes admin identities by id. They are global rows outside any
+ * Organization, so nothing cascades them — a fixture that created one has to
+ * name it here.
+ */
+export async function destroyAdminUsers(
+  app: INestApplication<App>,
+  ids: string[],
+): Promise<void> {
+  if (ids.length === 0) return;
+  const db = app.get<DrizzleClient>(DRIZZLE_CLIENT);
+  await db.delete(adminUsers).where(inArray(adminUsers.id, ids));
+}
+
 export async function seedAdmin(
   app: INestApplication<App>,
 ): Promise<AdminFixture> {
   const db = app.get<DrizzleClient>(DRIZZLE_CLIENT);
-  const auth = app.get(AdminAuthService);
   const unique = randomUUID().slice(0, 8);
 
   const [organization] = await db
@@ -83,32 +140,8 @@ export async function seedAdmin(
     })
     .returning();
 
-  async function addUser(role: AdminRole): Promise<AdminUserFixture> {
-    const email = `${role}-${randomUUID().slice(0, 8)}@${TEST_ADMIN_EMAIL_DOMAIN}`;
-    const [user] = await db
-      .insert(adminUsers)
-      .values({
-        email,
-        passwordHash: await bcrypt.hash(PASSWORD, BCRYPT_TEST_ROUNDS),
-        emailVerified: true,
-      })
-      .returning();
-
-    await db.insert(organizationMembers).values({
-      organizationId: organization.id,
-      adminUserId: user.id,
-      role,
-    });
-
-    const session = await auth.login(email, PASSWORD);
-    return {
-      id: user.id,
-      email,
-      role,
-      accessToken: session.accessToken,
-      client: new AdminClient(app, session.accessToken, store.id),
-    };
-  }
+  const addUser = (role: AdminRole): Promise<AdminUserFixture> =>
+    createAdminUser(app, organization.id, store.id, role);
 
   const admin = await addUser('super_admin');
 
@@ -159,12 +192,8 @@ export async function destroyAdmin(
     .delete(organizations)
     .where(eq(organizations.id, fixture.organizationId));
 
-  if (members.length > 0) {
-    await db.delete(adminUsers).where(
-      inArray(
-        adminUsers.id,
-        members.map((m) => m.adminUserId),
-      ),
-    );
-  }
+  await destroyAdminUsers(
+    app,
+    members.map((m) => m.adminUserId),
+  );
 }

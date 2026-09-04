@@ -1,6 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
-import type { CampaignStatus } from "~/types/api";
+import type { AttributionTouch, CampaignStatus, Period } from "~/types/api";
 import {
+  getAttributedRevenueServerFn,
   getCampaignByIdServerFn,
   getCampaignRulesServerFn,
   getCampaignsServerFn,
@@ -27,4 +28,14 @@ export const campaignRulesQueryOptions = (campaignId: string) =>
     queryKey: ["campaigns", "detail", campaignId, "rules"],
     queryFn: () => getCampaignRulesServerFn({ data: { campaignId } }),
     staleTime: 30 * 1000,
+  });
+
+export const attributedRevenueQueryOptions = (
+  period: Period,
+  touch: AttributionTouch,
+) =>
+  queryOptions({
+    queryKey: ["campaigns", "revenue", period, touch],
+    queryFn: () => getAttributedRevenueServerFn({ data: { period, touch } }),
+    staleTime: 60 * 1000,
   });

@@ -76,10 +76,23 @@ export function isNeonUrl(databaseUrl: string): boolean {
   }
 }
 
-/** A pool for non-Neon URLs, or null when the Neon HTTP driver will be used. */
+/**
+ * A pool for non-Neon URLs, or null when the Neon HTTP driver will be used.
+ *
+ * The session timezone is pinned to UTC, which is what Neon serves and what
+ * every `timestamp` column in this schema means: the application writes Dates
+ * through Drizzle, which serialises them as UTC. The one writer that does not
+ * is `defaultNow()`, evaluated by the server in *its* timezone — so on a
+ * developer machine whose Postgres runs in local time, `created_at` lands hours
+ * away from the range every report filters on and the reports quietly return
+ * nothing. Pinning the session makes local behave as production does.
+ */
 export function createPgPool(databaseUrl: string): Pool | null {
   if (isNeonUrl(databaseUrl)) return null;
-  return new Pool({ connectionString: databaseUrl });
+  return new Pool({
+    connectionString: databaseUrl,
+    options: '-c timezone=UTC',
+  });
 }
 
 /**

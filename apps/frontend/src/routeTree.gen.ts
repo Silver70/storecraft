@@ -43,6 +43,7 @@ import { Route as AdminOrdersOrderIdRouteImport } from './routes/admin/orders_/$
 import { Route as AdminDiscountsNewRouteImport } from './routes/admin/discounts_/new'
 import { Route as AdminDiscountsDiscountIdRouteImport } from './routes/admin/discounts_/$discountId'
 import { Route as AdminCustomersCustomerIdRouteImport } from './routes/admin/customers_/$customerId'
+import { Route as AdminCampaignsRevenueRouteImport } from './routes/admin/campaigns_/revenue'
 import { Route as AdminCampaignsNewRouteImport } from './routes/admin/campaigns_/new'
 import { Route as AdminCampaignsCampaignIdRouteImport } from './routes/admin/campaigns_/$campaignId'
 
@@ -219,6 +220,11 @@ const AdminCustomersCustomerIdRoute =
     path: '/customers/$customerId',
     getParentRoute: () => AdminRouteRoute,
   } as any)
+const AdminCampaignsRevenueRoute = AdminCampaignsRevenueRouteImport.update({
+  id: '/campaigns_/revenue',
+  path: '/campaigns/revenue',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
 const AdminCampaignsNewRoute = AdminCampaignsNewRouteImport.update({
   id: '/campaigns_/new',
   path: '/campaigns/new',
@@ -253,6 +259,7 @@ export interface FileRoutesByFullPath {
   '/onboarding/step3': typeof OnboardingStep3Route
   '/admin/campaigns/$campaignId': typeof AdminCampaignsCampaignIdRoute
   '/admin/campaigns/new': typeof AdminCampaignsNewRoute
+  '/admin/campaigns/revenue': typeof AdminCampaignsRevenueRoute
   '/admin/customers/$customerId': typeof AdminCustomersCustomerIdRoute
   '/admin/discounts/$discountId': typeof AdminDiscountsDiscountIdRoute
   '/admin/discounts/new': typeof AdminDiscountsNewRoute
@@ -291,6 +298,7 @@ export interface FileRoutesByTo {
   '/onboarding/step3': typeof OnboardingStep3Route
   '/admin/campaigns/$campaignId': typeof AdminCampaignsCampaignIdRoute
   '/admin/campaigns/new': typeof AdminCampaignsNewRoute
+  '/admin/campaigns/revenue': typeof AdminCampaignsRevenueRoute
   '/admin/customers/$customerId': typeof AdminCustomersCustomerIdRoute
   '/admin/discounts/$discountId': typeof AdminDiscountsDiscountIdRoute
   '/admin/discounts/new': typeof AdminDiscountsNewRoute
@@ -330,6 +338,7 @@ export interface FileRoutesById {
   '/onboarding/step3': typeof OnboardingStep3Route
   '/admin/campaigns_/$campaignId': typeof AdminCampaignsCampaignIdRoute
   '/admin/campaigns_/new': typeof AdminCampaignsNewRoute
+  '/admin/campaigns_/revenue': typeof AdminCampaignsRevenueRoute
   '/admin/customers_/$customerId': typeof AdminCustomersCustomerIdRoute
   '/admin/discounts_/$discountId': typeof AdminDiscountsDiscountIdRoute
   '/admin/discounts_/new': typeof AdminDiscountsNewRoute
@@ -370,6 +379,7 @@ export interface FileRouteTypes {
     | '/onboarding/step3'
     | '/admin/campaigns/$campaignId'
     | '/admin/campaigns/new'
+    | '/admin/campaigns/revenue'
     | '/admin/customers/$customerId'
     | '/admin/discounts/$discountId'
     | '/admin/discounts/new'
@@ -408,6 +418,7 @@ export interface FileRouteTypes {
     | '/onboarding/step3'
     | '/admin/campaigns/$campaignId'
     | '/admin/campaigns/new'
+    | '/admin/campaigns/revenue'
     | '/admin/customers/$customerId'
     | '/admin/discounts/$discountId'
     | '/admin/discounts/new'
@@ -446,6 +457,7 @@ export interface FileRouteTypes {
     | '/onboarding/step3'
     | '/admin/campaigns_/$campaignId'
     | '/admin/campaigns_/new'
+    | '/admin/campaigns_/revenue'
     | '/admin/customers_/$customerId'
     | '/admin/discounts_/$discountId'
     | '/admin/discounts_/new'
@@ -710,6 +722,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminCustomersCustomerIdRouteImport
       parentRoute: typeof AdminRouteRoute
     }
+    '/admin/campaigns_/revenue': {
+      id: '/admin/campaigns_/revenue'
+      path: '/campaigns/revenue'
+      fullPath: '/admin/campaigns/revenue'
+      preLoaderRoute: typeof AdminCampaignsRevenueRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
     '/admin/campaigns_/new': {
       id: '/admin/campaigns_/new'
       path: '/campaigns/new'
@@ -737,6 +756,7 @@ interface AdminRouteRouteChildren {
   AdminShippingRoute: typeof AdminShippingRoute
   AdminCampaignsCampaignIdRoute: typeof AdminCampaignsCampaignIdRoute
   AdminCampaignsNewRoute: typeof AdminCampaignsNewRoute
+  AdminCampaignsRevenueRoute: typeof AdminCampaignsRevenueRoute
   AdminCustomersCustomerIdRoute: typeof AdminCustomersCustomerIdRoute
   AdminDiscountsDiscountIdRoute: typeof AdminDiscountsDiscountIdRoute
   AdminDiscountsNewRoute: typeof AdminDiscountsNewRoute
@@ -764,6 +784,7 @@ const AdminRouteRouteChildren: AdminRouteRouteChildren = {
   AdminShippingRoute: AdminShippingRoute,
   AdminCampaignsCampaignIdRoute: AdminCampaignsCampaignIdRoute,
   AdminCampaignsNewRoute: AdminCampaignsNewRoute,
+  AdminCampaignsRevenueRoute: AdminCampaignsRevenueRoute,
   AdminCustomersCustomerIdRoute: AdminCustomersCustomerIdRoute,
   AdminDiscountsDiscountIdRoute: AdminDiscountsDiscountIdRoute,
   AdminDiscountsNewRoute: AdminDiscountsNewRoute,

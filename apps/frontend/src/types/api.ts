@@ -405,6 +405,45 @@ export type CampaignMatchingRule = {
   updatedAt: string;
 };
 
+// ─── Attributed revenue ───────────────────────────────────────────────────────
+
+/**
+ * Which touch a report credits: the ad that discovered the visitor, or the one
+ * that closed them. Both are stored on every order, so switching is a re-read.
+ */
+export type AttributionTouch = "first" | "last";
+
+export type RevenueBucket = {
+  orders: number;
+  /** Smallest currency unit. The backend never formats money. */
+  revenue: number;
+};
+
+export type CampaignRevenueLine = RevenueBucket & {
+  campaignId: string;
+  name: string;
+  tag: string;
+  platform: CampaignPlatform;
+  status: CampaignStatus;
+};
+
+export type AttributedRevenueReport = {
+  period: Period;
+  touch: AttributionTouch;
+  /**
+   * The active lookback window in days — why these figures differ from what an
+   * ad platform reports, so it is shown next to them rather than assumed.
+   */
+  lookbackDays: number;
+  rangeStart: string;
+  rangeEnd: string;
+  campaigns: CampaignRevenueLine[];
+  /** Its own line. Never spread across the campaigns above. */
+  unattributed: RevenueBucket;
+  /** Attributed plus unattributed — the period's realized revenue. */
+  totals: RevenueBucket;
+};
+
 // ─── Price Lists ──────────────────────────────────────────────────────────────
 
 export type PriceListType = "fixed" | "adjustment";
