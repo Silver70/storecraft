@@ -1,76 +1,55 @@
-import { neon, neonConfig } from '@neondatabase/serverless';
-import { drizzle } from 'drizzle-orm/neon-http';
-import { migrate } from 'drizzle-orm/neon-http/migrator';
+/**
+ * Applies the committed migrations to whichever database DATABASE_URL points at.
+ *
+ * Usage:
+ *   npx tsx src/shared/database/migrate.ts
+ *
+ * Reads DIRECT_DATABASE_URL if present (Neon requires a direct, non-pooled
+ * connection for DDL), otherwise DATABASE_URL. The driver is chosen from the
+ * URL, so this works against both Neon and a local Postgres server.
+ */
+import { neon } from '@neondatabase/serverless';
+import { drizzle as drizzleNeon } from 'drizzle-orm/neon-http';
+import { migrate as migrateNeon } from 'drizzle-orm/neon-http/migrator';
+import { drizzle as drizzleNodePg } from 'drizzle-orm/node-postgres';
+import { migrate as migrateNodePg } from 'drizzle-orm/node-postgres/migrator';
+import { Pool } from 'pg';
 import * as dotenv from 'dotenv';
 import { resolve } from 'path';
-import * as https from 'https';
+import { isNeonUrl } from './drizzle.factory';
 
-// Node.js undici (native fetch) has a TCP connectivity issue on some networks.
-// This shim delegates to the https module (same stack as curl) with IPv4 forced.
-function httpsFetch(
-  input: RequestInfo | URL,
-  init?: RequestInit,
-): Promise<Response> {
-  const url =
-    typeof input === 'string'
-      ? new URL(input)
-      : input instanceof URL
-        ? input
-        : new URL(input.url);
-  const body = init?.body as string | undefined;
+const MIGRATIONS_FOLDER = resolve(__dirname, 'migrations');
 
-  return new Promise((resolve2, reject) => {
-    const options: https.RequestOptions = {
-      hostname: url.hostname,
-      port: url.port || 443,
-      path: url.pathname + url.search,
-      method: (init?.method ?? 'GET').toUpperCase(),
-      headers: init?.headers as Record<string, string> | undefined,
-      family: 4,
-    };
-
-    const req = https.request(options, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', () => {
-        const buf = Buffer.concat(chunks);
-        resolve2(
-          new globalThis.Response(buf, {
-            status: res.statusCode,
-            headers: res.headers as Record<string, string>,
-          }),
-        );
-      });
+export async function runMigrations(url: string): Promise<void> {
+  if (isNeonUrl(url)) {
+    await migrateNeon(drizzleNeon(neon(url)), {
+      migrationsFolder: MIGRATIONS_FOLDER,
     });
+    return;
+  }
 
-    req.on('error', reject);
-    if (body) req.write(body);
-    req.end();
-  });
+  const pool = new Pool({ connectionString: url });
+  try {
+    await migrateNodePg(drizzleNodePg(pool), {
+      migrationsFolder: MIGRATIONS_FOLDER,
+    });
+  } finally {
+    await pool.end();
+  }
 }
 
-neonConfig.fetchFunction = httpsFetch;
-
-dotenv.config({ path: resolve(process.cwd(), '.env') });
-
 async function main() {
+  dotenv.config({ path: resolve(process.cwd(), '.env') });
+
   const url = process.env.DIRECT_DATABASE_URL ?? process.env.DATABASE_URL;
   if (!url) {
     console.error('No database URL configured');
     process.exit(1);
   }
 
-  const sql = neon(url);
-  const db = drizzle(sql);
-
   try {
     console.log('Running migrations...');
-    await migrate(db, {
-      migrationsFolder: resolve(
-        process.cwd(),
-        'src/shared/database/migrations',
-      ),
-    });
+    await runMigrations(url);
     console.log('Migrations applied successfully.');
   } catch (err) {
     console.error('Migration failed:', err);
@@ -78,7 +57,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

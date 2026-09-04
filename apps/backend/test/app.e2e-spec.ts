@@ -1,29 +1,31 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
+/**
+ * The application boots against the local test database and serves GraphQL.
+ * If this fails, every other e2e failure is noise.
+ */
+import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import { App } from 'supertest/types';
-import { AppModule } from './../src/app.module';
+import type { App } from 'supertest/types';
+import { createTestApp } from './helpers/test-app';
 
-describe('AppController (e2e)', () => {
+describe('Application (e2e)', () => {
   let app: INestApplication<App>;
 
-  beforeEach(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-    await app.init();
+  beforeAll(async () => {
+    ({ app } = await createTestApp());
   });
 
-  it('/ (GET)', () => {
-    return request(app.getHttpServer())
-      .get('/')
-      .expect(200)
-      .expect('Hello World!');
+  afterAll(async () => {
+    await app?.close();
   });
 
-  afterEach(async () => {
-    await app.close();
+  it('serves the GraphQL health query', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/graphql')
+      .send({ query: '{ _health }' })
+      .expect(200);
+
+    expect((response.body as { data: { _health: boolean } }).data._health).toBe(
+      true,
+    );
   });
 });

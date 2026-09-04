@@ -1,72 +1,41 @@
-import { Global, Module } from '@nestjs/common';
+import { Global, Inject, Module, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { neon, neonConfig } from '@neondatabase/serverless';
-import { drizzle } from 'drizzle-orm/neon-http';
-import * as https from 'https';
-import * as schema from './schema';
+import { Pool } from 'pg';
+import {
+  createDrizzleClient,
+  createPgPool,
+  type DrizzleClient,
+} from './drizzle.factory';
 
 export const DRIZZLE_CLIENT = 'DRIZZLE_CLIENT';
+export const PG_POOL = 'PG_POOL';
 
-export type DrizzleClient = ReturnType<typeof drizzle>;
-
-// Node.js undici (native fetch) times out on some networks due to IPv6 fallback.
-// This shim forces IPv4 and uses the https module which connects reliably.
-function httpsFetch(
-  input: RequestInfo | URL,
-  init?: RequestInit,
-): Promise<Response> {
-  const url =
-    typeof input === 'string'
-      ? new URL(input)
-      : input instanceof URL
-        ? input
-        : new URL(input.url);
-
-  return new Promise((resolve, reject) => {
-    const req = https.request(
-      {
-        hostname: url.hostname,
-        port: url.port || 443,
-        path: url.pathname + url.search,
-        method: (init?.method ?? 'GET').toUpperCase(),
-        headers: init?.headers as Record<string, string> | undefined,
-        family: 4,
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () => {
-          resolve(
-            new globalThis.Response(Buffer.concat(chunks), {
-              status: res.statusCode,
-              headers: res.headers as Record<string, string>,
-            }),
-          );
-        });
-      },
-    );
-    req.on('error', reject);
-    const body = init?.body as string | undefined;
-    if (body) req.write(body);
-    req.end();
-  });
-}
-
-neonConfig.fetchFunction = httpsFetch;
+export type { DrizzleClient };
 
 @Global()
 @Module({
   providers: [
     {
-      provide: DRIZZLE_CLIENT,
+      provide: PG_POOL,
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => {
-        const databaseUrl = config.getOrThrow<string>('DATABASE_URL');
-        const sql = neon(databaseUrl);
-        return drizzle(sql, { schema });
-      },
+      useFactory: (config: ConfigService) =>
+        createPgPool(config.getOrThrow<string>('DATABASE_URL')),
+    },
+    {
+      provide: DRIZZLE_CLIENT,
+      inject: [ConfigService, PG_POOL],
+      useFactory: (config: ConfigService, pool: Pool | null) =>
+        createDrizzleClient(config.getOrThrow<string>('DATABASE_URL'), pool),
     },
   ],
   exports: [DRIZZLE_CLIENT],
 })
-export class DatabaseModule {}
+export class DatabaseModule implements OnModuleDestroy {
+  constructor(@Inject(PG_POOL) private readonly pool: Pool | null) {}
+
+  // The Neon HTTP driver holds no sockets, but a node-postgres pool does — and
+  // an unclosed pool keeps the process (and the test runner) alive forever.
+  async onModuleDestroy(): Promise<void> {
+    await this.pool?.end();
+  }
+}

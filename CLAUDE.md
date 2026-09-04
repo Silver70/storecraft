@@ -36,6 +36,23 @@ npx turbo dev --filter=frontend
 npx turbo build --filter=frontend
 ```
 
+Backend tests (from `apps/backend/`):
+
+```sh
+npm test         # unit specs (src/**/*.spec.ts), no database
+npm run test:e2e # integration suite (test/**/*.e2e-spec.ts), local Postgres
+```
+
+The integration suite boots the real application against a local Postgres
+database, reached through the public storefront GraphQL API. It reads
+`.env.test` — never `.env`, which points at the hosted database — and aborts if
+`DATABASE_URL` resolves to a non-local host, because it seeds and deletes rows.
+Global setup creates `commerce_os_test` and migrates it; each test seeds its own
+Organization and deletes it afterward, which every tenant-scoped table cascades
+from. Stripe is replaced by an in-memory `PaymentProvider` fake; everything else
+is production wiring. Add new end-to-end coverage here rather than mocking
+repositories.
+
 Frontend only (from `apps/frontend/`):
 
 ```sh

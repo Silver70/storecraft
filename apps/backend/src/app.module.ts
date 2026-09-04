@@ -32,6 +32,12 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      // Tests never read .env — it points at the hosted database, and the
+      // integration suite creates and deletes rows.
+      envFilePath:
+        process.env.NODE_ENV === 'test'
+          ? ['.env.test.local', '.env.test']
+          : ['.env'],
       validationSchema,
     }),
     DatabaseModule,
