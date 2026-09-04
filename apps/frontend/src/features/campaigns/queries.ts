@@ -11,6 +11,7 @@ import {
   getAttributedRevenueServerFn,
   getCampaignByIdServerFn,
   getCampaignRulesServerFn,
+  getCampaignSpendServerFn,
   getCampaignsServerFn,
   previewCampaignRuleServerFn,
 } from "./server";
@@ -35,6 +36,20 @@ export const campaignRulesQueryOptions = (campaignId: string) =>
   queryOptions({
     queryKey: ["campaigns", "detail", campaignId, "rules"],
     queryFn: () => getCampaignRulesServerFn({ data: { campaignId } }),
+    staleTime: 30 * 1000,
+  });
+
+/**
+ * What one campaign cost over a period.
+ *
+ * Short-lived on purpose: recording spend is the one thing on the campaign page
+ * that changes money, and a merchant who has just typed a figure should see the
+ * list and its total agree with what they typed.
+ */
+export const campaignSpendQueryOptions = (campaignId: string, period: Period) =>
+  queryOptions({
+    queryKey: ["campaigns", "detail", campaignId, "spend", period],
+    queryFn: () => getCampaignSpendServerFn({ data: { campaignId, period } }),
     staleTime: 30 * 1000,
   });
 

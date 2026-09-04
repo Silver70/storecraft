@@ -10,6 +10,8 @@ import {
   type AttributedRevenueReport,
   type Campaign,
   type CampaignMatchingRule,
+  type CampaignSpend,
+  type CampaignSpendReport,
   type CampaignTaggedLink,
   type RulePreviewReport,
 } from "~/types/api";
@@ -281,6 +283,112 @@ export const getAttributedRevenueServerFn = createServerFn({ method: "GET" })
         { headers: await storeHeaders() },
       );
       return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+// ─── Campaign spend ───────────────────────────────────────────────────────────
+
+/**
+ * What a campaign cost over a period, plus the store's currency and today's
+ * date where the store is.
+ *
+ * Those last two are read from the backend rather than derived here on purpose:
+ * a date picker capped by the browser's clock would refuse a legitimate figure
+ * for a merchant who is travelling, and offer an impossible one for a store
+ * ahead of them.
+ */
+export const getCampaignSpendServerFn = createServerFn({ method: "GET" })
+  .inputValidator(
+    z.object({
+      campaignId: z.string().min(1),
+      period: z.enum(["today", "7d", "30d", "90d"]),
+    }),
+  )
+  .handler(async ({ data }): Promise<CampaignSpendReport> => {
+    try {
+      const res = await apiClient.get<CampaignSpendReport>(
+        `/api/admin/campaigns/${data.campaignId}/spend?period=${data.period}`,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+/**
+ * Records one day's spend.
+ *
+ * A correction, not an addition: the backend upserts on `(campaign, day)`, so
+ * submitting the same day twice leaves one row holding the last amount. That is
+ * what makes a double-click harmless — an insert would double the day's cost
+ * and halve the campaign's ROAS without anything failing.
+ */
+export const recordCampaignSpendServerFn = createServerFn({ method: "POST" })
+  .inputValidator(
+    z.object({
+      campaignId: z.string().min(1),
+      day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Pick a date"),
+      amount: z.number().int().min(0),
+      currency: z.string().length(3),
+      note: z.string().max(255).optional(),
+    }),
+  )
+  .handler(async ({ data }): Promise<CampaignSpend> => {
+    try {
+      const { campaignId, ...body } = data;
+      const res = await apiClient.post<CampaignSpend>(
+        `/api/admin/campaigns/${campaignId}/spend`,
+        body,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+// The day is deliberately absent: moving a figure to another day is recording
+// it there — which corrects that day — and deleting the row entered by mistake.
+// The currency is the store's and frozen on the row.
+export const updateCampaignSpendServerFn = createServerFn({ method: "POST" })
+  .inputValidator(
+    z.object({
+      campaignId: z.string().min(1),
+      spendId: z.string().min(1),
+      amount: z.number().int().min(0).optional(),
+      note: z.string().max(255).optional(),
+    }),
+  )
+  .handler(async ({ data }): Promise<CampaignSpend> => {
+    try {
+      const { campaignId, spendId, ...body } = data;
+      const res = await apiClient.patch<CampaignSpend>(
+        `/api/admin/campaigns/${campaignId}/spend/${spendId}`,
+        body,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+export const deleteCampaignSpendServerFn = createServerFn({ method: "POST" })
+  .inputValidator(
+    z.object({
+      campaignId: z.string().min(1),
+      spendId: z.string().min(1),
+    }),
+  )
+  .handler(async ({ data }): Promise<void> => {
+    try {
+      await apiClient.delete(
+        `/api/admin/campaigns/${data.campaignId}/spend/${data.spendId}`,
+        { headers: await storeHeaders() },
+      );
     } catch (err) {
       throw new Error(getErrorMessage(err));
     }

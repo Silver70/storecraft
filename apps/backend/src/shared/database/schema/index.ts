@@ -40,3 +40,4 @@ export * from './analytics-events.schema';
 export * from './analytics-daily-metrics.schema';
 export * from './campaigns.schema';
 export * from './campaign-matching-rules.schema';
+export * from './campaign-spend.schema';

@@ -429,6 +429,58 @@ export type CampaignTaggedLink = {
   campaignName: string;
 };
 
+// ─── Campaign spend ───────────────────────────────────────────────────────────
+
+/**
+ * What a merchant paid for a campaign on one day.
+ *
+ * One row per campaign per day: recording a day that already has a figure
+ * corrects it rather than adding to it, so a double-submit cannot double a
+ * day's cost. The `day` is a calendar date in the store's timezone, never an
+ * instant — ad platforms report daily totals and nothing here is more precise
+ * than that.
+ */
+export type CampaignSpend = {
+  id: string;
+  organizationId: string;
+  storeId: string;
+  campaignId: string;
+  /** `YYYY-MM-DD` in the store's timezone. */
+  day: string;
+  /** Smallest currency unit. Formatted only for display, never on the wire. */
+  amount: number;
+  /**
+   * The store's currency, frozen on the row when it was recorded so a later
+   * currency change cannot reinterpret it. There is no conversion anywhere.
+   */
+  currency: string;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * A campaign's spend for a period, with the two facts an entry form needs to be
+ * correct: the currency it must be in, and the latest day it may be dated.
+ * Both come from the store, not from the browser — a date capped by the
+ * viewer's own clock would be wrong for anyone not sitting in the store's
+ * timezone.
+ */
+export type CampaignSpendReport = {
+  campaignId: string;
+  period: Period;
+  currency: string;
+  timezone: string;
+  /** Today where the store is: the latest day spend can be recorded for. */
+  today: string;
+  /** The inclusive calendar day range the rows cover. */
+  from: string;
+  to: string;
+  rows: CampaignSpend[];
+  /** The period's spend in the smallest currency unit. */
+  total: number;
+};
+
 // ─── Attributed revenue ───────────────────────────────────────────────────────
 
 /**
