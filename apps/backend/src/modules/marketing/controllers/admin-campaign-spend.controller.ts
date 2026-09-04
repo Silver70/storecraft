@@ -32,6 +32,7 @@ import {
 import {
   ListCampaignSpendQueryDto,
   RecordCampaignSpendDto,
+  RecordCampaignSpendRangeDto,
   UpdateCampaignSpendDto,
 } from '../dto/campaign-spend.dto';
 
@@ -98,6 +99,29 @@ export class AdminCampaignSpendController {
   ): Promise<CampaignSpend> {
     const { organizationId, storeId } = requireStoreContext(tenant);
     return this.spend.record(organizationId, storeId, campaignId, dto);
+  }
+
+  @Post('range')
+  @RequirePermission('campaigns.write')
+  @ApiOperation({
+    summary: 'Record one total across a range of days',
+    description:
+      "For a merchant who knows what a week cost but not what each day cost. Writes one row per day in the range, dividing the total in minor units and adding the remainder to the first day, so the rows sum to exactly the total submitted. Every day in the range is overwritten rather than added to, exactly as single-day entry corrects the day it names — so re-running an overlapping range repairs those days instead of doubling them. The same refusals apply: no negative total, no future day, the store's currency only. A range that ends before it starts, or that covers more days than one entry may cover, is refused.",
+  })
+  @ApiResponse({ status: 201, description: 'The rows written, oldest first' })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Negative total, future or malformed day, wrong currency, inverted range, or a range that is too long',
+  })
+  @ApiResponse({ status: 404 })
+  async recordRange(
+    @Param('campaignId', ParseUUIDPipe) campaignId: string,
+    @Body() dto: RecordCampaignSpendRangeDto,
+    @CurrentTenant() tenant: TenantContext,
+  ): Promise<CampaignSpend[]> {
+    const { organizationId, storeId } = requireStoreContext(tenant);
+    return this.spend.recordRange(organizationId, storeId, campaignId, dto);
   }
 
   @Patch(':spendId')

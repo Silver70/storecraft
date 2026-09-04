@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, between, eq } from 'drizzle-orm';
+import { and, asc, between, eq, sql } from 'drizzle-orm';
 import type { DrizzleClient } from '../../../shared/database/database.module';
 import { DRIZZLE_CLIENT } from '../../../shared/database/database.module';
 import type {
@@ -115,6 +115,51 @@ export class CampaignSpendRepository {
       })
       .returning();
     return saved;
+  }
+
+  /**
+   * Records a whole range of days at once, correcting every day it covers.
+   *
+   * One `INSERT ... VALUES (...), (...) ON CONFLICT DO UPDATE`, not a loop of
+   * single upserts. That makes the range atomic without an explicit
+   * transaction: a statement either applies to every day or to none, so a
+   * failure halfway cannot leave a merchant with three days of a seven-day
+   * total recorded and no indication which four are missing.
+   *
+   * The `set` clause reads from `excluded` rather than from a captured value,
+   * because every row of the statement conflicts with a different existing row
+   * and each must take its own new amount. `excluded` is the row Postgres was
+   * trying to insert, so each conflicting day updates from its own values.
+   *
+   * The caller guarantees the days are distinct; Postgres refuses a statement
+   * that would update the same row twice, and `enumerateDays` never repeats a
+   * day.
+   */
+  async recordMany(rows: RecordSpendRow[]): Promise<CampaignSpend[]> {
+    if (rows.length === 0) return [];
+
+    const values: NewCampaignSpend[] = rows;
+
+    return this.db
+      .insert(campaignSpend)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [campaignSpend.campaignId, campaignSpend.day],
+        set: {
+          amount: sql`excluded.amount`,
+          currency: sql`excluded.currency`,
+          note: sql`excluded.note`,
+          updatedAt: new Date(),
+        },
+        // As in `record`: a conflicting row is by construction the same
+        // Campaign's, but a write on cost data that can only land inside the
+        // caller's tenant is worth restating.
+        setWhere: and(
+          eq(campaignSpend.organizationId, rows[0].organizationId),
+          eq(campaignSpend.storeId, rows[0].storeId),
+        ),
+      })
+      .returning();
   }
 
   async update(

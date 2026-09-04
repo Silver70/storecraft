@@ -350,6 +350,46 @@ export const recordCampaignSpendServerFn = createServerFn({ method: "POST" })
     }
   });
 
+/**
+ * Records one total across a range of days, as one row per day.
+ *
+ * For a merchant who knows what a week cost but not what each day cost. The
+ * split is the backend's: it divides the total in minor units and adds the
+ * remainder to the first day, so the rows sum to exactly the total typed.
+ * Doing that arithmetic here as well would be a second implementation of it,
+ * free to drift from the one that writes the rows.
+ *
+ * A correction like single-day entry — every day in the range is overwritten
+ * rather than added to, so re-running an overlapping range repairs those days
+ * instead of doubling them.
+ */
+export const recordCampaignSpendRangeServerFn = createServerFn({
+  method: "POST",
+})
+  .inputValidator(
+    z.object({
+      campaignId: z.string().min(1),
+      startDay: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Pick a start date"),
+      endDay: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Pick an end date"),
+      total: z.number().int().min(0),
+      currency: z.string().length(3),
+      note: z.string().max(255).optional(),
+    }),
+  )
+  .handler(async ({ data }): Promise<CampaignSpend[]> => {
+    try {
+      const { campaignId, ...body } = data;
+      const res = await apiClient.post<CampaignSpend[]>(
+        `/api/admin/campaigns/${campaignId}/spend/range`,
+        body,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
 // The day is deliberately absent: moving a figure to another day is recording
 // it there — which corrects that day — and deleting the row entered by mistake.
 // The currency is the store's and frozen on the row.

@@ -8,9 +8,14 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import { formatMoney, toCents } from "~/lib/money";
-import type { CampaignSpend, Period } from "~/types/api";
+import type { CampaignSpend, CampaignSpendReport, Period } from "~/types/api";
 import { campaignSpendQueryOptions } from "../queries";
-import { deleteCampaignSpendServerFn, recordCampaignSpendServerFn, updateCampaignSpendServerFn } from "../server";
+import {
+    deleteCampaignSpendServerFn,
+    recordCampaignSpendRangeServerFn,
+    recordCampaignSpendServerFn,
+    updateCampaignSpendServerFn,
+} from "../server";
 
 const PERIODS: { value: Period; label: string }[] = [
     { value: "today", label: "Today" },
@@ -52,6 +57,49 @@ function formatDay(day: string): string {
     });
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A `YYYY-MM-DD` shifted by whole days.
+ *
+ * UTC arithmetic, because a calendar day has no offset and UTC has no DST —
+ * walking in local time would land on the same date twice across a spring
+ * forward. Only ever used to seed a form default from the store's own today.
+ */
+function shiftDays(day: string, delta: number): string {
+    return new Date(new Date(`${day}T00:00:00Z`).getTime() + delta * DAY_MS).toISOString().slice(0, 10);
+}
+
+/**
+ * How many days a range covers, both ends included — how many rows the entry
+ * will write.
+ *
+ * This is a count of rows, not a division of money. The split itself, and the
+ * rule that its remainder lands on the first day, stays on the backend: a
+ * second implementation of it here would be free to drift from the one that
+ * actually writes the rows, and the merchant would be shown a figure that is
+ * not what was saved.
+ */
+function countDays(from: string, to: string): number {
+    const span = new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime();
+    return span < 0 ? 0 : Math.round(span / DAY_MS) + 1;
+}
+
+/** Every period of this campaign's spend, since a write can land in any of them. */
+function useInvalidateSpend(campaignId: string) {
+    const queryClient = useQueryClient();
+    return () => queryClient.invalidateQueries({ queryKey: ["campaigns", "detail", campaignId, "spend"] });
+}
+
+/** Which of the two entry forms is showing. */
+type EntryMode = "day" | "range";
+
+interface EntryProps {
+    campaignId: string;
+    /** Absent while loading or failed: entry stays disabled without it. */
+    report: CampaignSpendReport | undefined;
+}
+
 /**
  * What this campaign cost, entered by hand one day at a time.
  *
@@ -66,10 +114,14 @@ function formatDay(day: string): string {
  * The currency and the latest permitted date come from the store via the API,
  * never from the browser: a date picker capped by the viewer's own clock would
  * be wrong for anyone not sitting in the store's timezone.
+ *
+ * Entry comes in two shapes because merchants know their costs in two shapes:
+ * a day at a time, and a week's total from an invoice. Both write the same
+ * per-day rows.
  */
 export function CampaignSpendCard({ campaignId }: { campaignId: string }) {
-    const queryClient = useQueryClient();
     const [period, setPeriod] = React.useState<Period>("30d");
+    const [mode, setMode] = React.useState<EntryMode>("day");
 
     const {
         data: report,
@@ -77,49 +129,6 @@ export function CampaignSpendCard({ campaignId }: { campaignId: string }) {
         error: loadError,
         refetch,
     } = useQuery(campaignSpendQueryOptions(campaignId, period));
-
-    // `null` means untouched, which is what lets the field default to today
-    // where the *store* is — a date only the API knows — without overwriting a
-    // day the merchant has since chosen, or refilling one they cleared.
-    const [chosenDay, setChosenDay] = React.useState<string | null>(null);
-    const [amount, setAmount] = React.useState("");
-    const [note, setNote] = React.useState("");
-    const [error, setError] = React.useState<string | null>(null);
-
-    const day = chosenDay ?? report?.today ?? "";
-
-    const invalidate = () =>
-        queryClient.invalidateQueries({
-            queryKey: ["campaigns", "detail", campaignId, "spend"],
-        });
-
-    const recordMutation = useMutation({
-        mutationFn: () => {
-            const minorUnits = parseAmount(amount);
-            if (minorUnits === null) {
-                throw new Error("Enter an amount as a positive number, such as 125 or 125.50.");
-            }
-            return recordCampaignSpendServerFn({
-                data: {
-                    campaignId,
-                    day,
-                    amount: minorUnits,
-                    currency: report!.currency,
-                    // Sent as an empty string when blank, which the backend reads as null.
-                    note: note.trim(),
-                },
-            });
-        },
-        onSuccess: () => {
-            setAmount("");
-            setNote("");
-            setError(null);
-            void invalidate();
-        },
-        onError: err => setError(err.message),
-    });
-
-    const canRecord = report !== undefined && day !== "" && amount.trim() !== "" && !recordMutation.isPending;
 
     return (
         <Card>
@@ -184,75 +193,30 @@ export function CampaignSpendCard({ campaignId }: { campaignId: string }) {
                     </div>
                 )}
 
-                {/* ── Record a day ────────────────────────────────────────────────── */}
-                <div className="space-y-2">
-                    <Label htmlFor="spend-amount">Record a day</Label>
-                    <div className="flex flex-wrap items-end gap-2">
-                        <div className="space-y-1.5">
-                            <Label htmlFor="spend-day" className="text-xs text-muted-foreground">
-                                Day
-                            </Label>
-                            <Input
-                                id="spend-day"
-                                type="date"
-                                className="w-40"
-                                value={day}
-                                // Capped by the store's today, not the browser's: spend cannot
-                                // be dated in the future, and the backend refuses it anyway.
-                                max={report?.today}
-                                onChange={e => setChosenDay(e.target.value)}
-                            />
-                        </div>
-
-                        <div className="space-y-1.5">
-                            <Label htmlFor="spend-amount" className="text-xs text-muted-foreground">
-                                Amount ({report?.currency ?? "—"})
-                            </Label>
-                            <Input
-                                id="spend-amount"
-                                className="w-32 tabular-nums"
-                                inputMode="decimal"
-                                placeholder="125.00"
-                                value={amount}
-                                onChange={e => setAmount(e.target.value)}
-                                onKeyDown={e => {
-                                    if (e.key === "Enter" && canRecord) recordMutation.mutate();
-                                }}
-                            />
-                        </div>
-
-                        <div className="min-w-[180px] flex-1 space-y-1.5">
-                            <Label htmlFor="spend-note" className="text-xs text-muted-foreground">
-                                Note (optional)
-                            </Label>
-                            <Input
-                                id="spend-note"
-                                placeholder="Boosted the reel"
-                                value={note}
-                                maxLength={255}
-                                onChange={e => setNote(e.target.value)}
-                                onKeyDown={e => {
-                                    if (e.key === "Enter" && canRecord) recordMutation.mutate();
-                                }}
-                            />
-                        </div>
-
-                        <Button
-                            type="button"
-                            className="gap-1.5"
-                            disabled={!canRecord}
-                            onClick={() => recordMutation.mutate()}
-                        >
-                            {recordMutation.isPending ? (
-                                <LoaderCircleIcon className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                                <PlusIcon className="h-3.5 w-3.5" />
-                            )}
-                            Record
-                        </Button>
+                {/* ── Record spend ────────────────────────────────────────────────── */}
+                <div className="space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <Label>Record spend</Label>
+                        {/* Two shapes because merchants know their costs in two
+                            shapes — a day at a time, or a week's total off an
+                            invoice. Both write the same per-day rows. */}
+                        <Tabs value={mode} onValueChange={v => setMode(v as EntryMode)}>
+                            <TabsList className="h-8">
+                                <TabsTrigger value="day" className="text-xs">
+                                    One day
+                                </TabsTrigger>
+                                <TabsTrigger value="range" className="text-xs">
+                                    Date range
+                                </TabsTrigger>
+                            </TabsList>
+                        </Tabs>
                     </div>
 
-                    {error && <p className="text-xs text-destructive">{error}</p>}
+                    {mode === "day" ? (
+                        <SingleDayEntry campaignId={campaignId} report={report} />
+                    ) : (
+                        <RangeEntry campaignId={campaignId} report={report} />
+                    )}
 
                     <p className="text-xs text-muted-foreground">
                         Spend is recorded in your store's currency and is never converted. An archived campaign still
@@ -261,6 +225,265 @@ export function CampaignSpendCard({ campaignId }: { campaignId: string }) {
                 </div>
             </CardContent>
         </Card>
+    );
+}
+
+/**
+ * One day, one figure.
+ *
+ * The day defaults to today where the *store* is, a date only the API knows.
+ * `null` for untouched is what lets that default apply without overwriting a
+ * day the merchant has since chosen, or refilling one they cleared.
+ */
+function SingleDayEntry({ campaignId, report }: EntryProps) {
+    const invalidate = useInvalidateSpend(campaignId);
+    const [chosenDay, setChosenDay] = React.useState<string | null>(null);
+    const [amount, setAmount] = React.useState("");
+    const [note, setNote] = React.useState("");
+    const [error, setError] = React.useState<string | null>(null);
+
+    const day = chosenDay ?? report?.today ?? "";
+
+    const recordMutation = useMutation({
+        mutationFn: () => {
+            const minorUnits = parseAmount(amount);
+            if (minorUnits === null) {
+                throw new Error("Enter an amount as a positive number, such as 125 or 125.50.");
+            }
+            return recordCampaignSpendServerFn({
+                data: {
+                    campaignId,
+                    day,
+                    amount: minorUnits,
+                    currency: report!.currency,
+                    // Sent as an empty string when blank, which the backend reads as null.
+                    note: note.trim(),
+                },
+            });
+        },
+        onSuccess: () => {
+            setAmount("");
+            setNote("");
+            setError(null);
+            void invalidate();
+        },
+        onError: err => setError(err.message),
+    });
+
+    const canRecord = report !== undefined && day !== "" && amount.trim() !== "" && !recordMutation.isPending;
+    const submitOnEnter = (e: React.KeyboardEvent) => {
+        if (e.key === "Enter" && canRecord) recordMutation.mutate();
+    };
+
+    return (
+        <div className="space-y-2">
+            <div className="flex flex-wrap items-end gap-2">
+                <div className="space-y-1.5">
+                    <Label htmlFor="spend-day" className="text-xs text-muted-foreground">
+                        Day
+                    </Label>
+                    <Input
+                        id="spend-day"
+                        type="date"
+                        className="w-40"
+                        value={day}
+                        // Capped by the store's today, not the browser's: spend cannot
+                        // be dated in the future, and the backend refuses it anyway.
+                        max={report?.today}
+                        onChange={e => setChosenDay(e.target.value)}
+                    />
+                </div>
+
+                <div className="space-y-1.5">
+                    <Label htmlFor="spend-amount" className="text-xs text-muted-foreground">
+                        Amount ({report?.currency ?? "—"})
+                    </Label>
+                    <Input
+                        id="spend-amount"
+                        className="w-32 tabular-nums"
+                        inputMode="decimal"
+                        placeholder="125.00"
+                        value={amount}
+                        onChange={e => setAmount(e.target.value)}
+                        onKeyDown={submitOnEnter}
+                    />
+                </div>
+
+                <div className="min-w-[180px] flex-1 space-y-1.5">
+                    <Label htmlFor="spend-note" className="text-xs text-muted-foreground">
+                        Note (optional)
+                    </Label>
+                    <Input
+                        id="spend-note"
+                        placeholder="Boosted the reel"
+                        value={note}
+                        maxLength={255}
+                        onChange={e => setNote(e.target.value)}
+                        onKeyDown={submitOnEnter}
+                    />
+                </div>
+
+                <Button type="button" className="gap-1.5" disabled={!canRecord} onClick={() => recordMutation.mutate()}>
+                    {recordMutation.isPending ? (
+                        <LoaderCircleIcon className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                        <PlusIcon className="h-3.5 w-3.5" />
+                    )}
+                    Record
+                </Button>
+            </div>
+
+            {error && <p className="text-xs text-destructive">{error}</p>}
+        </div>
+    );
+}
+
+/**
+ * One total, spread across the days it covers.
+ *
+ * For the merchant who has an invoice for the week and no idea what Wednesday
+ * cost on its own. The total is divided into one row per day by the backend,
+ * with the remainder added to the first day so the rows sum to exactly what was
+ * typed — which is why the amount field is labelled a *total* and the row count
+ * is shown before submitting. A merchant who reads it as a daily figure would
+ * enter seven times what they meant.
+ *
+ * Like single-day entry, this corrects: every day in the range is overwritten,
+ * so re-entering an overlapping week repairs those days rather than doubling
+ * them. The range defaults to the last seven days ending today where the store
+ * is, which is the entry this form exists for.
+ */
+function RangeEntry({ campaignId, report }: EntryProps) {
+    const invalidate = useInvalidateSpend(campaignId);
+    const [chosenStart, setChosenStart] = React.useState<string | null>(null);
+    const [chosenEnd, setChosenEnd] = React.useState<string | null>(null);
+    const [total, setTotal] = React.useState("");
+    const [note, setNote] = React.useState("");
+    const [error, setError] = React.useState<string | null>(null);
+
+    const endDay = chosenEnd ?? report?.today ?? "";
+    const startDay = chosenStart ?? (report ? shiftDays(report.today, -6) : "");
+
+    const dayCount = startDay !== "" && endDay !== "" ? countDays(startDay, endDay) : 0;
+    const inverted = startDay !== "" && endDay !== "" && dayCount === 0;
+
+    const recordMutation = useMutation({
+        mutationFn: () => {
+            const minorUnits = parseAmount(total);
+            if (minorUnits === null) {
+                throw new Error("Enter a total as a positive number, such as 700 or 700.50.");
+            }
+            return recordCampaignSpendRangeServerFn({
+                data: {
+                    campaignId,
+                    startDay,
+                    endDay,
+                    total: minorUnits,
+                    currency: report!.currency,
+                    note: note.trim(),
+                },
+            });
+        },
+        onSuccess: () => {
+            setTotal("");
+            setNote("");
+            setError(null);
+            void invalidate();
+        },
+        onError: err => setError(err.message),
+    });
+
+    const canRecord = report !== undefined && dayCount > 0 && total.trim() !== "" && !recordMutation.isPending;
+    const submitOnEnter = (e: React.KeyboardEvent) => {
+        if (e.key === "Enter" && canRecord) recordMutation.mutate();
+    };
+
+    return (
+        <div className="space-y-2">
+            <div className="flex flex-wrap items-end gap-2">
+                <div className="space-y-1.5">
+                    <Label htmlFor="spend-start" className="text-xs text-muted-foreground">
+                        From
+                    </Label>
+                    <Input
+                        id="spend-start"
+                        type="date"
+                        className="w-40"
+                        value={startDay}
+                        max={report?.today}
+                        onChange={e => setChosenStart(e.target.value)}
+                    />
+                </div>
+
+                <div className="space-y-1.5">
+                    <Label htmlFor="spend-end" className="text-xs text-muted-foreground">
+                        To
+                    </Label>
+                    <Input
+                        id="spend-end"
+                        type="date"
+                        className="w-40"
+                        value={endDay}
+                        max={report?.today}
+                        onChange={e => setChosenEnd(e.target.value)}
+                    />
+                </div>
+
+                <div className="space-y-1.5">
+                    {/* "Total", not "Amount": this figure covers the whole range,
+                        and a merchant reading it as a daily rate would enter
+                        seven times what they meant. */}
+                    <Label htmlFor="spend-total" className="text-xs text-muted-foreground">
+                        Total ({report?.currency ?? "—"})
+                    </Label>
+                    <Input
+                        id="spend-total"
+                        className="w-32 tabular-nums"
+                        inputMode="decimal"
+                        placeholder="700.00"
+                        value={total}
+                        onChange={e => setTotal(e.target.value)}
+                        onKeyDown={submitOnEnter}
+                    />
+                </div>
+
+                <div className="min-w-[180px] flex-1 space-y-1.5">
+                    <Label htmlFor="spend-range-note" className="text-xs text-muted-foreground">
+                        Note (optional)
+                    </Label>
+                    <Input
+                        id="spend-range-note"
+                        placeholder="Launch week"
+                        value={note}
+                        maxLength={255}
+                        onChange={e => setNote(e.target.value)}
+                        onKeyDown={submitOnEnter}
+                    />
+                </div>
+
+                <Button type="button" className="gap-1.5" disabled={!canRecord} onClick={() => recordMutation.mutate()}>
+                    {recordMutation.isPending ? (
+                        <LoaderCircleIcon className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                        <PlusIcon className="h-3.5 w-3.5" />
+                    )}
+                    Record range
+                </Button>
+            </div>
+
+            {inverted ? (
+                <p className="text-xs text-destructive">The end date is before the start date.</p>
+            ) : (
+                dayCount > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                        Writes {dayCount} {dayCount === 1 ? "row" : "rows"}, one per day, adding up to exactly the total
+                        you enter. Any days already recorded in this range are corrected, not added to.
+                    </p>
+                )
+            )}
+
+            {error && <p className="text-xs text-destructive">{error}</p>}
+        </div>
     );
 }
 
@@ -274,16 +497,11 @@ export function CampaignSpendCard({ campaignId }: { campaignId: string }) {
  * campaign ran that day and cost nothing.
  */
 function SpendRow({ row, campaignId }: { row: CampaignSpend; campaignId: string }) {
-    const queryClient = useQueryClient();
+    const invalidate = useInvalidateSpend(campaignId);
     const [editing, setEditing] = React.useState(false);
     const [amount, setAmount] = React.useState(toInput(row.amount));
     const [note, setNote] = React.useState(row.note ?? "");
     const [error, setError] = React.useState<string | null>(null);
-
-    const invalidate = () =>
-        queryClient.invalidateQueries({
-            queryKey: ["campaigns", "detail", campaignId, "spend"],
-        });
 
     const saveMutation = useMutation({
         mutationFn: () => {

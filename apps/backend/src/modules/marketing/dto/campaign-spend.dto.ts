@@ -62,6 +62,62 @@ export class RecordCampaignSpendDto {
 }
 
 /**
+ * One total across a stretch of days, written as one row per day.
+ *
+ * `total` rather than `amount`, because that is what the merchant is typing: a
+ * week's cost, not a day's. The division into daily rows happens in the
+ * service, where the remainder rule lives.
+ */
+export class RecordCampaignSpendRangeDto {
+  @ApiProperty({
+    example: '2026-09-01',
+    description: "The first day of the range, in the store's timezone.",
+  })
+  @IsString()
+  @Matches(DAY_PATTERN, {
+    message: 'startDay must be a calendar date written as YYYY-MM-DD',
+  })
+  declare startDay: string;
+
+  @ApiProperty({
+    example: '2026-09-07',
+    description:
+      'The last day of the range, included. A range that ends before it starts is refused.',
+  })
+  @IsString()
+  @Matches(DAY_PATTERN, {
+    message: 'endDay must be a calendar date written as YYYY-MM-DD',
+  })
+  declare endDay: string;
+
+  @ApiProperty({
+    example: 70000,
+    description:
+      'The total for the whole range in the smallest currency unit — not a daily figure. It is divided across the days, with the remainder added to the first day so the rows sum to exactly this number.',
+  })
+  @IsInt()
+  @Min(0)
+  declare total: number;
+
+  @ApiProperty({
+    example: 'USD',
+    description: "Must be the store's currency. There is no conversion.",
+  })
+  @IsString()
+  @Length(3, 3)
+  declare currency: string;
+
+  @ApiPropertyOptional({
+    example: 'Launch week',
+    description: 'Recorded against every day in the range.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(CAMPAIGN_SPEND_NOTE_LIMIT)
+  declare note?: string;
+}
+
+/**
  * The day is absent by design: moving a figure to another day is recording it
  * there — which corrects whatever that day already holds — and deleting the row
  * entered by mistake. So is the currency, which is the store's and frozen on

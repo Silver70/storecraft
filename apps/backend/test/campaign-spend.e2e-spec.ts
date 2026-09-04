@@ -91,6 +91,20 @@ describe('Campaign spend (e2e)', () => {
     return res.body as CampaignSpend;
   }
 
+  async function recordRange(
+    body: Record<string, unknown>,
+    expected = 201,
+  ): Promise<CampaignSpend[]> {
+    const res = await fixture.admin.client
+      .post(spendPath('/range'), body)
+      .expect(expected);
+    return res.body as CampaignSpend[];
+  }
+
+  /** What the rows written actually add up to. The point of a range entry. */
+  const sum = (rows: CampaignSpend[]): number =>
+    rows.reduce((acc, row) => acc + row.amount, 0);
+
   async function list(period?: string): Promise<SpendReport> {
     const res = await fixture.admin.client
       .get(spendPath(period ? `?period=${period}` : ''))
@@ -309,6 +323,309 @@ describe('Campaign spend (e2e)', () => {
     });
   });
 
+  describe('recording a range of days', () => {
+    it('writes one row per day, summing to exactly the total submitted', async () => {
+      // A merchant knows the week cost $700; they do not know what Tuesday
+      // cost. Seven rows, and the week still reconciles against the invoice.
+      const rows = await recordRange({
+        startDay: daysAgo(6),
+        endDay: daysAgo(0),
+        total: 70000,
+        currency: 'USD',
+      });
+
+      expect(rows).toHaveLength(7);
+      expect(sum(rows)).toBe(70000);
+      expect(rows.map((r) => r.day)).toEqual([
+        daysAgo(6),
+        daysAgo(5),
+        daysAgo(4),
+        daysAgo(3),
+        daysAgo(2),
+        daysAgo(1),
+        daysAgo(0),
+      ]);
+      expect(rows.every((r) => r.amount === 10000)).toBe(true);
+
+      const stored = await persisted();
+      expect(stored).toHaveLength(7);
+      expect(sum(stored)).toBe(70000);
+    });
+
+    it('puts the remainder on the first day rather than losing it', async () => {
+      // $100 over 7 days is $14.28 with 4 cents left. Dropping them would make
+      // the week read as $99.96 forever, against an invoice for $100.
+      const rows = await recordRange({
+        startDay: daysAgo(6),
+        endDay: daysAgo(0),
+        total: 10000,
+        currency: 'USD',
+      });
+
+      expect(sum(rows)).toBe(10000);
+      expect(rows[0]).toMatchObject({ day: daysAgo(6), amount: 1432 });
+      expect(rows.slice(1).map((r) => r.amount)).toEqual([
+        1428, 1428, 1428, 1428, 1428, 1428,
+      ]);
+      expect(sum(await persisted())).toBe(10000);
+    });
+
+    it('reads back through the period list as the same total', async () => {
+      await recordRange({
+        startDay: daysAgo(6),
+        endDay: daysAgo(0),
+        total: 10000,
+        currency: 'USD',
+      });
+
+      const report = await list('7d');
+      expect(report.rows).toHaveLength(7);
+      expect(report.total).toBe(10000);
+    });
+
+    it('records a single-day range as one row holding the whole total', async () => {
+      const rows = await recordRange({
+        startDay: daysAgo(1),
+        endDay: daysAgo(1),
+        total: 12500,
+        currency: 'USD',
+      });
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ day: daysAgo(1), amount: 12500 });
+    });
+
+    it('writes the note against every day of the range', async () => {
+      const rows = await recordRange({
+        startDay: daysAgo(2),
+        endDay: daysAgo(0),
+        total: 3000,
+        currency: 'USD',
+        note: 'Launch week',
+      });
+
+      expect(rows.every((r) => r.note === 'Launch week')).toBe(true);
+    });
+
+    it("freezes the store's currency onto every row", async () => {
+      const rows = await recordRange({
+        startDay: daysAgo(2),
+        endDay: daysAgo(0),
+        total: 3000,
+        currency: 'usd',
+      });
+
+      expect(rows.every((r) => r.currency === 'USD')).toBe(true);
+    });
+
+    it('accepts a range against an archived campaign', async () => {
+      await fixture.admin.client
+        .post(`/campaigns/${campaign.id}/archive`, {})
+        .expect(201);
+
+      const rows = await recordRange({
+        startDay: daysAgo(2),
+        endDay: daysAgo(0),
+        total: 3000,
+        currency: 'USD',
+      });
+
+      expect(rows).toHaveLength(3);
+    });
+  });
+
+  describe('a range corrects the days it covers rather than adding to them', () => {
+    it('leaves the same rows when the identical range is sent twice', async () => {
+      const body = {
+        startDay: daysAgo(6),
+        endDay: daysAgo(0),
+        total: 10000,
+        currency: 'USD',
+      };
+
+      await recordRange(body);
+      await recordRange(body);
+
+      // The failure this guards is silent: an insert would leave fourteen rows
+      // and a doubled week, halving the campaign's ROAS with nothing thrown.
+      const stored = await persisted();
+      expect(stored).toHaveLength(7);
+      expect(sum(stored)).toBe(10000);
+    });
+
+    it('corrects rather than doubles where a second range overlaps the first', async () => {
+      await recordRange({
+        startDay: daysAgo(6),
+        endDay: daysAgo(0),
+        total: 70000,
+        currency: 'USD',
+      });
+
+      // Three of these four days already have $100 on them.
+      await recordRange({
+        startDay: daysAgo(2),
+        endDay: daysAgo(0),
+        total: 6000,
+        currency: 'USD',
+      });
+
+      const stored = await persisted();
+      expect(stored).toHaveLength(7);
+
+      const byDay = new Map(stored.map((r) => [r.day, r.amount]));
+      expect(byDay.get(daysAgo(6))).toBe(10000);
+      expect(byDay.get(daysAgo(3))).toBe(10000);
+      // The overlap took the second range's figures, not the sum of both.
+      expect(byDay.get(daysAgo(2))).toBe(2000);
+      expect(byDay.get(daysAgo(1))).toBe(2000);
+      expect(byDay.get(daysAgo(0))).toBe(2000);
+      expect(sum(stored)).toBe(46000);
+    });
+
+    it('overwrites a day entered singly', async () => {
+      await record({ day: daysAgo(1), amount: 99999, currency: 'USD' });
+
+      await recordRange({
+        startDay: daysAgo(2),
+        endDay: daysAgo(0),
+        total: 3000,
+        currency: 'USD',
+      });
+
+      const stored = await persisted();
+      expect(stored).toHaveLength(3);
+      expect(sum(stored)).toBe(3000);
+    });
+
+    it('leaves days outside the range untouched', async () => {
+      await record({ day: daysAgo(20), amount: 5000, currency: 'USD' });
+
+      await recordRange({
+        startDay: daysAgo(2),
+        endDay: daysAgo(0),
+        total: 3000,
+        currency: 'USD',
+      });
+
+      const stored = await persisted();
+      expect(stored).toHaveLength(4);
+      expect(sum(stored)).toBe(8000);
+    });
+  });
+
+  describe('refusing a range that cannot be true', () => {
+    it('rejects a range that ends before it starts', async () => {
+      // A swapped pair of fields, not a request for nothing: writing zero rows
+      // would report success and leave a week of spend unrecorded.
+      await recordRange(
+        {
+          startDay: daysAgo(0),
+          endDay: daysAgo(6),
+          total: 70000,
+          currency: 'USD',
+        },
+        400,
+      );
+      expect(await persisted()).toHaveLength(0);
+    });
+
+    it('rejects a negative total', async () => {
+      await recordRange(
+        {
+          startDay: daysAgo(6),
+          endDay: daysAgo(0),
+          total: -70000,
+          currency: 'USD',
+        },
+        400,
+      );
+      expect(await persisted()).toHaveLength(0);
+    });
+
+    it('rejects a range with either end in the future', async () => {
+      await recordRange(
+        {
+          startDay: daysAgo(0),
+          endDay: TOMORROW(),
+          total: 1000,
+          currency: 'USD',
+        },
+        400,
+      );
+      await recordRange(
+        {
+          startDay: TOMORROW(),
+          endDay: daysAgo(-2),
+          total: 1000,
+          currency: 'USD',
+        },
+        400,
+      );
+      expect(await persisted()).toHaveLength(0);
+    });
+
+    it('rejects a currency other than the store’s', async () => {
+      await recordRange(
+        {
+          startDay: daysAgo(6),
+          endDay: daysAgo(0),
+          total: 70000,
+          currency: 'EUR',
+        },
+        400,
+      );
+      expect(await persisted()).toHaveLength(0);
+    });
+
+    it('rejects an end day that is not a real date', async () => {
+      await recordRange(
+        {
+          startDay: daysAgo(6),
+          endDay: '2026-02-30',
+          total: 70000,
+          currency: 'USD',
+        },
+        400,
+      );
+      expect(await persisted()).toHaveLength(0);
+    });
+
+    it('rejects a range longer than one entry may cover', async () => {
+      // Nothing bounds how far back a start date goes, so a mistyped year asks
+      // for a row every day since 1900. The merchant is told, not obeyed.
+      await recordRange(
+        {
+          startDay: '1900-01-01',
+          endDay: daysAgo(0),
+          total: 70000,
+          currency: 'USD',
+        },
+        400,
+      );
+      expect(await persisted()).toHaveLength(0);
+    });
+
+    it('writes nothing at all when the range is refused', async () => {
+      // Partial application would be the worst outcome: some days of a total
+      // recorded, with no indication which are missing.
+      await record({ day: daysAgo(1), amount: 5000, currency: 'USD' });
+
+      await recordRange(
+        {
+          startDay: daysAgo(0),
+          endDay: daysAgo(6),
+          total: 70000,
+          currency: 'USD',
+        },
+        400,
+      );
+
+      const stored = await persisted();
+      expect(stored).toHaveLength(1);
+      expect(stored[0].amount).toBe(5000);
+    });
+  });
+
   describe('refusing what cannot be true', () => {
     it('rejects a negative amount', async () => {
       // A mistyped minus sign would make a losing campaign look profitable.
@@ -386,6 +703,14 @@ describe('Campaign spend (e2e)', () => {
           })
           .expect(404);
         await other.admin.client
+          .post(spendPath('/range'), {
+            startDay: daysAgo(2),
+            endDay: daysAgo(0),
+            total: 3000,
+            currency: 'USD',
+          })
+          .expect(404);
+        await other.admin.client
           .patch(spendPath(`/${mine.id}`), { amount: 1 })
           .expect(404);
         await other.admin.client.delete(spendPath(`/${mine.id}`)).expect(404);
@@ -433,6 +758,14 @@ describe('Campaign spend (e2e)', () => {
       await support.client.get(spendPath()).expect(403);
       await support.client
         .post(spendPath(), { day: TODAY(), amount: 1, currency: 'USD' })
+        .expect(403);
+      await support.client
+        .post(spendPath('/range'), {
+          startDay: daysAgo(2),
+          endDay: daysAgo(0),
+          total: 3000,
+          currency: 'USD',
+        })
         .expect(403);
       await support.client
         .patch(spendPath(`/${saved.id}`), { amount: 1 })

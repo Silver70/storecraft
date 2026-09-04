@@ -17,11 +17,35 @@ import {
   storeToday,
   type SpendDay,
 } from '../utils/spend-day.util';
+import {
+  countDays,
+  enumerateDays,
+  splitAcrossDays,
+  MAX_SPEND_RANGE_DAYS,
+} from '../utils/spend-range.util';
 
 export interface RecordCampaignSpendInput {
   day: string;
   /** In the smallest currency unit. Zero or positive. */
   amount: number;
+  currency: string;
+  note?: string | null;
+}
+
+/**
+ * One figure covering a stretch of days, which becomes one row per day.
+ *
+ * `total` rather than `amount` on purpose: a merchant typing 70000 against a
+ * week means seven hundred dollars for the week, not per day. A field named
+ * `amount` sitting next to the single-day call that also takes `amount` would
+ * make the seven-fold version of that mistake easy to write and impossible to
+ * see.
+ */
+export interface RecordCampaignSpendRangeInput {
+  startDay: string;
+  endDay: string;
+  /** For the whole range, in the smallest currency unit. Zero or positive. */
+  total: number;
   currency: string;
   note?: string | null;
 }
@@ -152,6 +176,57 @@ export class CampaignSpendService {
   }
 
   /**
+   * Records one total across a range of days, as one row per day.
+   *
+   * A merchant who knows what a week cost but not what each day cost should not
+   * have to invent seven figures or fill in seven forms. The rows written sum
+   * to exactly the total typed — the remainder of the integer division lands on
+   * the first day rather than being dropped — so the range still reconciles
+   * against the invoice it came from.
+   *
+   * Like single-day entry, this is a *correction*: every day in the range is
+   * overwritten, not added to. Re-submitting an overlapping range repairs the
+   * days it covers instead of doubling them, which is the same guarantee the
+   * unique constraint gives `record`, applied to a stretch of days at once.
+   */
+  async recordRange(
+    orgId: string,
+    storeId: string,
+    campaignId: string,
+    input: RecordCampaignSpendRangeInput,
+  ): Promise<CampaignSpend[]> {
+    await this.requireCampaign(orgId, storeId, campaignId);
+    const store = await this.requireStore(orgId, storeId);
+
+    const startDay = this.assertDay(input.startDay, store.timezone);
+    const endDay = this.assertDay(input.endDay, store.timezone);
+    const days = this.assertRange(startDay, endDay);
+    const total = this.assertAmount(input.total);
+    this.assertCurrency(input.currency, store.currency);
+
+    const note = normalizeNote(input.note);
+    const saved = await this.spend.recordMany(
+      splitAcrossDays(total, days).map((row) => ({
+        organizationId: orgId,
+        storeId,
+        campaignId,
+        day: row.day,
+        amount: row.amount,
+        // The Store's own casing, as in `record` — the row records what this
+        // Store's money was, not how the caller spelled it.
+        currency: store.currency,
+        // The same note on every day of the range. It describes the entry, and
+        // there is no per-day fact to say beyond the day itself.
+        note,
+      })),
+    );
+
+    // `RETURNING` has no defined order, and these are rows a merchant reads as
+    // a sequence of days.
+    return saved.sort((a, b) => a.day.localeCompare(b.day));
+  }
+
+  /**
    * Corrects a saved figure.
    *
    * The day is deliberately not editable. Moving a row to another day is
@@ -268,6 +343,35 @@ export class CampaignSpendService {
     }
 
     return day;
+  }
+
+  /**
+   * The days a range covers, refusing one that cannot be spent across.
+   *
+   * An inverted range is a swapped pair of fields, not a request for nothing:
+   * silently writing zero rows would report success and leave the merchant
+   * looking for a week of Spend that was never recorded.
+   *
+   * The upper bound catches the other direction. Nothing bounds how far back a
+   * start date may go, so a mistyped year asks for a row every day since 1900 —
+   * and a merchant who typed it should be told, not made to wait while it is
+   * carried out.
+   */
+  private assertRange(startDay: SpendDay, endDay: SpendDay): SpendDay[] {
+    if (endDay < startDay) {
+      throw new BadRequestException(
+        `A spend range must end on or after it starts — ${startDay} to ${endDay} runs backwards.`,
+      );
+    }
+
+    const length = countDays(startDay, endDay);
+    if (length > MAX_SPEND_RANGE_DAYS) {
+      throw new BadRequestException(
+        `A spend range can cover at most ${MAX_SPEND_RANGE_DAYS} days — ${startDay} to ${endDay} covers ${length}. Check the start date.`,
+      );
+    }
+
+    return enumerateDays(startDay, endDay);
   }
 
   /**
