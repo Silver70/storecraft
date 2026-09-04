@@ -102,9 +102,9 @@ export function DiscountNewPage() {
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const rawValue = parseFloat(value);
-      const sentValue =
-        type === "fixed_amount" ? Math.round(rawValue * 100) : rawValue;
+      // Both units are hundredths of their display unit: fixed_amount dollars
+      // become cents, percentage becomes basis points (20 -> 2000).
+      const sentValue = Math.round(parseFloat(value) * 100);
 
       const payload = {
         name: name.trim(),

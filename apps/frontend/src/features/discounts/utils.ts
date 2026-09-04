@@ -9,11 +9,14 @@ export function computeDiscountStatus(d: Discount): DiscountStatus {
   return "active";
 }
 
-/** Display a discount value: "20%" or "$10.00". */
+/**
+ * Display a discount value: "20%" or "$10.00". `value` is stored in hundredths
+ * of the display unit — basis points for percentage, cents for fixed_amount.
+ */
 export function formatValue(d: Discount): string {
-  return d.type === "percentage"
-    ? `${d.value}%`
-    : `$${(d.value / 100).toFixed(2)}`;
+  if (d.type !== "percentage") return `$${(d.value / 100).toFixed(2)}`;
+  const pct = d.value / 100;
+  return `${Number.isInteger(pct) ? pct : pct.toFixed(2)}%`;
 }
 
 /** Short label for what a discount applies to. */

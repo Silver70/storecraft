@@ -25,8 +25,8 @@ export type LineItem = {
 };
 
 // A coupon resolved from the real backend coupon list and applied to the draft
-// order. Value units match the backend `Coupon`: percentage is a whole percent
-// (0–100), fixed_amount is integer cents, free_shipping ignores `value`.
+// order. Value units match the backend `Coupon`: percentage is basis points
+// (2000 = 20%), fixed_amount is integer cents, free_shipping ignores `value`.
 export type AppliedDiscount = {
   type: "percentage" | "fixed_amount" | "free_shipping";
   value: number;

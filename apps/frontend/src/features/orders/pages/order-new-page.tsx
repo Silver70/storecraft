@@ -83,7 +83,7 @@ function estimatedDelivery(m: ShippingMethod): string {
 /** Human-readable summary of an applied coupon for the summary card. */
 function couponLabel(c: Coupon): string {
   if (c.type === "free_shipping") return `${c.code} — Free shipping`;
-  if (c.type === "percentage") return `${c.code} — ${c.value}% off`;
+  if (c.type === "percentage") return `${c.code} — ${c.value / 100}% off`;
   return `${c.code} — ${formatPrice(c.value)} off`;
 }
 
@@ -177,12 +177,13 @@ export function OrderNewPage() {
   const shippingCost = activeMethods.find((m) => m.id === shipping)?.price ?? 0;
   // A free_shipping coupon zeroes out the shipping charge; percentage/fixed
   // coupons reduce the subtotal instead. Value units mirror the backend Coupon:
-  // percentage = whole percent, fixed_amount = cents.
+  // percentage = basis points (2000 = 20%), fixed_amount = cents. Mirrors
+  // computeCouponAmount in the backend pricing engine.
   const isFreeShipping = appliedDiscount?.type === "free_shipping";
   const effectiveShipping = isFreeShipping ? 0 : shippingCost;
   const discountAmount =
     appliedDiscount?.type === "percentage"
-      ? Math.round(subtotal * (appliedDiscount.value / 100))
+      ? Math.round((subtotal * appliedDiscount.value) / 10000)
       : appliedDiscount?.type === "fixed_amount"
         ? Math.min(appliedDiscount.value, subtotal)
         : 0;

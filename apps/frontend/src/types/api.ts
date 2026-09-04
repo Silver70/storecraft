@@ -286,6 +286,7 @@ export type Discount = {
   storeId: string;
   name: string;
   type: DiscountType;
+  /** Basis points when type is percentage (2000 = 20%), cents otherwise. */
   value: number;
   scope: DiscountScope;
   scopeId: string | null;
@@ -306,6 +307,7 @@ export type Coupon = {
   storeId: string;
   code: string;
   type: CouponType;
+  /** Basis points when type is percentage (2000 = 20%), cents otherwise. */
   value: number;
   minOrderAmount: number | null;
   maxUsageCount: number | null;

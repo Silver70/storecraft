@@ -43,7 +43,7 @@ _Avoid_: Visit, journey
 **Campaign**:
 A named thing an Organization spends money on to acquire traffic — a boosted
 post, an ad set, an email push. A first-class record with its own Spend and,
-where applicable, an external ad-platform id. Deliberately *not* the same object
+where applicable, an external ad-platform id. Deliberately _not_ the same object
 as a UTM string: one Campaign absorbs many UTM variants via its matching rules.
 _Avoid_: Ad, ad campaign, promotion (a Discount is not a Campaign)
 
@@ -82,8 +82,8 @@ it reflects acquisition conditions at purchase time and never changes afterward.
 _Avoid_: Source, tracking, origin
 
 **Declared Attribution** / **Correlated Attribution**:
-Where an Order's evidence came from. *Declared* was passed by the storefront on
-cart creation and is authoritative (ADR-0001). *Correlated* was inferred at
+Where an Order's evidence came from. _Declared_ was passed by the storefront on
+cart creation and is authoritative (ADR-0001). _Correlated_ was inferred at
 checkout from the tracked events of the Cart's Session, so an integrator who has
 not implemented pass-through still gets partial reporting — a backstop, never
 the primary source, because the event stream behind it is ad-blockable and is

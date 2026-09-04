@@ -31,6 +31,7 @@ export const discounts = pgTable('discounts', {
     .references(() => stores.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 255 }).notNull(),
   type: discountTypeEnum('type').notNull(),
+  // basis points when type = 'percentage' (2000 = 20%), cents when 'fixed_amount'
   value: integer('value').notNull(),
   scope: discountScopeEnum('scope').notNull().default('order'),
   scopeId: uuid('scope_id'),

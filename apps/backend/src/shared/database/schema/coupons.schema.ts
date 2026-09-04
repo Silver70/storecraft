@@ -29,6 +29,8 @@ export const coupons = pgTable(
       .references(() => stores.id, { onDelete: 'cascade' }),
     code: varchar('code', { length: 100 }).notNull(),
     type: couponTypeEnum('type').notNull(),
+    // basis points when type = 'percentage' (2000 = 20%), cents when
+    // 'fixed_amount', unused for 'free_shipping'
     value: integer('value').notNull().default(0),
     minOrderAmount: integer('min_order_amount'),
     maxUsageCount: integer('max_usage_count'),

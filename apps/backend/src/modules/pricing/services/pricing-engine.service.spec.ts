@@ -166,6 +166,27 @@ describe('PricingEngineService', () => {
       expect(result.items[0].discountAmount).toBe(500);
     });
 
+    it('does not allow a percentage discount over 100% to exceed line total', async () => {
+      const discount = makeDiscount({
+        type: 'percentage',
+        value: 15000, // 150%
+        scope: 'product',
+        scopeId: 'product-1',
+      });
+      const { service } = buildService({
+        findActiveProductDiscounts: jest.fn().mockResolvedValue([discount]),
+      });
+
+      const items = [
+        makeItem({ quantity: 1, unitPrice: 500, totalPrice: 500 }),
+      ];
+      const result = await service.applyDiscounts(items, null, orgId, storeId);
+
+      expect(result.items[0].discountAmount).toBe(500);
+      expect(result.items[0].discountedLineTotal).toBe(0);
+      expect(result.totalDiscountAmount).toBe(500);
+    });
+
     it('applies percentage coupon after order discounts', async () => {
       const coupon = makeCoupon({ type: 'percentage', value: 2000 });
       const { service } = buildService({

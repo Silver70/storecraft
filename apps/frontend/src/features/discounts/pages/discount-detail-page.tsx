@@ -54,11 +54,9 @@ export function DiscountDetailPage() {
   // Discount details
   const [name, setName] = React.useState(discount.name);
   const [type, setType] = React.useState<DiscountType>(discount.type);
-  const [value, setValue] = React.useState(
-    discount.type === "fixed_amount"
-      ? String(discount.value / 100)
-      : String(discount.value),
-  );
+  // Stored in hundredths (cents / basis points); the input shows the
+  // human unit — dollars or whole percent.
+  const [value, setValue] = React.useState(String(discount.value / 100));
   const [appliesTo, setAppliesTo] = React.useState<AppliesTo>(discount.scope);
   const [category, setCategory] = React.useState(
     discount.scope === "category" ? (discount.scopeId ?? "") : "",
@@ -88,9 +86,9 @@ export function DiscountDetailPage() {
 
   const updateMutation = useMutation({
     mutationFn: () => {
-      const rawValue = parseFloat(value);
-      const sentValue =
-        type === "fixed_amount" ? Math.round(rawValue * 100) : rawValue;
+      // Both units are hundredths of their display unit: fixed_amount dollars
+      // become cents, percentage becomes basis points (20 -> 2000).
+      const sentValue = Math.round(parseFloat(value) * 100);
 
       const payload = {
         name: name.trim(),

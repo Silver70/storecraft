@@ -334,17 +334,18 @@ export class PricingEngineService {
 
 // ─── Pure helpers (module-private) ────────────────────────────────────────────
 
+// `value` is basis points for percentage (2000 = 20%), cents for fixed_amount.
+// Both branches cap at the amount being discounted so totals never go negative.
 function computeDiscountAmount(discount: Discount, lineTotal: number): number {
   if (discount.type === 'percentage') {
-    return applyPercentage(lineTotal, discount.value);
+    return Math.min(applyPercentage(lineTotal, discount.value), lineTotal);
   }
-  // fixed_amount — cap at lineTotal so we don't go negative
   return Math.min(discount.value, lineTotal);
 }
 
 function computeCouponAmount(coupon: Coupon, subtotal: number): number {
   if (coupon.type === 'percentage') {
-    return applyPercentage(subtotal, coupon.value);
+    return Math.min(applyPercentage(subtotal, coupon.value), subtotal);
   }
   if (coupon.type === 'fixed_amount') {
     return Math.min(coupon.value, subtotal);

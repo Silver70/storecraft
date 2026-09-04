@@ -71,6 +71,13 @@
       "when": 1788498194919,
       "tag": "0009_campaigns_and_matching_rules",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788524767182,
+      "tag": "0010_discount_percent_to_basis_points",
+      "breakpoints": true
     }
   ]
 }
