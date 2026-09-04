@@ -1,4 +1,5 @@
 import { ObjectType, Field, ID, Int } from '@nestjs/graphql';
+import { CartAttributionType } from './attribution.model';
 
 @ObjectType()
 export class CartItemType {
@@ -88,6 +89,13 @@ export class CartType {
 
   @Field(() => [CartItemType], { description: 'Line items in the cart' })
   declare items: CartItemType[];
+
+  @Field(() => CartAttributionType, {
+    description:
+      'Where this cart’s visitor came from. Copied onto the order at ' +
+      'checkout and frozen there.',
+  })
+  declare attribution: CartAttributionType;
 
   @Field(() => Date, { nullable: true })
   declare expiresAt?: Date | null;

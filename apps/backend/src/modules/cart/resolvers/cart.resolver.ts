@@ -14,7 +14,12 @@ import { CheckoutService } from '../services/checkout.service';
 import { CartType, CartItemType } from '../models/cart.model';
 import { CheckoutResultType } from '../models/checkout.model';
 import { CheckoutInput } from '../models/checkout-input.model';
+import {
+  CartAttributionInput,
+  toCartAttributionType,
+} from '../models/attribution.model';
 import type { CartWithItems } from '../repositories/cart.repository';
+import { pickAttribution } from '../../../shared/attribution/attribution.util';
 import type { TenantContext } from '../../../shared/tenant/tenant-context';
 import { requireStoreContext } from '../../../shared/tenant/tenant.util';
 import type { Request } from 'express';
@@ -53,14 +58,46 @@ export class CartResolver {
     return this.toCartType(result, organizationId, storeId);
   }
 
-  @Mutation(() => CartType, { description: 'Create a new empty cart' })
-  async createCart(@Context() ctx: GqlContext): Promise<CartType> {
+  @Mutation(() => CartType, {
+    description:
+      'Create a new empty cart, optionally declaring where the visitor came ' +
+      'from. Attribution is optional — omitting it degrades campaign ' +
+      'reporting and never fails the mutation.',
+  })
+  async createCart(
+    @Context() ctx: GqlContext,
+    @Args('attribution', { type: () => CartAttributionInput, nullable: true })
+    attribution?: CartAttributionInput,
+  ): Promise<CartType> {
     const tenant = tenantFrom(ctx);
     const { organizationId, storeId } = requireStoreContext(tenant);
     const result = await this.cartService.createCart(
       organizationId,
       storeId,
       tenant.customerId,
+      attribution,
+    );
+    return this.toCartType(result, organizationId, storeId);
+  }
+
+  @Mutation(() => CartType, {
+    description:
+      'Record a new arrival on an existing cart. The first touch is written ' +
+      'once and never overwritten; the last touch advances. Attribution ' +
+      'already copied onto an order at checkout is never changed by this.',
+  })
+  async recordCartAttribution(
+    @Context() ctx: GqlContext,
+    @Args('cartId', { type: () => ID }) cartId: string,
+    @Args('attribution', { type: () => CartAttributionInput })
+    attribution: CartAttributionInput,
+  ): Promise<CartType> {
+    const { organizationId, storeId } = requireStoreContext(tenantFrom(ctx));
+    const result = await this.cartService.recordAttribution(
+      cartId,
+      organizationId,
+      storeId,
+      attribution,
     );
     return this.toCartType(result, organizationId, storeId);
   }
@@ -198,6 +235,7 @@ export class CartResolver {
       items: cart.items.map((item) =>
         toCartItemType(item, snapshots.get(item.variant.productId)),
       ),
+      attribution: toCartAttributionType(pickAttribution(cart)),
       expiresAt: cart.expiresAt,
       createdAt: cart.createdAt,
       updatedAt: cart.updatedAt,

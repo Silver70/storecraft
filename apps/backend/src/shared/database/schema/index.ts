@@ -19,6 +19,7 @@ export * from './coupons.schema';
 export * from './price-lists.schema';
 export * from './price-list-prices.schema';
 export * from './price-list-assignments.schema';
+export * from './attribution.schema';
 export * from './carts.schema';
 export * from './cart-items.schema';
 export * from './orders.schema';

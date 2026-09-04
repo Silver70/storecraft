@@ -4,6 +4,7 @@ import type { OrderRepository } from '../repositories/order.repository';
 import type { AuditService } from '../../audit/services/audit.service';
 import type { InventoryService } from '../../inventory/services/inventory.service';
 import type { Order } from '../../../shared/database/schema';
+import { emptyAttribution } from '../../../shared/attribution/attribution.util';
 
 const orgId = 'org-1';
 const storeId = 'store-1';
@@ -31,6 +32,7 @@ function makeOrder(status: Order['status'] = 'pending'): Order {
     shippingMethodId: null,
     notes: null,
     source: 'storefront',
+    ...emptyAttribution(),
     createdAt: new Date(),
     updatedAt: new Date(),
   };

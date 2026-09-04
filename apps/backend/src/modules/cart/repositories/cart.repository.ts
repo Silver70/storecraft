@@ -12,6 +12,7 @@ import {
 } from '../../../shared/database/schema';
 import type { Cart, CartItem } from '../../../shared/database/schema';
 import type { CartItemWithVariant } from '../../pricing/services/pricing-engine.service';
+import type { AttributionPatch } from '../../../shared/attribution/attribution.types';
 
 export interface CartWithItems extends Cart {
   items: CartItemWithVariant[];
@@ -76,6 +77,7 @@ export class CartRepository {
     orgId: string,
     storeId: string,
     customerId?: string,
+    attribution: AttributionPatch = {},
   ): Promise<Cart> {
     const [cart] = await this.db
       .insert(carts)
@@ -84,9 +86,39 @@ export class CartRepository {
         storeId,
         customerId: customerId ?? null,
         status: 'active',
+        ...attribution,
       })
       .returning();
     return cart;
+  }
+
+  /**
+   * Writes the attribution columns a new touch changes, leaving every other
+   * column — the write-once first touch included — exactly as it was. An empty
+   * patch is not a write.
+   */
+  async updateAttribution(
+    cartId: string,
+    orgId: string,
+    storeId: string,
+    patch: AttributionPatch,
+  ): Promise<Cart | null> {
+    if (Object.keys(patch).length === 0) {
+      return this.findById(cartId, orgId, storeId);
+    }
+
+    const [row] = await this.db
+      .update(carts)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(
+        and(
+          eq(carts.id, cartId),
+          eq(carts.organizationId, orgId),
+          eq(carts.storeId, storeId),
+        ),
+      )
+      .returning();
+    return row ?? null;
   }
 
   async updateTotals(

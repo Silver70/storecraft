@@ -1,11 +1,12 @@
 import {
-  pgTable,
-  uuid,
   integer,
-  varchar,
-  timestamp,
   pgEnum,
+  pgTable,
+  timestamp,
+  uuid,
+  varchar,
 } from 'drizzle-orm/pg-core';
+import { attributionColumns } from './attribution.schema';
 import { organizations } from './organizations.schema';
 import { stores } from './stores.schema';
 
@@ -34,6 +35,10 @@ export const carts = pgTable('carts', {
   total: integer('total').notNull().default(0),
   currency: varchar('currency', { length: 3 }).notNull().default('USD'),
   expiresAt: timestamp('expires_at'),
+  // Where this cart's visitor came from. First touch is write-once, last touch
+  // advances with each new non-direct touch, and both are copied onto the order
+  // at checkout. See attribution.schema.ts.
+  ...attributionColumns(),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });

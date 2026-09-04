@@ -11,6 +11,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { organizations } from './organizations.schema';
 import { stores } from './stores.schema';
+import { attributionColumns } from './attribution.schema';
 
 export const orderStatusEnum = pgEnum('order_status', [
   'pending',
@@ -58,6 +59,10 @@ export const orders = pgTable(
     shippingMethodId: uuid('shipping_method_id'),
     notes: text('notes'),
     source: varchar('source', { length: 50 }).notNull().default('storefront'),
+    // Copied from the cart at checkout and never written again — an order's
+    // attribution is a snapshot of purchase-time conditions, exactly like its
+    // line items. See attribution.schema.ts.
+    ...attributionColumns(),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },

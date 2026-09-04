@@ -125,6 +125,7 @@ src/shared/
 
 - **Inventory mutations are atomic**: all stock changes use `SELECT FOR UPDATE` in a single transaction. Never allow `quantity - reserved` to go negative unless `allow_backorder` is true.
 - **Order line items are immutable snapshots**: product name, SKU, price, image URL are captured at order creation. Repricing or deleting a product does not change existing orders.
+- **Order attribution is frozen at checkout**: the first-touch and last-touch UTM tuples, referrer, landing path, and visitor/session ids are copied from the cart onto the order and never written again (ADR-0001). On the cart, first touch is write-once and last touch advances. Attribution is optional on the storefront API and resolving it can never fail a checkout — a failure logs and records the order as `none`.
 - **Order state machine**: `pending → paid → processing → shipped → delivered`. Any post-`pending` state can transition to `refunded`. Invalid transitions throw errors.
 - **Stock reservation TTL**: 15 minutes (configurable). A background job expires stale reservations.
 - **Checkout is idempotent**: use `Idempotency-Key` header on checkout and payment mutations.

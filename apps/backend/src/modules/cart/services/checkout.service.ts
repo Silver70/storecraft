@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   BadRequestException,
   NotFoundException,
   ConflictException,
@@ -7,6 +8,7 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CartRepository } from '../repositories/cart.repository';
 import { CartService } from './cart.service';
+import { CartAttributionService } from './cart-attribution.service';
 import { PricingEngineService } from '../../pricing/services/pricing-engine.service';
 import { InventoryService } from '../../inventory/services/inventory.service';
 import { ShippingService } from '../../shipping/services/shipping.service';
@@ -14,14 +16,19 @@ import { PaymentService } from '../../payment/services/payment.service';
 import { OrderRepository } from '../../order/repositories/order.repository';
 import { OrderCreatedEvent } from '../../../shared/events/events';
 import { add, subtract } from '../../../shared/utils/money.util';
+import { emptyAttribution } from '../../../shared/attribution/attribution.util';
 import { requireStoreContext } from '../../../shared/tenant/tenant.util';
 import type { AddressInputDto } from '../dto/checkout.dto';
 import type { CheckoutInput } from '../models/checkout-input.model';
 import type { TenantContext } from '../../../shared/tenant/tenant-context';
 import type { CheckoutResultType } from '../models/checkout.model';
+import type { AttributionSnapshot } from '../../../shared/attribution/attribution.types';
+import type { Cart } from '../../../shared/database/schema';
 
 @Injectable()
 export class CheckoutService {
+  private readonly logger = new Logger(CheckoutService.name);
+
   constructor(
     private readonly cartRepo: CartRepository,
     private readonly cartService: CartService,
@@ -30,6 +37,7 @@ export class CheckoutService {
     private readonly shippingService: ShippingService,
     private readonly paymentService: PaymentService,
     private readonly orderRepo: OrderRepository,
+    private readonly attribution: CartAttributionService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -136,6 +144,11 @@ export class CheckoutService {
     }
     const customerName = this.buildCustomerName(shippingAddress);
 
+    // Freeze the cart's attribution onto the order. From here it is a snapshot
+    // of purchase-time conditions, exactly like the line items below: the same
+    // visitor arriving later through a different campaign never rewrites it.
+    const attribution = await this.resolveAttribution(cart);
+
     const order = await this.orderRepo.create({
       organizationId: orgId,
       storeId,
@@ -166,6 +179,7 @@ export class CheckoutService {
       },
       shippingMethodId: dto.shippingMethodId,
       source: 'storefront',
+      ...attribution,
     });
 
     // 7. Create order line item snapshots. Capture the product name + primary
@@ -233,6 +247,25 @@ export class CheckoutService {
       total: order.total,
       currency: order.currency,
     };
+  }
+
+  /**
+   * The attribution to stamp on the order, and never a reason not to have one.
+   * Attribution is a reporting concern; a failure to resolve it costs the
+   * merchant a line in a report, not the sale. Anything that goes wrong is
+   * logged and the order is created as Unattributed.
+   */
+  private async resolveAttribution(cart: Cart): Promise<AttributionSnapshot> {
+    try {
+      return await this.attribution.resolveForOrder(cart);
+    } catch (err) {
+      this.logger.error(
+        `Attribution could not be resolved for cart ${cart.id}; ` +
+          'the order will be recorded as unattributed',
+        err instanceof Error ? err.stack : String(err),
+      );
+      return emptyAttribution();
+    }
   }
 
   private resolveAddress(dto: CheckoutInput): AddressInputDto {

@@ -7,6 +7,7 @@ import { PaymentModule } from '../payment/payment.module';
 import { OrderModule } from '../order/order.module';
 import { CartRepository } from './repositories/cart.repository';
 import { CartService } from './services/cart.service';
+import { CartAttributionService } from './services/cart-attribution.service';
 import { CheckoutService } from './services/checkout.service';
 import { CartResolver } from './resolvers/cart.resolver';
 
@@ -19,7 +20,13 @@ import { CartResolver } from './resolvers/cart.resolver';
     PaymentModule,
     OrderModule,
   ],
-  providers: [CartRepository, CartService, CheckoutService, CartResolver],
+  providers: [
+    CartRepository,
+    CartService,
+    CartAttributionService,
+    CheckoutService,
+    CartResolver,
+  ],
   exports: [CartService, CartRepository, CheckoutService],
 })
 export class CartModule {}

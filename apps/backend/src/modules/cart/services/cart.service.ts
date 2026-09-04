@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { CartRepository } from '../repositories/cart.repository';
+import { CartAttributionService } from './cart-attribution.service';
 import { PricingEngineService } from '../../pricing/services/pricing-engine.service';
 import { PriceResolverService } from '../../pricing/services/price-resolver.service';
 import { DiscountRepository } from '../../pricing/repositories/discount.repository';
@@ -14,6 +15,7 @@ import { add, subtract } from '../../../shared/utils/money.util';
 import type { CartItemWithVariant } from '../../pricing/services/pricing-engine.service';
 import type { CartWithItems } from '../repositories/cart.repository';
 import type { Cart } from '../../../shared/database/schema';
+import type { DeclaredAttributionInput } from '../../../shared/attribution/attribution.types';
 
 /**
  * Idle window after which an `active` cart holding items is considered
@@ -32,6 +34,7 @@ export class CartService {
     private readonly pricingEngine: PricingEngineService,
     private readonly priceResolver: PriceResolverService,
     private readonly discountRepo: DiscountRepository,
+    private readonly attribution: CartAttributionService,
   ) {}
 
   /**
@@ -54,9 +57,45 @@ export class CartService {
     orgId: string,
     storeId: string,
     customerId?: string,
+    attribution?: DeclaredAttributionInput,
   ): Promise<CartWithItems> {
-    const cart = await this.cartRepo.create(orgId, storeId, customerId);
+    const cart = await this.cartRepo.create(
+      orgId,
+      storeId,
+      customerId,
+      this.attribution.buildPatch(null, attribution),
+    );
     return { ...cart, items: [] };
+  }
+
+  /**
+   * Folds a new arrival into a cart's attribution: the first touch is written
+   * once and never overwritten, the last touch advances.
+   *
+   * Deliberately not gated on the cart still being `active`. Attribution is
+   * evidence about a visitor, not commerce state — it moves no money and
+   * changes no total — and a converted cart's order already carries its own
+   * frozen copy, so a late touch arriving after checkout updates the cart and
+   * leaves the order exactly as it was purchased.
+   */
+  async recordAttribution(
+    cartId: string,
+    orgId: string,
+    storeId: string,
+    attribution: DeclaredAttributionInput,
+  ): Promise<CartWithItems> {
+    const cart = await this.cartRepo.findById(cartId, orgId, storeId);
+    if (!cart) throw new NotFoundException('Cart not found');
+
+    const updated = await this.cartRepo.updateAttribution(
+      cartId,
+      orgId,
+      storeId,
+      this.attribution.buildPatch(cart, attribution),
+    );
+    if (!updated) throw new NotFoundException('Cart not found');
+
+    return this.getCart(cartId, orgId, storeId);
   }
 
   async getCart(
