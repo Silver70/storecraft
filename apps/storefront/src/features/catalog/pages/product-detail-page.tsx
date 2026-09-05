@@ -4,13 +4,15 @@ import { useSuspenseQuery } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
 import type { Product } from "~/types/api";
 import { formatMoney } from "~/lib/money";
+import { useCartUi } from "~/features/cart/cart-ui";
+import { useAddToCart } from "~/features/cart/hooks";
 import { Badge } from "~/components/ui/badge";
 import { ProductGallery } from "../components/product-gallery";
 import { VariantPicker } from "../components/variant-picker";
 import { VariantSelect } from "../components/variant-select";
 import { AddToCartButton } from "../components/add-to-cart-button";
 import { productQueryOptions } from "../queries";
-import { initialSelection, resolveVariant } from "../utils";
+import { initialSelection, primaryImage, resolveVariant } from "../utils";
 import type { OptionSelection } from "../types";
 
 const route = getRouteApi("/products/$slug");
@@ -53,6 +55,39 @@ function ProductDetail({ product }: { product: Product }) {
 
   const displayPrice = selectedVariant?.price ?? product.minPrice;
   const compareAt = selectedVariant?.compareAtPrice ?? null;
+
+  // The page owns the add: it holds the details the optimistic line renders.
+  const addToCart = useAddToCart();
+  const { openCart } = useCartUi();
+  const [justAdded, setJustAdded] = React.useState(false);
+
+  // Drop the confirmation when the shopper changes their selection.
+  React.useEffect(() => setJustAdded(false), [selectedVariant?.id]);
+
+  const handleAdd = () => {
+    if (!selectedVariant) return;
+    setJustAdded(false);
+    addToCart.mutate(
+      {
+        variantId: selectedVariant.id,
+        quantity: 1,
+        unitPrice: selectedVariant.price,
+        productName: product.name,
+        productSlug: product.slug,
+        variantName: selectedVariant.name ?? null,
+        sku: selectedVariant.sku,
+        imageUrl: primaryImage(product.media)?.url ?? null,
+      },
+      {
+        // On the server's confirmation, never on the optimistic patch — a
+        // failed add would otherwise open the drawer onto a rolled-back cart.
+        onSuccess: () => {
+          setJustAdded(true);
+          openCart();
+        },
+      },
+    );
+  };
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-10">
@@ -110,7 +145,17 @@ function ProductDetail({ product }: { product: Product }) {
             </p>
           )}
 
-          <AddToCartButton variantId={selectedVariant?.id ?? null} />
+          <AddToCartButton
+            variantId={selectedVariant?.id ?? null}
+            isAdding={addToCart.isPending}
+            justAdded={justAdded}
+            error={
+              addToCart.isError
+                ? "We couldn't add that to your cart. Please try again."
+                : null
+            }
+            onAdd={handleAdd}
+          />
 
           {product.description && (
             <div className="border-t pt-6">

@@ -14,6 +14,7 @@ import { NotFound } from "~/components/NotFound";
 import { Header } from "~/components/layout/header";
 import { Footer } from "~/components/layout/footer";
 import { storeConfig } from "~/config/store.config";
+import { CartUiProvider } from "~/features/cart/cart-ui";
 import { trackingScript } from "~/features/attribution/config";
 import { useAttributionCapture } from "~/features/attribution/hooks";
 import appCss from "~/styles/app.css?url";
@@ -91,13 +92,17 @@ function RootComponent() {
 
   return (
     <RootDocument>
-      <div className="flex min-h-svh flex-col">
-        <Header />
-        <main className="flex-1">
-          <Outlet />
-        </main>
-        <Footer />
-      </div>
+      {/* The drawer lives in the header and is opened by a confirmed add on
+          the product page, so its open state is held above both. */}
+      <CartUiProvider>
+        <div className="flex min-h-svh flex-col">
+          <Header />
+          <main className="flex-1">
+            <Outlet />
+          </main>
+          <Footer />
+        </div>
+      </CartUiProvider>
     </RootDocument>
   );
 }

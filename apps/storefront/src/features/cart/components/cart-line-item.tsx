@@ -2,6 +2,8 @@ import { Link } from "@tanstack/react-router";
 import { ImageOff, Trash2 } from "lucide-react";
 import type { CartItem } from "~/types/api";
 import { formatMoney } from "~/lib/money";
+import { cn } from "~/lib/utils";
+import { isOptimisticLine } from "../utils";
 import { QuantityStepper } from "./quantity-stepper";
 
 interface CartLineItemProps {
@@ -16,7 +18,14 @@ interface CartLineItemProps {
   onNavigate?: () => void;
 }
 
-/** One cart line. Presentational: it renders what it is given and calls back. */
+/**
+ * One cart line. Presentational: it renders what it is given and calls back.
+ *
+ * A line the client synthesized for an add still in flight renders in full —
+ * name, variant, image, price — but dimmed and with its controls frozen: its id
+ * addresses nothing on the server, so there is nothing for a quantity edit or a
+ * removal to change until the real cart arrives.
+ */
 export function CartLineItem({
   item,
   currency,
@@ -25,8 +34,18 @@ export function CartLineItem({
   disabled,
   onNavigate,
 }: CartLineItemProps) {
+  const unconfirmed = isOptimisticLine(item);
+  const frozen = disabled || unconfirmed;
+
   return (
-    <div className="flex gap-3">
+    <div
+      aria-busy={unconfirmed || undefined}
+      data-optimistic={unconfirmed || undefined}
+      className={cn(
+        "flex gap-3 transition-opacity",
+        unconfirmed && "opacity-60",
+      )}
+    >
       <Link
         to="/products/$slug"
         params={{ slug: item.productSlug }}
@@ -59,7 +78,7 @@ export function CartLineItem({
           <button
             type="button"
             aria-label="Remove item"
-            disabled={disabled}
+            disabled={frozen}
             onClick={onRemove}
             className="text-muted-foreground transition-colors hover:text-destructive disabled:opacity-40"
           >
@@ -74,7 +93,7 @@ export function CartLineItem({
         <div className="mt-1 flex items-center justify-between">
           <QuantityStepper
             quantity={item.quantity}
-            disabled={disabled}
+            disabled={frozen}
             onChange={onQuantityChange}
           />
           <span className="text-sm font-medium">

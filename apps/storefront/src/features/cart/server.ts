@@ -1,7 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { gqlFetch } from "~/lib/gql-client";
-import { clearCartId, getCartId, getOrCreateCartId } from "~/lib/session";
+import {
+  clearCartId,
+  getCartId,
+  getOrCreateCartId,
+  replaceCartId,
+} from "~/lib/session";
 import type { Cart } from "~/types/api";
 import { optionalAttribution } from "~/features/attribution/schema";
 import {
@@ -76,14 +81,13 @@ export const addToCartServerFn = createServerFn({ method: "POST" })
       return (await addTo(cartId)).addToCart;
     } catch (err) {
       // The cookie's cart may have been abandoned by the backend's idle sweep
-      // (or already converted / deleted). Discard it, mint a fresh cart, and
-      // retry once so the visitor never gets stuck on a dead cart.
+      // (or already converted / deleted). Mint a fresh cart, repoint the cookie
+      // at it, and retry once so the visitor never gets stuck on a dead cart.
       if (
         err instanceof Error &&
         /no longer active|not found/i.test(err.message)
       ) {
-        clearCartId();
-        const freshId = await getOrCreateCartId(data.attribution);
+        const freshId = await replaceCartId(data.attribution);
         return (await addTo(freshId)).addToCart;
       }
       throw err;

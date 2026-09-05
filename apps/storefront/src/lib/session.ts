@@ -46,7 +46,25 @@ export async function getOrCreateCartId(
 ): Promise<string> {
   const existing = getCookie(CART_COOKIE);
   if (existing) return existing;
+  return mintCartId(attribution);
+}
 
+/**
+ * Mint a brand-new cart and point the cookie at it, whatever the cookie says
+ * now. This is the recovery path for a cart the backend no longer has (swept
+ * or converted): `getCookie` reads the *request's* headers, so a `clearCartId`
+ * earlier in the same request is invisible to it and `getOrCreateCartId` would
+ * hand the dead id straight back, failing the retry the same way.
+ */
+export async function replaceCartId(
+  attribution?: DeclaredAttributionInput,
+): Promise<string> {
+  return mintCartId(attribution);
+}
+
+async function mintCartId(
+  attribution?: DeclaredAttributionInput,
+): Promise<string> {
   const create = (declared?: DeclaredAttributionInput) =>
     gqlFetch<{ createCart: { id: string } }>(CREATE_CART_MUTATION, {
       attribution: declared ?? null,

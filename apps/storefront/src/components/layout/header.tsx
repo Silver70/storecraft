@@ -1,7 +1,7 @@
-import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { storeConfig } from "~/config/store.config";
 import { CartDrawer } from "~/features/cart/components/cart-drawer";
+import { useCartUi } from "~/features/cart/cart-ui";
 import { useCart, useCartMutations } from "~/features/cart/hooks";
 
 /**
@@ -11,14 +11,15 @@ import { useCart, useCartMutations } from "~/features/cart/hooks";
  * via a typed `<Link>` for client-side navigation.
  *
  * As the layout shell it stands in for a page above the drawer: the cart hooks
- * and the drawer's open state live here, and the drawer receives both as props.
- * A page may fetch; a component may not.
+ * live here and the drawer receives their data and handlers as props. A page
+ * may fetch; a component may not. The open state comes from `useCartUi`,
+ * because a successful add on the product page has to be able to open it.
  */
 export function Header() {
   const { data: cart } = useCart();
   const { updateItem, removeItem, applyCoupon, removeCoupon, pendingItemId } =
     useCartMutations();
-  const [cartOpen, setCartOpen] = React.useState(false);
+  const { isCartOpen, setCartOpen } = useCartUi();
 
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
@@ -41,7 +42,7 @@ export function Header() {
 
         <CartDrawer
           cart={cart}
-          open={cartOpen}
+          open={isCartOpen}
           onOpenChange={setCartOpen}
           pendingItemId={pendingItemId}
           isApplyingCoupon={applyCoupon.isPending}
