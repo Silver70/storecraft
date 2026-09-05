@@ -103,7 +103,7 @@ landing path drops its query string.
 
 1. Set env vars (`.env`): `COMMERCE_API_URL`, `COMMERCE_API_KEY`, `VITE_STRIPE_PUBLISHABLE_KEY`,
    and — for campaign reporting — `VITE_ANALYTICS_URL` + `VITE_ANALYTICS_KEY`.
-2. Edit [`src/config/store.config.ts`](src/config/store.config.ts) — name, currency, locale, nav, features.
+2. Edit [`src/config/store.config.ts`](src/config/store.config.ts) — name, description, currency, locale, nav, social.
 3. Edit [`src/config/home-sections.ts`](src/config/home-sections.ts) — homepage sections by category slug.
 4. Adjust theme tokens in [`src/styles/app.css`](src/styles/app.css) — `--primary`, `--radius`, `--font-sans`.
 5. Swap `public/` favicons + logo.

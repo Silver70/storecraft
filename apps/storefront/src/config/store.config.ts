@@ -1,10 +1,14 @@
 /**
  * ◄ TEMPLATE KNOB — edit this file to rebrand the storefront.
  *
- * Brand-level configuration: store identity, currency/locale, navigation, and
- * feature toggles. Nothing brand-specific should be hardcoded in components —
- * it belongs here (or in the CSS theme tokens / `home-sections.ts`).
+ * Brand-level configuration: store identity, currency/locale, and navigation.
+ * Nothing brand-specific should be hardcoded in components — it belongs here
+ * (or in the CSS theme tokens / `home-sections.ts`).
+ *
+ * Every value is validated when the app starts. A typo fails on boot with a
+ * message naming the field, rather than showing up later as a blank price.
  */
+import { validateStoreConfig } from "./validate-store-config";
 
 export interface NavLink {
   label: string;
@@ -23,23 +27,15 @@ export interface StoreConfig {
   locale: string;
   /** Primary navigation links rendered in the header. */
   nav: NavLink[];
-  /** Footer / social links (optional). */
+  /** Footer / social links (optional). Paths or absolute URLs. */
   social: NavLink[];
-  /** Optional feature toggles. */
-  features: {
-    /** Storefront customer accounts (login / register / order history). */
-    accounts: boolean;
-  };
 }
 
-export const storeConfig: StoreConfig = {
+export const storeConfig: StoreConfig = validateStoreConfig({
   name: "Acme",
   description: "Thoughtfully made goods for everyday life.",
   currency: "USD",
   locale: "en-US",
   nav: [{ label: "Shop All", to: "/products" }],
   social: [],
-  features: {
-    accounts: false,
-  },
-};
+});
