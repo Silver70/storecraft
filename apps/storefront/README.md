@@ -58,7 +58,7 @@ src/
 ├── types/api.ts   hand-written GraphQL response shapes
 ├── components/
 │   ├── ui/        shadcn primitives
-│   └── layout/    Header, Footer, CartButton, SectionHeading
+│   └── layout/    Header, Footer, Brand (logo/wordmark), CartButton, SectionHeading
 ├── features/      catalog / cart / checkout / account / attribution (per-feature server.ts + queries.ts)
 ├── routes/        thin TanStack Router files (loaders only)
 └── styles/app.css Tailwind v4 + theme tokens (◄ TEMPLATE KNOB)
@@ -103,8 +103,8 @@ landing path drops its query string.
 
 1. Set env vars (`.env`): `COMMERCE_API_URL`, `COMMERCE_API_KEY`, `VITE_STRIPE_PUBLISHABLE_KEY`,
    and — for campaign reporting — `VITE_ANALYTICS_URL` + `VITE_ANALYTICS_KEY`.
-2. Edit [`src/config/store.config.ts`](src/config/store.config.ts) — name, description, currency, locale, nav, social.
+2. Edit [`src/config/store.config.ts`](src/config/store.config.ts) — name, description, logo, typeface, currency, locale, nav, social.
 3. Edit [`src/config/home-sections.ts`](src/config/home-sections.ts) — homepage sections by category slug.
-4. Adjust theme tokens in [`src/styles/app.css`](src/styles/app.css) — `--primary`, `--radius`, `--font-sans`.
-5. Swap `public/` favicons + logo.
+4. Adjust theme tokens in [`src/styles/app.css`](src/styles/app.css) — `--primary` (brand color), `--radius` (roundness). Colors and roundness live here; the typeface is a config knob.
+5. Drop your logo in `public/`, point `logo` at it, and swap the favicons. With no logo set, the store name renders as a wordmark.
 6. Deploy.

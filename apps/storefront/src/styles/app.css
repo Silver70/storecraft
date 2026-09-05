@@ -7,14 +7,16 @@
  * ◄ TEMPLATE KNOB — theme tokens.
  *
  * Rebranding the storefront is editing the CSS variables below, not the
- * components. `--primary` is the brand color; `--radius` controls roundness;
- * `--font-sans` the typeface. Components read these via the `@theme inline`
- * mappings, so every button/card/badge restyles from here.
+ * components. `--primary` is the brand color and `--radius` controls
+ * roundness. Components read these via the `@theme inline` mappings, so every
+ * button/card/badge restyles from here.
+ *
+ * The typeface is not here: it is a `store.config.ts` knob (`typeface`), set
+ * as `--typeface` on <html>. The stack below is only the floor for a document
+ * rendered without it.
  */
 @theme inline {
-  --font-sans:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
-    Arial, sans-serif;
+  --font-sans: var(--typeface, ui-sans-serif, system-ui, sans-serif);
   --font-heading: var(--font-sans);
 
   --color-background: var(--background);

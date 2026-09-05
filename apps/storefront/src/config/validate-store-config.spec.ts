@@ -15,6 +15,7 @@ import { storeConfig, type StoreConfig } from "./store.config";
 const VALID: StoreConfig = {
   name: "Acme",
   description: "Thoughtfully made goods for everyday life.",
+  typeface: { family: "ui-sans-serif, system-ui, sans-serif" },
   currency: "USD",
   locale: "en-US",
   nav: [{ label: "Shop All", to: "/products" }],
@@ -79,6 +80,93 @@ describe("validateStoreConfig", () => {
 
     it("rejects a blank description, so the tagline and meta are never empty", () => {
       expect(problemsFor({ description: "" })[0]).toContain("description");
+    });
+  });
+
+  describe("logo", () => {
+    it("accepts a config with no logo, which renders the name as a wordmark", () => {
+      expect(problemsFor({ logo: undefined })).toEqual([]);
+    });
+
+    it("accepts a file served from public/", () => {
+      expect(problemsFor({ logo: { src: "/logo.svg" } })).toEqual([]);
+    });
+
+    it("accepts a logo hosted elsewhere", () => {
+      expect(
+        problemsFor({ logo: { src: "https://cdn.example.com/logo.svg" } }),
+      ).toEqual([]);
+    });
+
+    it("rejects a schemeless src, which would resolve to our own origin", () => {
+      const [problem] = problemsFor({
+        logo: { src: "cdn.example.com/logo.svg" },
+      });
+      expect(problem).toContain("logo.src");
+    });
+
+    it("rejects a blank src rather than rendering an empty header", () => {
+      expect(problemsFor({ logo: { src: "" } })[0]).toContain("logo.src");
+    });
+
+    it("rejects a height that would render nothing", () => {
+      expect(
+        problemsFor({ logo: { src: "/logo.svg", height: 0 } })[0],
+      ).toContain("logo.height");
+      expect(
+        problemsFor({ logo: { src: "/logo.svg", height: -8 } })[0],
+      ).toContain("logo.height");
+    });
+
+    it("accepts an omitted height, which falls back to the default", () => {
+      expect(problemsFor({ logo: { src: "/logo.svg" } })).toEqual([]);
+    });
+  });
+
+  describe("typeface", () => {
+    it("rejects a blank family, so the storefront is never set in nothing", () => {
+      expect(problemsFor({ typeface: { family: "  " } })[0]).toContain(
+        "typeface.family",
+      );
+    });
+
+    it("rejects a family carrying its own declarations", () => {
+      // It is written into a custom property on <html>; a `;` there would
+      // close that declaration and open another one on the element every
+      // theme token lives on.
+      const [problem] = problemsFor({
+        typeface: { family: "Inter; --primary: red" },
+      });
+      expect(problem).toContain("typeface.family");
+    });
+
+    it("accepts a stylesheet URL that loads the font", () => {
+      expect(
+        problemsFor({
+          typeface: {
+            family: "Inter, sans-serif",
+            url: "https://fonts.googleapis.com/css2?family=Inter&display=swap",
+          },
+        }),
+      ).toEqual([]);
+    });
+
+    it("accepts self-hosted font CSS served from public/", () => {
+      expect(
+        problemsFor({
+          typeface: { family: "Inter, sans-serif", url: "/fonts/inter.css" },
+        }),
+      ).toEqual([]);
+    });
+
+    it("rejects a schemeless url, which would resolve to our own origin", () => {
+      const [problem] = problemsFor({
+        typeface: {
+          family: "Inter, sans-serif",
+          url: "fonts.example.com/x.css",
+        },
+      });
+      expect(problem).toContain("typeface.url");
     });
   });
 

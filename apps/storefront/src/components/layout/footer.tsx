@@ -1,4 +1,5 @@
 import { storeConfig } from "~/config/store.config";
+import { Brand } from "~/components/layout/brand";
 
 /** Storefront footer: brand blurb, optional social links, and a copyright line. */
 export function Footer() {
@@ -7,8 +8,8 @@ export function Footer() {
   return (
     <footer className="mt-16 border-t">
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-10 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-1">
-          <p className="text-sm font-semibold">{storeConfig.name}</p>
+        <div className="flex flex-col items-start gap-2">
+          <Brand />
           <p className="max-w-sm text-sm text-muted-foreground">
             {storeConfig.description}
           </p>

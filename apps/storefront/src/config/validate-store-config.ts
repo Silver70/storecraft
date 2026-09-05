@@ -14,7 +14,12 @@
  * accepts, and `"en_US"` — plausible enough that a human writes it — is
  * rejected at the first price rather than at boot.
  */
-import type { NavLink, StoreConfig } from "./store.config";
+import type {
+  NavLink,
+  StoreConfig,
+  StoreLogo,
+  StoreTypeface,
+} from "./store.config";
 
 /**
  * Thrown at module load. Reports every problem at once: a merchant filling in
@@ -45,6 +50,8 @@ export function validateStoreConfig(config: StoreConfig): StoreConfig {
 
   requireText(config.name, "name", problems);
   requireText(config.description, "description", problems);
+  checkLogo(config.logo, problems);
+  checkTypeface(config.typeface, problems);
   checkMoneyFormatting(config, problems);
   checkLinks(config.nav, "nav", { allowExternal: false }, problems);
   checkLinks(config.social, "social", { allowExternal: true }, problems);
@@ -58,6 +65,75 @@ export function validateStoreConfig(config: StoreConfig): StoreConfig {
 function requireText(value: string, field: string, problems: string[]): void {
   if (typeof value !== "string" || value.trim() === "") {
     problems.push(`${field} must be a non-empty string (got ${show(value)}).`);
+  }
+}
+
+/**
+ * Checks something the browser will fetch: a path served from `public/`, or an
+ * absolute URL. `"cdn.example.com/logo.svg"` — missing its scheme — is
+ * neither, and would quietly resolve against the storefront's own origin.
+ */
+function requireAssetTarget(
+  value: unknown,
+  field: string,
+  problems: string[],
+): void {
+  if (typeof value !== "string" || value.trim() === "") {
+    problems.push(`${field} must be a non-empty string (got ${show(value)}).`);
+    return;
+  }
+  if (value.startsWith("/") || isAbsoluteUrl(value)) return;
+
+  problems.push(
+    `${field} must be a path starting with "/" (a file in public/) or an absolute URL (got ${show(value)}).`,
+  );
+}
+
+/**
+ * The logo is optional: a fork that has not got one yet renders its name as a
+ * wordmark, which is a finished header rather than a missing one. What is
+ * checked is the logo a merchant *did* set, since a broken `src` shows up as
+ * an empty header rather than as an error.
+ */
+function checkLogo(logo: StoreLogo | undefined, problems: string[]): void {
+  if (logo === undefined || logo === null) return;
+
+  requireAssetTarget(logo.src, "logo.src", problems);
+
+  const { height } = logo;
+  if (height !== undefined && !(typeof height === "number" && height > 0)) {
+    problems.push(
+      `logo.height must be a positive number of pixels when set (got ${show(height)}). Omit it to use the default height.`,
+    );
+  }
+}
+
+/**
+ * The typeface is the one knob that leaves this file as CSS: `family` is
+ * written into a custom property on `<html>` that the theme's `--font-sans`
+ * reads. So a stray `;` or brace would not fail — it would close that
+ * declaration and open another one, on the element every theme token is
+ * defined on. Colors and roundness are the theme's to define, and this is the
+ * only field that could quietly redefine one.
+ */
+function checkTypeface(typeface: StoreTypeface, problems: string[]): void {
+  if (typeface === null || typeof typeface !== "object") {
+    problems.push(
+      `typeface must be an object with a "family" (got ${show(typeface)}).`,
+    );
+    return;
+  }
+
+  requireText(typeface.family, "typeface.family", problems);
+
+  if (typeof typeface.family === "string" && /[;{}]/.test(typeface.family)) {
+    problems.push(
+      `typeface.family must be a plain CSS font stack, with no ";" or braces (got ${show(typeface.family)}).`,
+    );
+  }
+
+  if (typeface.url !== undefined) {
+    requireAssetTarget(typeface.url, "typeface.url", problems);
   }
 }
 

@@ -58,6 +58,11 @@ export const Route = createRootRouteWithContext<{
       },
       { rel: "manifest", href: "/site.webmanifest", color: "#fffff" },
       { rel: "icon", href: "/favicon.ico" },
+      // The stylesheet that loads the configured typeface, when it needs one.
+      // A stack of fonts already on the device does not.
+      ...(storeConfig.typeface.url
+        ? [{ rel: "stylesheet", href: storeConfig.typeface.url }]
+        : []),
     ],
     // The drop-in behavioral tracker. `defer` keeps it off the critical path,
     // and it boots before hydration, so the visitor and session ids it mints
@@ -107,9 +112,19 @@ function RootComponent() {
   );
 }
 
+/**
+ * The typeface knob, applied as the custom property the theme's `--font-sans`
+ * reads. It is set here rather than in `app.css` so that changing the font is
+ * an edit to `store.config.ts` and nothing else; colors and roundness stay
+ * theme tokens.
+ */
+const brandStyle = {
+  "--typeface": storeConfig.typeface.family,
+} as React.CSSProperties;
+
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" style={brandStyle}>
       <head>
         <HeadContent />
       </head>
