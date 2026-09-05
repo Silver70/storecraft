@@ -1,6 +1,6 @@
-import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { ShoppingBag } from "lucide-react";
+import type { Cart } from "~/types/api";
 import {
   Sheet,
   SheetContent,
@@ -10,21 +10,49 @@ import {
   SheetTrigger,
 } from "~/components/ui/sheet";
 import { Button } from "~/components/ui/button";
-import { useCart } from "../hooks";
 import { itemCount } from "../utils";
 import { CartLineItem } from "./cart-line-item";
 import { CartSummary } from "./cart-summary";
 import { CouponField } from "./coupon-field";
 
-/** Header cart: the icon/badge trigger plus the slide-over cart contents. */
-export function CartDrawer() {
-  const { data: cart } = useCart();
-  const [open, setOpen] = React.useState(false);
+interface CartDrawerProps {
+  cart: Cart | null | undefined;
+  /** Open state lives with the caller so an add elsewhere can open the drawer. */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onQuantityChange: (itemId: string, quantity: number) => void;
+  onRemoveItem: (itemId: string) => void;
+  onApplyCoupon: (code: string) => Promise<unknown>;
+  onRemoveCoupon: () => void;
+  /** The line with an edit in flight, if any — only that line freezes. */
+  pendingItemId?: string | null;
+  isApplyingCoupon?: boolean;
+  isRemovingCoupon?: boolean;
+}
+
+/**
+ * Header cart: the icon/badge trigger plus the slide-over cart contents. It
+ * renders its own trigger but owns no cart data — swap it for a differently
+ * styled drawer with the same props and no page needs to change.
+ */
+export function CartDrawer({
+  cart,
+  open,
+  onOpenChange,
+  onQuantityChange,
+  onRemoveItem,
+  onApplyCoupon,
+  onRemoveCoupon,
+  pendingItemId,
+  isApplyingCoupon,
+  isRemovingCoupon,
+}: CartDrawerProps) {
   const count = itemCount(cart);
   const isEmpty = !cart || cart.items.length === 0;
+  const close = () => onOpenChange(false);
 
   return (
-    <Sheet open={open} onOpenChange={setOpen}>
+    <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetTrigger asChild>
         <button
           type="button"
@@ -51,7 +79,7 @@ export function CartDrawer() {
           <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
             <ShoppingBag className="size-10 text-muted-foreground" />
             <p className="text-sm text-muted-foreground">Your cart is empty.</p>
-            <Button asChild variant="outline" onClick={() => setOpen(false)}>
+            <Button asChild variant="outline" onClick={close}>
               <Link to="/products">Continue shopping</Link>
             </Button>
           </div>
@@ -63,27 +91,33 @@ export function CartDrawer() {
                   key={item.id}
                   item={item}
                   currency={cart.currency}
-                  onNavigate={() => setOpen(false)}
+                  disabled={pendingItemId === item.id}
+                  onQuantityChange={(quantity) =>
+                    onQuantityChange(item.id, quantity)
+                  }
+                  onRemove={() => onRemoveItem(item.id)}
+                  onNavigate={close}
                 />
               ))}
-              <CouponField appliedCode={cart.couponCode} />
+              <CouponField
+                appliedCode={cart.couponCode}
+                onApply={onApplyCoupon}
+                onRemove={onRemoveCoupon}
+                isApplying={isApplyingCoupon}
+                isRemoving={isRemovingCoupon}
+              />
             </div>
 
             <SheetFooter className="border-t">
               <CartSummary cart={cart} />
-              <Button
-                asChild
-                size="lg"
-                className="w-full"
-                onClick={() => setOpen(false)}
-              >
+              <Button asChild size="lg" className="w-full" onClick={close}>
                 <Link to="/checkout">Checkout</Link>
               </Button>
               <Button
                 asChild
                 variant="outline"
                 className="w-full"
-                onClick={() => setOpen(false)}
+                onClick={close}
               >
                 <Link to="/cart">View cart</Link>
               </Button>

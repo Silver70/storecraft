@@ -2,11 +2,31 @@ import * as React from "react";
 import { X } from "lucide-react";
 import { Input } from "~/components/ui/input";
 import { Button } from "~/components/ui/button";
-import { useCartMutations } from "../hooks";
 
-/** Apply / remove a coupon code. The backend validates and reprices the cart. */
-export function CouponField({ appliedCode }: { appliedCode?: string | null }) {
-  const { applyCoupon, removeCoupon } = useCartMutations();
+interface CouponFieldProps {
+  appliedCode?: string | null;
+  /**
+   * Applies the typed code. Resolve when the backend accepts it — the input
+   * clears; reject and the rejection's message is shown under the field.
+   */
+  onApply: (code: string) => Promise<unknown>;
+  onRemove: () => void;
+  isApplying?: boolean;
+  isRemoving?: boolean;
+}
+
+/**
+ * Apply / remove a coupon code. The backend validates and reprices the cart.
+ * The typed code and the error message are local UI state; the cart itself and
+ * the mutating are the caller's.
+ */
+export function CouponField({
+  appliedCode,
+  onApply,
+  onRemove,
+  isApplying,
+  isRemoving,
+}: CouponFieldProps) {
   const [code, setCode] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
 
@@ -19,8 +39,8 @@ export function CouponField({ appliedCode }: { appliedCode?: string | null }) {
         <button
           type="button"
           aria-label="Remove coupon"
-          disabled={removeCoupon.isPending}
-          onClick={() => removeCoupon.mutate()}
+          disabled={isRemoving}
+          onClick={onRemove}
           className="text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
         >
           <X className="size-4" />
@@ -29,18 +49,16 @@ export function CouponField({ appliedCode }: { appliedCode?: string | null }) {
     );
   }
 
-  const submit = () => {
+  const submit = async () => {
     const trimmed = code.trim();
     if (!trimmed) return;
     setError(null);
-    applyCoupon.mutate(
-      { code: trimmed },
-      {
-        onSuccess: () => setCode(""),
-        onError: (err) =>
-          setError(err instanceof Error ? err.message : "Invalid coupon"),
-      },
-    );
+    try {
+      await onApply(trimmed);
+      setCode("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Invalid coupon");
+    }
   };
 
   return (
@@ -53,16 +71,16 @@ export function CouponField({ appliedCode }: { appliedCode?: string | null }) {
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              submit();
+              void submit();
             }
           }}
         />
         <Button
           variant="outline"
-          onClick={submit}
-          disabled={applyCoupon.isPending || !code.trim()}
+          onClick={() => void submit()}
+          disabled={isApplying || !code.trim()}
         >
-          {applyCoupon.isPending ? "Applying…" : "Apply"}
+          {isApplying ? "Applying…" : "Apply"}
         </Button>
       </div>
       {error && <p className="text-xs text-destructive">{error}</p>}

@@ -96,5 +96,20 @@ export function useCartMutations() {
     onSuccess: setCart,
   });
 
-  return { addToCart, updateItem, removeItem, applyCoupon, removeCoupon };
+  // Which line, if any, has an edit in flight. Pages hand this to the line
+  // item so only the line the shopper touched freezes its controls — the same
+  // per-line behaviour as when each line owned its own mutation.
+  const pendingItemId =
+    (updateItem.isPending && updateItem.variables?.itemId) ||
+    (removeItem.isPending && removeItem.variables?.itemId) ||
+    null;
+
+  return {
+    addToCart,
+    updateItem,
+    removeItem,
+    applyCoupon,
+    removeCoupon,
+    pendingItemId,
+  };
 }

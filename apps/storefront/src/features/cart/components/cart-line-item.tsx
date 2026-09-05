@@ -3,23 +3,28 @@ import { ImageOff, Trash2 } from "lucide-react";
 import type { CartItem } from "~/types/api";
 import { formatMoney } from "~/lib/money";
 import { QuantityStepper } from "./quantity-stepper";
-import { useCartMutations } from "../hooks";
 
 interface CartLineItemProps {
   item: CartItem;
   currency: string;
+  /** Quantity the shopper picked on the stepper. The caller does the mutating. */
+  onQuantityChange: (quantity: number) => void;
+  onRemove: () => void;
+  /** Freezes the stepper and the remove control while a cart edit is in flight. */
+  disabled?: boolean;
   /** Called when a PDP link is clicked — used to close the drawer. */
   onNavigate?: () => void;
 }
 
+/** One cart line. Presentational: it renders what it is given and calls back. */
 export function CartLineItem({
   item,
   currency,
+  onQuantityChange,
+  onRemove,
+  disabled,
   onNavigate,
 }: CartLineItemProps) {
-  const { updateItem, removeItem } = useCartMutations();
-  const busy = updateItem.isPending || removeItem.isPending;
-
   return (
     <div className="flex gap-3">
       <Link
@@ -54,8 +59,8 @@ export function CartLineItem({
           <button
             type="button"
             aria-label="Remove item"
-            disabled={busy}
-            onClick={() => removeItem.mutate({ itemId: item.id })}
+            disabled={disabled}
+            onClick={onRemove}
             className="text-muted-foreground transition-colors hover:text-destructive disabled:opacity-40"
           >
             <Trash2 className="size-4" />
@@ -69,10 +74,8 @@ export function CartLineItem({
         <div className="mt-1 flex items-center justify-between">
           <QuantityStepper
             quantity={item.quantity}
-            disabled={busy}
-            onChange={(quantity) =>
-              updateItem.mutate({ itemId: item.id, quantity })
-            }
+            disabled={disabled}
+            onChange={onQuantityChange}
           />
           <span className="text-sm font-medium">
             {formatMoney(item.totalPrice, currency)}
