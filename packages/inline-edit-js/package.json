@@ -1,0 +1,26 @@
+{
+  "name": "@repo/inline-edit-js",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Commerce OS storefront inline editing bridge (ie.js)",
+  "exports": {
+    "./ie.js": "./dist/ie.js",
+    "./protocol": "./src/protocol.ts"
+  },
+  "files": [
+    "dist",
+    "src/protocol.ts"
+  ],
+  "scripts": {
+    "build": "esbuild src/ie.ts --bundle --minify --format=iife --target=es2019 --outfile=dist/ie.js --legal-comments=none",
+    "dev": "esbuild src/ie.ts --bundle --format=iife --target=es2019 --outfile=dist/ie.js --watch",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "typescript": "5.9.2",
+    "vitest": "^5.0.0"
+  }
+}

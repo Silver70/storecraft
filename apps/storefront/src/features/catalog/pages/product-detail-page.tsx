@@ -107,7 +107,10 @@ function ProductDetail({ product }: { product: Product }) {
             {product.vendor && (
               <p className="text-sm text-muted-foreground">{product.vendor}</p>
             )}
-            <h1 className="font-heading text-2xl font-semibold tracking-tight">
+            <h1
+              data-commerce-edit={`product:${product.id}:name`}
+              className="font-heading text-2xl font-semibold tracking-tight"
+            >
               {product.name}
             </h1>
             <div className="flex items-center gap-3">

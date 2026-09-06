@@ -17,6 +17,7 @@ import { storeConfig } from "~/config/store.config";
 import { CartUiProvider } from "~/features/cart/cart-ui";
 import { trackingScript } from "~/features/attribution/config";
 import { useAttributionCapture } from "~/features/attribution/hooks";
+import { useInlineEdit } from "~/features/inline-edit/use-inline-edit";
 import appCss from "~/styles/app.css?url";
 import { seo } from "~/utils/seo";
 
@@ -94,6 +95,7 @@ function RootComponent() {
   // navigation. Local, synchronous, and run from an effect — nothing here is
   // on the path between a click and what the shopper sees.
   useAttributionCapture();
+  useInlineEdit();
 
   return (
     <RootDocument>

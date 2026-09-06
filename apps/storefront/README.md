@@ -52,13 +52,13 @@ Run from `apps/storefront/`:
 
 ## Environment variables
 
-These are exactly the seven variables in
-[`.env.example`](.env.example) — nothing else is read from `.env`.
+The storefront reads the following settings from its environment.
 
 | Var                              | Scope       | Notes                                           |
 | -------------------------------- | ----------- | ----------------------------------------------- |
 | `COMMERCE_API_URL`               | server-only | Backend base URL, no `/graphql` suffix          |
 | `COMMERCE_API_KEY`               | server-only | Storefront `X-API-Key` for this store           |
+| `ADMIN_ORIGIN`                   | server      | Exact trusted admin origin for inline editing; defaults to `http://localhost:3000` in development, required in production for editing |
 | `VITE_STRIPE_PUBLISHABLE_KEY`    | browser     | Stripe publishable key (safe by design)         |
 | `VITE_ATTRIBUTION_LOOKBACK_DAYS` | browser     | First-touch memory; match the backend (def. 30) |
 | `VITE_ANALYTICS_URL`             | browser     | Origin serving `ca.js` — usually the backend    |
@@ -76,6 +76,28 @@ unscoped beyond that, so a key in the browser is a key anyone can create carts
 with — create a **second** key in the admin for it rather than reusing
 `COMMERCE_API_KEY`. Leave it unset and no script is embedded; attribution
 capture and checkout are unaffected either way.
+
+## Inline product-name editing
+
+Set the backend’s existing `STOREFRONT_URL` to this Store’s address (locally,
+`http://localhost:5173`). Set this app’s `ADMIN_ORIGIN` to the admin’s exact
+origin, without a trailing slash. The edit script URL comes from the existing
+`COMMERCE_API_URL`; no API credential is passed to the script.
+
+Build `@repo/inline-edit-js` once before starting the backend, or run its `dev`
+task while developing the bridge. In the admin, open **Store** and navigate to a
+product, or choose **Edit in Store** on an active product. Hover/click the name,
+type, and use **Save** (or Cmd/Ctrl+Enter) to make it live. **Cancel** (or Escape)
+restores the original; clicking elsewhere never saves. Failed saves retain the
+text for retry. Renaming also changes the slug through the existing endpoint,
+so the editor opens the saved product’s new URL after a commit.
+
+The script is injected only after hydration in a frame carrying an editing
+session. Ordinary visits never download `/ie.js`. In production, any
+`frame-ancestors` policy on the storefront must permit the configured admin.
+See [the bridge package](../../packages/inline-edit-js/README.md) for the v1
+contract. Product descriptions, content slots, and navigation controls belong
+to subsequent issues.
 
 ## Project layout
 

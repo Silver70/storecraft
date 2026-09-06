@@ -34,7 +34,11 @@ async function bootstrap() {
   });
 
   app.setGlobalPrefix('api', {
-    exclude: ['/graphql', { path: 'ca.js', method: RequestMethod.GET }],
+    exclude: [
+      '/graphql',
+      { path: 'ca.js', method: RequestMethod.GET },
+      { path: 'ie.js', method: RequestMethod.GET },
+    ],
   });
 
   app.useGlobalPipes(

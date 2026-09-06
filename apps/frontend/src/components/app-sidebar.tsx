@@ -19,6 +19,7 @@ import {
   MegaphoneIcon,
   TruckIcon,
   SettingsIcon,
+  StoreIcon,
   ChevronsUpDownIcon,
   UserIcon,
   BellIcon,
@@ -79,6 +80,7 @@ const marketingNav: NavItem[] = [
 ];
 
 const secondaryNav: NavItem[] = [
+  { title: "Store", url: "/admin/store", icon: StoreIcon },
   { title: "Shipping", url: "/admin/shipping", icon: TruckIcon },
   { title: "Settings", url: "/admin/settings", icon: SettingsIcon },
 ];

@@ -21,6 +21,7 @@ import { Route as AuthSignupRouteImport } from './routes/auth/signup'
 import { Route as AuthSignoutRouteImport } from './routes/auth/signout'
 import { Route as AuthSetPasswordRouteImport } from './routes/auth/set-password'
 import { Route as AuthLoginRouteImport } from './routes/auth/login'
+import { Route as AdminStoreRouteImport } from './routes/admin/store'
 import { Route as AdminShippingRouteImport } from './routes/admin/shipping'
 import { Route as AdminSettingsRouteImport } from './routes/admin/settings'
 import { Route as AdminInventoryRouteImport } from './routes/admin/inventory'
@@ -106,6 +107,11 @@ const AuthLoginRoute = AuthLoginRouteImport.update({
   id: '/login',
   path: '/login',
   getParentRoute: () => AuthRouteRoute,
+} as any)
+const AdminStoreRoute = AdminStoreRouteImport.update({
+  id: '/store',
+  path: '/store',
+  getParentRoute: () => AdminRouteRoute,
 } as any)
 const AdminShippingRoute = AdminShippingRouteImport.update({
   id: '/shipping',
@@ -249,6 +255,7 @@ export interface FileRoutesByFullPath {
   '/admin/inventory': typeof AdminInventoryRoute
   '/admin/settings': typeof AdminSettingsRoute
   '/admin/shipping': typeof AdminShippingRoute
+  '/admin/store': typeof AdminStoreRoute
   '/auth/login': typeof AuthLoginRoute
   '/auth/set-password': typeof AuthSetPasswordRoute
   '/auth/signout': typeof AuthSignoutRoute
@@ -288,6 +295,7 @@ export interface FileRoutesByTo {
   '/admin/inventory': typeof AdminInventoryRoute
   '/admin/settings': typeof AdminSettingsRoute
   '/admin/shipping': typeof AdminShippingRoute
+  '/admin/store': typeof AdminStoreRoute
   '/auth/login': typeof AuthLoginRoute
   '/auth/set-password': typeof AuthSetPasswordRoute
   '/auth/signout': typeof AuthSignoutRoute
@@ -328,6 +336,7 @@ export interface FileRoutesById {
   '/admin/inventory': typeof AdminInventoryRoute
   '/admin/settings': typeof AdminSettingsRoute
   '/admin/shipping': typeof AdminShippingRoute
+  '/admin/store': typeof AdminStoreRoute
   '/auth/login': typeof AuthLoginRoute
   '/auth/set-password': typeof AuthSetPasswordRoute
   '/auth/signout': typeof AuthSignoutRoute
@@ -369,6 +378,7 @@ export interface FileRouteTypes {
     | '/admin/inventory'
     | '/admin/settings'
     | '/admin/shipping'
+    | '/admin/store'
     | '/auth/login'
     | '/auth/set-password'
     | '/auth/signout'
@@ -408,6 +418,7 @@ export interface FileRouteTypes {
     | '/admin/inventory'
     | '/admin/settings'
     | '/admin/shipping'
+    | '/admin/store'
     | '/auth/login'
     | '/auth/set-password'
     | '/auth/signout'
@@ -447,6 +458,7 @@ export interface FileRouteTypes {
     | '/admin/inventory'
     | '/admin/settings'
     | '/admin/shipping'
+    | '/admin/store'
     | '/auth/login'
     | '/auth/set-password'
     | '/auth/signout'
@@ -567,6 +579,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/auth/login'
       preLoaderRoute: typeof AuthLoginRouteImport
       parentRoute: typeof AuthRouteRoute
+    }
+    '/admin/store': {
+      id: '/admin/store'
+      path: '/store'
+      fullPath: '/admin/store'
+      preLoaderRoute: typeof AdminStoreRouteImport
+      parentRoute: typeof AdminRouteRoute
     }
     '/admin/shipping': {
       id: '/admin/shipping'
@@ -754,6 +773,7 @@ interface AdminRouteRouteChildren {
   AdminInventoryRoute: typeof AdminInventoryRoute
   AdminSettingsRoute: typeof AdminSettingsRoute
   AdminShippingRoute: typeof AdminShippingRoute
+  AdminStoreRoute: typeof AdminStoreRoute
   AdminCampaignsCampaignIdRoute: typeof AdminCampaignsCampaignIdRoute
   AdminCampaignsNewRoute: typeof AdminCampaignsNewRoute
   AdminCampaignsRevenueRoute: typeof AdminCampaignsRevenueRoute
@@ -782,6 +802,7 @@ const AdminRouteRouteChildren: AdminRouteRouteChildren = {
   AdminInventoryRoute: AdminInventoryRoute,
   AdminSettingsRoute: AdminSettingsRoute,
   AdminShippingRoute: AdminShippingRoute,
+  AdminStoreRoute: AdminStoreRoute,
   AdminCampaignsCampaignIdRoute: AdminCampaignsCampaignIdRoute,
   AdminCampaignsNewRoute: AdminCampaignsNewRoute,
   AdminCampaignsRevenueRoute: AdminCampaignsRevenueRoute,

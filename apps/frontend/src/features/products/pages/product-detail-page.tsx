@@ -123,6 +123,13 @@ export function ProductDetailPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {product.status === "active" && (
+              <Button variant="outline" asChild>
+                <Link to="/admin/store" search={{ productSlug: product.slug }}>
+                  Edit in Store
+                </Link>
+              </Button>
+            )}
             {isEditing ? (
               <Button
                 variant="outline"

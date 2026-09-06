@@ -29,7 +29,11 @@ export async function createTestApp(): Promise<TestApp> {
   const app = moduleRef.createNestApplication<INestApplication<App>>();
   app.use(cookieParser());
   app.setGlobalPrefix('api', {
-    exclude: ['/graphql', { path: 'ca.js', method: RequestMethod.GET }],
+    exclude: [
+      '/graphql',
+      { path: 'ca.js', method: RequestMethod.GET },
+      { path: 'ie.js', method: RequestMethod.GET },
+    ],
   });
   app.useGlobalPipes(
     new ValidationPipe({

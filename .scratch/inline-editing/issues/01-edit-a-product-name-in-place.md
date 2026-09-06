@@ -32,22 +32,48 @@ posts nothing — and is not on the page at all for an ordinary shopper.
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] A new workspace package holds the storefront-side edit script, built to a minified IIFE, in the same shape as the analytics tracker package
-- [ ] The backend serves that script at a root path, the way it already serves the analytics tracker
-- [ ] The Starter Storefront marks its product name as an editable region with data attributes, and embeds the script only when a session calls for it
-- [ ] The admin has an editor surface that renders the Store in a frame, resolving the URL from the backend's existing storefront address rather than a second configured one
-- [ ] Editable text is outlined on hover, and clicking it starts an edit in place
-- [ ] The value updates live in the frame as the merchant types, pushed in by the admin
-- [ ] Committing is deliberate; a stray click does not save
-- [ ] Abandoning an edit restores the original
-- [ ] A commit saves through the **existing** admin product endpoint — no new write path for a field that already has one
-- [ ] The save is subject to `products.update`; a support agent cannot edit through the editor
-- [ ] A failed save tells the merchant, leaves the typed text on screen to retry, and leaves the stored value untouched
-- [ ] Every message carries an explicit protocol version, and an unrecognised version is refused — loudly in the admin, silently in the storefront
-- [ ] Both sides verify origin: the storefront accepts messages only from the configured admin origin, the admin only from the frame it opened
-- [ ] An editable region is identified by entity kind, id, and field — never by position on the page
-- [ ] Nothing in the protocol writes; the frame holds no credential and never calls the commerce API to persist
-- [ ] The script is inert outside an editing session and absent from an ordinary shopper's page
-- [ ] The protocol's pure functions have unit specs in the new package: an unexpected origin refused, an unknown version refused, a malformed or partial payload refused, a valid message parsed to its command, a target descriptor parsed to entity kind / id / field, a malformed descriptor refused rather than guessed at, and an oversized payload refused
+- [x] A new workspace package holds the storefront-side edit script, built to a minified IIFE, in the same shape as the analytics tracker package
+- [x] The backend serves that script at a root path, the way it already serves the analytics tracker
+- [x] The Starter Storefront marks its product name as an editable region with data attributes, and embeds the script only when a session calls for it
+- [x] The admin has an editor surface that renders the Store in a frame, resolving the URL from the backend's existing storefront address rather than a second configured one
+- [x] Editable text is outlined on hover, and clicking it starts an edit in place
+- [x] The value updates live in the frame as the merchant types, pushed in by the admin
+- [x] Committing is deliberate; a stray click does not save
+- [x] Abandoning an edit restores the original
+- [x] A commit saves through the **existing** admin product endpoint — no new write path for a field that already has one
+- [x] The save is subject to `products.update`; a support agent cannot edit through the editor
+- [x] A failed save tells the merchant, leaves the typed text on screen to retry, and leaves the stored value untouched
+- [x] Every message carries an explicit protocol version, and an unrecognised version is refused — loudly in the admin, silently in the storefront
+- [x] Both sides verify origin: the storefront accepts messages only from the configured admin origin, the admin only from the frame it opened
+- [x] An editable region is identified by entity kind, id, and field — never by position on the page
+- [x] Nothing in the protocol writes; the frame holds no credential and never calls the commerce API to persist
+- [x] The script is inert outside an editing session and absent from an ordinary shopper's page
+- [x] The protocol's pure functions have unit specs in the new package: an unexpected origin refused, an unknown version refused, a malformed or partial payload refused, a valid message parsed to its command, a target descriptor parsed to entity kind / id / field, a malformed descriptor refused rather than guessed at, and an oversized payload refused
+
+
+## Comments
+
+Implemented the v1 product-name editing channel in `packages/inline-edit-js`,
+served by the backend at `/ie.js`. The admin's **Store** surface and active
+products' **Edit in Store** link open the backend-configured Store. The admin
+owns the outline, anchored text input, draft, Save and Cancel. Preview messages
+carry literal text only; saves use the existing product server function and
+`PATCH /api/admin/products/:id`. Support agents receive a view-only surface.
+
+The Starter Storefront declares the product-name target and loads the bridge
+only inside a framed editing session. `ADMIN_ORIGIN` is configured on the
+storefront (localhost:3000 by default in development); the asset address comes
+from `COMMERCE_API_URL`. See `apps/storefront/README.md` and
+`packages/inline-edit-js/README.md` for setup and the v1 contract.
+
+Validation: frontend, storefront and backend builds passed; 41 protocol specs,
+64 storefront specs and 263 backend unit specs passed. Full backend TypeScript
+checking, including the new integration specs, passed. The integration suite
+was attempted but stopped in global setup because this checkout's
+`apps/backend/.env.test` is deleted and `DATABASE_URL` is unset. No integration
+assertions ran; the existing environment-file deletions were preserved. The six
+new integration cases cover public saved copy, retries, permissions, tenant and
+Store isolation, editor bootstrap, and serving the script. UI/iframe automation
+was not added, in accordance with this stage's testing decisions.
