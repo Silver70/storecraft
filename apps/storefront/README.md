@@ -127,8 +127,33 @@ The script is injected only after hydration in a frame carrying an editing
 session, and the regions that exist only for editing are absent from a
 shopper’s page entirely. Ordinary visits never download `/ie.js`. In
 production, any `frame-ancestors` policy on the storefront must permit the
-configured admin. See [the bridge package](../../packages/inline-edit-js/README.md)
-for the v3 contract. Content slots belong to subsequent issues.
+configured admin. This app is the reference implementation of
+[the Inline Editing protocol](../../docs/inline-editing-protocol.md), which is
+the contract to implement against if you are making a storefront of your own
+editable.
+
+### Content Slots
+
+This Store renders two Content Slots — named regions holding copy the merchant
+edits in the admin rather than in this source tree:
+
+| Key             | Type      | Where it renders                            |
+| --------------- | --------- | ------------------------------------------- |
+| `homepage.hero` | `heading` | The headline above the fold on the homepage |
+| `plp.banner`    | `text`    | The promotion strip on every listing page   |
+
+They are declared in `src/config/content-slots.ts` (◄ TEMPLATE KNOB) and
+rendered with `<ContentSlot>`. Add a Slot by adding an entry and rendering it;
+remove one by deleting both, because a key nothing renders is a Slot nobody can
+find.
+
+A Slot with no published value renders **nothing** for a shopper — no
+placeholder, no fallback headline. Inside an editing session it renders anyway,
+empty and outlined with its label, so a region that currently shows nothing can
+still be found and filled. Unlike a product field, a Slot edit is saved as a
+draft and published separately: your live copy keeps rendering until the
+merchant presses **Publish**, and no public read returns a draft under any
+argument.
 
 ## Project layout
 
