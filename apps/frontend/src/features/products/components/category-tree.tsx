@@ -1,8 +1,10 @@
 import * as React from "react";
+import { Link } from "@tanstack/react-router";
 import {
   FolderIcon,
   FolderPlusIcon,
   PencilIcon,
+  StoreIcon,
   Trash2Icon,
 } from "lucide-react";
 import { Button } from "~/components/ui/button";
@@ -119,6 +121,17 @@ function CategoryRow({
         </div>
       ) : (
         <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+            asChild
+            title="Edit in Store"
+          >
+            <Link to="/admin/store" search={{ categorySlug: category.slug }}>
+              <StoreIcon className="h-3.5 w-3.5" />
+            </Link>
+          </Button>
           <Button
             variant="ghost"
             size="sm"

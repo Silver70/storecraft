@@ -5,6 +5,7 @@ import * as React from "react";
 import { Badge } from "~/components/ui/badge";
 import { useCartUi } from "~/features/cart/cart-ui";
 import { useAddToCart } from "~/features/cart/hooks";
+import { useInlineEditSession } from "~/features/inline-edit/use-inline-edit";
 import { formatMoney } from "~/lib/money";
 import type { Product } from "~/types/api";
 import { AddToCartButton } from "../components/add-to-cart-button";
@@ -29,6 +30,10 @@ export function ProductDetailPage() {
 }
 
 function ProductDetail({ product }: { product: Product }) {
+    // Inside the admin's editing frame the page also declares the copy it does
+    // not display, so every field carrying the merchant's words is reachable
+    // from the page it belongs to. A shopper's copy carries none of it.
+    const editing = useInlineEditSession();
     const activeVariants = product.variants.filter(v => v.isActive);
 
     // Use the structured option picker only when the product actually models
@@ -136,11 +141,26 @@ function ProductDetail({ product }: { product: Product }) {
                         onAdd={handleAdd}
                     />
 
-                    {product.description && (
+                    {(product.description || editing) && (
                         <div className="border-t pt-6">
-                            <p className="text-sm leading-relaxed whitespace-pre-line text-muted-foreground">
+                            <p
+                                data-commerce-edit={`product:${product.id}:description`}
+                                className="min-h-6 text-sm leading-relaxed whitespace-pre-line text-muted-foreground"
+                            >
                                 {product.description}
                             </p>
+                        </div>
+                    )}
+
+                    {/* Declared, never displayed: the search-result copy is a
+                        field of this page even though the page does not show
+                        it. The admin offers it alongside the visible ones. */}
+                    {editing && (
+                        <div hidden>
+                            <span data-commerce-edit={`product:${product.id}:seoTitle`}>{product.seoTitle}</span>
+                            <span data-commerce-edit={`product:${product.id}:seoDescription`}>
+                                {product.seoDescription}
+                            </span>
                         </div>
                     )}
                 </div>

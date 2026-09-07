@@ -1,13 +1,15 @@
 import {
   isSession,
+  fieldSpec,
   parseOrigin,
   parseTarget,
   parseAdminMessage,
   message,
   MAX_REGIONS,
-  MAX_NAME_LENGTH,
+  MAX_REGIONS_TEXT,
   SESSION_PARAM,
   type FrameCommand,
+  type Rect,
   type Region,
 } from "./protocol";
 
@@ -44,15 +46,32 @@ function boot() {
     return found;
   }
 
+  function fits(element: Element, target: string): boolean {
+    const parsed = parseTarget(target);
+    return (
+      !!parsed &&
+      (element.textContent?.length ?? 0) <= fieldSpec(parsed).maxLength
+    );
+  }
+
   function announce(force = false) {
     const regions: Region[] = [];
+    let budget = MAX_REGIONS_TEXT;
     for (const [target, matches] of elements()) {
-      const element = matches.find((node) => node.getClientRects().length > 0);
-      if (!element) continue;
+      // A region the page declares but does not display — SEO copy, say — is
+      // announced without geometry rather than withheld, so the admin can
+      // still offer it. Geometry comes from the first occurrence that renders.
+      const shown = matches.find((node) => node.getClientRects().length > 0);
+      const element = shown ?? matches[0]!;
       const value = element.textContent ?? "";
-      if (value.length > MAX_NAME_LENGTH) continue;
-      const { x, y, width, height } = element.getBoundingClientRect();
-      regions.push({ target, value, rect: { x, y, width, height } });
+      if (!fits(element, target)) continue;
+      if ((budget -= value.length) < 0) break;
+      let rect: Rect | null = null;
+      if (shown) {
+        const box = shown.getBoundingClientRect();
+        rect = { x: box.x, y: box.y, width: box.width, height: box.height };
+      }
+      regions.push({ target, value, rect });
     }
     const snapshot = JSON.stringify(regions);
     if (force || snapshot !== lastRegions) {
@@ -75,10 +94,7 @@ function boot() {
         ? event.target.closest<HTMLElement>(selector)
         : null;
     const target = element?.dataset.commerceEdit;
-    return parseTarget(target) &&
-      (element?.textContent?.length ?? 0) <= MAX_NAME_LENGTH
-      ? target!
-      : null;
+    return element && target && fits(element, target) ? target : null;
   }
 
   window.addEventListener("message", (event) => {
@@ -98,7 +114,9 @@ function boot() {
       });
       announce();
     } else {
-      matches[0]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      matches
+        .find((node) => node.getClientRects().length > 0)
+        ?.scrollIntoView({ block: "nearest", inline: "nearest" });
       announce(true);
     }
   });

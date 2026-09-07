@@ -77,7 +77,7 @@ with — create a **second** key in the admin for it rather than reusing
 `COMMERCE_API_KEY`. Leave it unset and no script is embedded; attribution
 capture and checkout are unaffected either way.
 
-## Inline product-name editing
+## Inline editing
 
 Set the backend’s existing `STOREFRONT_URL` to this Store’s address (locally,
 `http://localhost:5173`). Set this app’s `ADMIN_ORIGIN` to the admin’s exact
@@ -85,19 +85,37 @@ origin, without a trailing slash. The edit script URL comes from the existing
 `COMMERCE_API_URL`; no API credential is passed to the script.
 
 Build `@repo/inline-edit-js` once before starting the backend, or run its `dev`
-task while developing the bridge. In the admin, open **Store** and navigate to a
-product, or choose **Edit in Store** on an active product. Hover/click the name,
-type, and use **Save** (or Cmd/Ctrl+Enter) to make it live. **Cancel** (or Escape)
-restores the original; clicking elsewhere never saves. Failed saves retain the
-text for retry. Renaming also changes the slug through the existing endpoint,
-so the editor opens the saved product’s new URL after a commit.
+task while developing the bridge. In the admin, open **Store** and walk to the
+page you want, or choose **Edit in Store** on an active product or a category.
+The editable regions this Store declares are:
+
+| Page             | Region                                                       |
+| ---------------- | ------------------------------------------------------------ |
+| `/products/:slug` | product name, description, SEO title, SEO description        |
+| `/products?category=` | the selected category’s name and description             |
+
+Click any outlined text, type, and use **Save** to make it live — Enter commits
+a single-line field, Cmd/Ctrl+Enter a paragraph. **Cancel** (or Escape) restores
+the original; clicking elsewhere never saves. A failed save keeps the text on
+screen for a retry and leaves the stored value untouched. An oversized paste is
+refused with a message rather than trimmed, and everything is stored as text —
+markup pasted from a word processor reaches the Store as characters a shopper
+reads, never as markup.
+
+SEO copy has no text on the page to click, so the page declares it in a hidden
+element and the admin offers it in the **Editable on this page** list. Both
+descriptions are declared even when empty, so a merchant can fill a region that
+currently renders nothing. Renaming a product or a category also changes its
+slug through the existing endpoint, so the editor reopens the saved page at the
+address it now has.
 
 The script is injected only after hydration in a frame carrying an editing
-session. Ordinary visits never download `/ie.js`. In production, any
-`frame-ancestors` policy on the storefront must permit the configured admin.
-See [the bridge package](../../packages/inline-edit-js/README.md) for the v1
-contract. Product descriptions, content slots, and navigation controls belong
-to subsequent issues.
+session, and the regions that exist only for editing are absent from a
+shopper’s page entirely. Ordinary visits never download `/ie.js`. In
+production, any `frame-ancestors` policy on the storefront must permit the
+configured admin. See [the bridge package](../../packages/inline-edit-js/README.md)
+for the v2 contract. Content slots and navigation controls belong to subsequent
+issues.
 
 ## Project layout
 

@@ -95,6 +95,7 @@ const CATEGORY_NODE_FIELDS = /* GraphQL */ `
   id
   name
   slug
+  description
   parentId
   position
 `;

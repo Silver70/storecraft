@@ -1,10 +1,15 @@
-/** Version 1 is deliberately limited to product.name. No command can save. */
+/**
+ * Version 2 covers the copy fields of a product and a category. No command in
+ * the protocol saves anything: the frame is a rendering surface and an event
+ * source, and every write happens in the admin, on the admin's origin.
+ */
 export const CHANNEL = "commerce-inline-edit";
-export const VERSION = 1;
+export const VERSION = 2;
 export const SESSION_PARAM = "__commerce_edit";
 export const MAX_PAYLOAD_BYTES = 64 * 1024;
 export const MAX_REGIONS = 100;
-export const MAX_NAME_LENGTH = 255;
+/** Total announced text per message, so a page of long copy still fits. */
+export const MAX_REGIONS_TEXT = 32 * 1024;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function isSession(value: unknown): value is string {
@@ -23,25 +28,108 @@ export function parseOrigin(value: unknown): string | null {
   }
 }
 
-export type Target = { kind: "product"; id: string; field: "name" };
+export type EntityKind = "product" | "category";
+/**
+ * A field a merchant may edit through the protocol, with what the admin needs
+ * in order to offer it: what to call it, how long it may be, and whether it is
+ * a paragraph. The limits are the editor's, not the database's — those columns
+ * are unbounded text, and an editing channel that accepts an unbounded paste
+ * is a broken page waiting to happen.
+ */
+export type FieldSpec = {
+  label: string;
+  maxLength: number;
+  multiline: boolean;
+};
+export const FIELDS: Record<EntityKind, Record<string, FieldSpec>> = {
+  product: {
+    name: { label: "Product name", maxLength: 255, multiline: false },
+    description: {
+      label: "Product description",
+      maxLength: 5000,
+      multiline: true,
+    },
+    seoTitle: { label: "SEO title", maxLength: 255, multiline: false },
+    seoDescription: {
+      label: "SEO description",
+      maxLength: 500,
+      multiline: true,
+    },
+  },
+  category: {
+    name: { label: "Category name", maxLength: 255, multiline: false },
+    description: {
+      label: "Category description",
+      maxLength: 2000,
+      multiline: true,
+    },
+  },
+};
+
+export type Target =
+  | {
+      kind: "product";
+      id: string;
+      field: "name" | "description" | "seoTitle" | "seoDescription";
+    }
+  | { kind: "category"; id: string; field: "name" | "description" };
+
+export function fieldSpec(target: Target): FieldSpec {
+  return FIELDS[target.kind][target.field]!;
+}
+
+/** `<kind>:<uuid>:<field>` — identity, never a position on the page. */
 export function parseTarget(descriptor: unknown): Target | null {
   if (typeof descriptor !== "string" || descriptor.length > 64) return null;
   const parts = descriptor.split(":");
-  if (
-    parts.length !== 3 ||
-    parts[0] !== "product" ||
-    !UUID.test(parts[1]!) ||
-    parts[2] !== "name"
-  )
+  if (parts.length !== 3) return null;
+  const [kind, id, field] = parts as [string, string, string];
+  if (!Object.hasOwnProperty.call(FIELDS, kind) || !UUID.test(id)) return null;
+  if (!Object.hasOwnProperty.call(FIELDS[kind as EntityKind]!, field))
     return null;
-  return { kind: "product", id: parts[1]!, field: "name" };
+  return { kind, id, field } as Target;
 }
 export function describeTarget(target: Target): string {
   return `${target.kind}:${target.id}:${target.field}`;
 }
 
+/**
+ * Copy is text. Line endings are normalised, control characters no storefront
+ * can render are dropped, and a single-line field never acquires a newline
+ * from a paste. Markup is left as the literal characters it is: a preview is
+ * applied with `textContent`, so it can only ever be read, never parsed.
+ */
+const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+export function sanitizeText(value: string, spec: FieldSpec): string {
+  const text = value.replace(/\r\n?/g, "\n").replace(CONTROL, "");
+  return spec.multiline ? text : text.replace(/[\n\t]+/g, " ");
+}
+
+export type PasteResult =
+  | { ok: true; value: string; caret: number }
+  | { ok: false; reason: "oversized" };
+/**
+ * Refuses an oversized paste outright rather than truncating it, so a merchant
+ * is told what happened instead of finding a sentence missing later.
+ */
+export function applyPaste(
+  current: string,
+  start: number,
+  end: number,
+  pasted: string,
+  spec: FieldSpec,
+): PasteResult {
+  const text = sanitizeText(pasted, spec);
+  const from = Math.max(0, Math.min(start, current.length));
+  const to = Math.max(from, Math.min(end, current.length));
+  const value = current.slice(0, from) + text + current.slice(to);
+  if (value.length > spec.maxLength) return { ok: false, reason: "oversized" };
+  return { ok: true, value, caret: from + text.length };
+}
+
 export type Rect = { x: number; y: number; width: number; height: number };
-export type Region = { target: string; value: string; rect: Rect };
+/** `rect` is null for a region the page declares but does not display. */
+export type Region = { target: string; value: string; rect: Rect | null };
 export type FrameCommand =
   | { type: "regions"; regions: Region[] }
   | { type: "hover"; target: string | null }
@@ -112,7 +200,8 @@ function withinBudget(value: unknown): boolean {
   }
 }
 
-function validRect(value: unknown): value is Rect {
+function validRect(value: unknown): value is Rect | null {
+  if (value === null) return true;
   if (!record(value) || !keysAre(value, ["x", "y", "width", "height"]))
     return false;
   return (
@@ -123,16 +212,18 @@ function validRect(value: unknown): value is Rect {
     (value.height as number) >= 0
   );
 }
-function validText(value: unknown): value is string {
-  return typeof value === "string" && value.length <= MAX_NAME_LENGTH;
+/** Every value is bounded by the field it belongs to, never by one limit. */
+function validText(value: unknown, target: Target): value is string {
+  return (
+    typeof value === "string" && value.length <= fieldSpec(target).maxLength
+  );
 }
 function validRegion(value: unknown): value is Region {
+  if (!record(value) || !keysAre(value, ["target", "value", "rect"]))
+    return false;
+  const target = parseTarget(value.target);
   return (
-    record(value) &&
-    keysAre(value, ["target", "value", "rect"]) &&
-    parseTarget(value.target) !== null &&
-    validText(value.value) &&
-    validRect(value.rect)
+    target !== null && validText(value.value, target) && validRect(value.rect)
   );
 }
 
@@ -159,11 +250,13 @@ function parse<T extends AdminCommand | FrameCommand>(
     if (data.type === "discover") valid = keysAre(data, base);
     if (data.type === "focus")
       valid = keysAre(data, [...base, "target"]) && !!parseTarget(data.target);
-    if (data.type === "preview")
+    if (data.type === "preview") {
+      const target = parseTarget(data.target);
       valid =
         keysAre(data, [...base, "target", "value"]) &&
-        !!parseTarget(data.target) &&
-        validText(data.value);
+        target !== null &&
+        validText(data.value, target);
+    }
   } else {
     if (data.type === "hover")
       valid =

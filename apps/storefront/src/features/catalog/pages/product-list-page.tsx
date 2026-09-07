@@ -2,6 +2,7 @@ import * as React from "react";
 import { getRouteApi } from "@tanstack/react-router";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import type { Product, ProductFilter } from "~/types/api";
+import { useInlineEditSession } from "~/features/inline-edit/use-inline-edit";
 import { Button } from "~/components/ui/button";
 import { CategoryFilter } from "../components/category-filter";
 import { ProductGrid } from "../components/product-grid";
@@ -15,15 +16,34 @@ const PAGE_SIZE = 24;
 export function ProductListPage() {
   const { category } = route.useSearch();
   const { data: categories } = useSuspenseQuery(categoriesQueryOptions());
+  const editing = useInlineEditSession();
   const activeCategory = category
     ? findCategoryBySlug(categories, category)
     : undefined;
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-10">
-      <h1 className="mb-6 font-heading text-2xl font-semibold tracking-tight">
-        {activeCategory?.name ?? "All products"}
-      </h1>
+      {/* The selected category's own copy, on the listing page it titles. The
+          sidebar links stay links: a merchant reaches a category's fields by
+          walking to it, not by having navigation turn into an edit. */}
+      <header className="mb-6 space-y-2">
+        <h1
+          data-commerce-edit={
+            activeCategory ? `category:${activeCategory.id}:name` : undefined
+          }
+          className="font-heading text-2xl font-semibold tracking-tight"
+        >
+          {activeCategory?.name ?? "All products"}
+        </h1>
+        {activeCategory && (activeCategory.description || editing) && (
+          <p
+            data-commerce-edit={`category:${activeCategory.id}:description`}
+            className="min-h-6 max-w-2xl text-sm leading-relaxed whitespace-pre-line text-muted-foreground"
+          >
+            {activeCategory.description}
+          </p>
+        )}
+      </header>
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-[14rem_1fr]">
         <aside className="lg:sticky lg:top-20 lg:self-start">

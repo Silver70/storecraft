@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyPaste,
+  fieldSpec,
+  FIELDS,
   MAX_PAYLOAD_BYTES,
-  MAX_NAME_LENGTH,
   message,
   parseAdminMessage,
   parseFrameMessage,
   parseTarget,
   parseOrigin,
+  sanitizeText,
 } from "./protocol";
 
 const session = "11111111-1111-4111-8111-111111111111";
@@ -26,11 +29,24 @@ const region = {
   rect: { x: 100, y: 200, width: 300, height: 40 },
 };
 const event = (data: unknown) => ({ ...peer, data });
+const nameLimit = FIELDS.product.name!.maxLength;
 
 describe("target descriptors", () => {
   it("identifies the entity and field without page position", () => {
     expect(parseTarget(target)).toEqual({ kind: "product", id, field: "name" });
   });
+  it.each([
+    [`product:${id}:description`, "product", "description"],
+    [`product:${id}:seoTitle`, "product", "seoTitle"],
+    [`product:${id}:seoDescription`, "product", "seoDescription"],
+    [`category:${id}:name`, "category", "name"],
+    [`category:${id}:description`, "category", "description"],
+  ])(
+    "carries the entity kind as a real dimension: %s",
+    (descriptor, kind, field) => {
+      expect(parseTarget(descriptor)).toEqual({ kind, id, field });
+    },
+  );
   it.each([
     null,
     {},
@@ -39,11 +55,27 @@ describe("target descriptors", () => {
     `product:${id}`,
     `product:${id}:name:extra`,
     `product:${id}:price`,
-    `category:${id}:name`,
+    `category:${id}:seoTitle`,
+    `variant:${id}:name`,
+    `constructor:${id}:name`,
+    `product:${id}:toString`,
     ` product:${id}:name`,
     `product:${id}:name `,
   ])("refuses malformed or unsupported descriptors: %j", (value) => {
     expect(parseTarget(value)).toBeNull();
+  });
+});
+
+describe("field specifications", () => {
+  it("describes a paragraph field differently from a single line", () => {
+    expect(fieldSpec({ kind: "product", id, field: "description" })).toEqual({
+      label: "Product description",
+      maxLength: 5000,
+      multiline: true,
+    });
+    expect(fieldSpec({ kind: "product", id, field: "name" }).multiline).toBe(
+      false,
+    );
   });
 });
 
@@ -61,6 +93,48 @@ describe("origin configuration", () => {
   });
   it("accepts an exact HTTP(S) origin including a development port", () => {
     expect(parseOrigin("http://localhost:3000")).toBe("http://localhost:3000");
+  });
+});
+
+describe("text entering the Store", () => {
+  const paragraph = fieldSpec({ kind: "product", id, field: "description" });
+  const line = fieldSpec({ kind: "product", id, field: "name" });
+
+  it("keeps markup as the literal characters a shopper will read", () => {
+    expect(sanitizeText("<b>Bold</b> & <script>x</script>", paragraph)).toBe(
+      "<b>Bold</b> & <script>x</script>",
+    );
+  });
+  it("normalises the line endings a word processor pastes", () => {
+    expect(sanitizeText("one\r\ntwo\rthree", paragraph)).toBe(
+      "one\ntwo\nthree",
+    );
+  });
+  it("drops control characters no storefront can render", () => {
+    expect(sanitizeText("clean\u0000 text\u007f", paragraph)).toBe(
+      "clean text",
+    );
+  });
+  it("never lets a single-line field acquire a newline", () => {
+    expect(sanitizeText("Summer\nSale", line)).toBe("Summer Sale");
+    expect(sanitizeText("Summer\nSale", paragraph)).toBe("Summer\nSale");
+  });
+  it("inserts a paste at the selection as text", () => {
+    expect(applyPaste("Winter boots", 0, 6, "Summer", line)).toEqual({
+      ok: true,
+      value: "Summer boots",
+      caret: 6,
+    });
+  });
+  it("refuses an oversized paste rather than truncating it", () => {
+    expect(applyPaste("Name", 4, 4, "x".repeat(nameLimit), line)).toEqual({
+      ok: false,
+      reason: "oversized",
+    });
+    // The same paste fits a paragraph field: the limit belongs to the field.
+    expect(applyPaste("Name", 4, 4, "x".repeat(nameLimit), paragraph).ok).toBe(
+      true,
+    );
   });
 });
 
@@ -88,6 +162,21 @@ describe("untrusted messages", () => {
         ok: true,
         command,
       });
+  });
+  it("accepts a region the page declares but does not display", () => {
+    const hidden = {
+      target: `product:${id}:seoDescription`,
+      value: "Search snippet",
+      rect: null,
+    };
+    const command = message(session, page, {
+      type: "regions",
+      regions: [hidden],
+    });
+    expect(parseFrameMessage(event(command), peer)).toEqual({
+      ok: true,
+      command,
+    });
   });
   it("refuses another origin even when its payload is valid", () => {
     expect(
@@ -120,7 +209,7 @@ describe("untrusted messages", () => {
     }
   });
   it("reports unknown and missing versions distinctly so the admin can explain them", () => {
-    for (const version of [2, "1", undefined]) {
+    for (const version of [1, 3, "2", undefined]) {
       for (const parse of [parseAdminMessage, parseFrameMessage]) {
         expect(parse(event({ ...preview, version }), peer)).toEqual({
           ok: false,
@@ -159,6 +248,7 @@ describe("untrusted messages", () => {
       [region, region],
       [{ ...region, rect: { ...region.rect, width: -1 } }],
       [{ ...region, rect: { ...region.rect, x: NaN } }],
+      [{ ...region, rect: undefined }],
       [{ ...region, value: undefined }],
     ])
       expect(
@@ -168,10 +258,25 @@ describe("untrusted messages", () => {
         ).ok,
       ).toBe(false);
   });
-  it("refuses oversized names without truncating", () => {
+  it("bounds every value by its own field, without truncating", () => {
     expect(
       parseAdminMessage(
-        event({ ...preview, value: "a".repeat(MAX_NAME_LENGTH + 1) }),
+        event({ ...preview, value: "a".repeat(nameLimit + 1) }),
+        peer,
+      ),
+    ).toEqual({ ok: false, reason: "payload" });
+    const description = message(session, page, {
+      type: "preview",
+      target: `product:${id}:description`,
+      value: "a".repeat(nameLimit + 1),
+    });
+    expect(parseAdminMessage(event(description), peer).ok).toBe(true);
+    expect(
+      parseAdminMessage(
+        event({
+          ...description,
+          value: "a".repeat(FIELDS.product.description!.maxLength + 1),
+        }),
         peer,
       ),
     ).toEqual({ ok: false, reason: "payload" });
