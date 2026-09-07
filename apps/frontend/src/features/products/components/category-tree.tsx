@@ -128,7 +128,13 @@ function CategoryRow({
             asChild
             title="Edit in Store"
           >
-            <Link to="/admin/store" search={{ categorySlug: category.slug }}>
+            <Link
+              to="/admin/store"
+              search={{
+                categorySlug: category.slug,
+                returnTo: "/admin/categories",
+              }}
+            >
               <StoreIcon className="h-3.5 w-3.5" />
             </Link>
           </Button>

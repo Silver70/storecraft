@@ -125,7 +125,13 @@ export function ProductDetailPage() {
           <div className="flex items-center gap-2">
             {product.status === "active" && (
               <Button variant="outline" asChild>
-                <Link to="/admin/store" search={{ productSlug: product.slug }}>
+                <Link
+                  to="/admin/store"
+                  search={{
+                    productSlug: product.slug,
+                    returnTo: `/admin/products/${product.id}`,
+                  }}
+                >
                   Edit in Store
                 </Link>
               </Button>
@@ -140,10 +146,7 @@ export function ProductDetailPage() {
                 Cancel editing
               </Button>
             ) : (
-              <Button
-                className="gap-2"
-                onClick={() => setIsEditing(true)}
-              >
+              <Button className="gap-2" onClick={() => setIsEditing(true)}>
                 <PencilIcon className="h-4 w-4" />
                 Edit product
               </Button>

@@ -1,15 +1,17 @@
 /**
- * Version 2 covers the copy fields of a product and a category. No command in
- * the protocol saves anything: the frame is a rendering surface and an event
- * source, and every write happens in the admin, on the admin's origin.
+ * Version 3 covers the copy fields of a product and a category, and the frame
+ * announcing where it has navigated to. No command in the protocol saves
+ * anything: the frame is a rendering surface and an event source, and every
+ * write happens in the admin, on the admin's origin.
  */
 export const CHANNEL = "commerce-inline-edit";
-export const VERSION = 2;
+export const VERSION = 3;
 export const SESSION_PARAM = "__commerce_edit";
 export const MAX_PAYLOAD_BYTES = 64 * 1024;
 export const MAX_REGIONS = 100;
 /** Total announced text per message, so a page of long copy still fits. */
 export const MAX_REGIONS_TEXT = 32 * 1024;
+export const MAX_URL_LENGTH = 2048;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function isSession(value: unknown): value is string {
@@ -26,6 +28,43 @@ export function parseOrigin(value: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+/** An absolute http(s) address, bounded, carrying no credentials. */
+export function parseUrl(value: unknown): URL | null {
+  if (typeof value !== "string" || value.length > MAX_URL_LENGTH) return null;
+  try {
+    const url = new URL(value);
+    return /^https?:$/.test(url.protocol) && !url.username && !url.password
+      ? url
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where the frame is, said in terms of the Store the editor opened. */
+export type StoreLocation = { href: string; path: string };
+/**
+ * Resolves an announced address against the Store the editor opened. Another
+ * origin, or a path above the Store's root, is not a page of this Store, and
+ * `null` is how the editor stops believing it is still editing one. The
+ * session marker is dropped, so the address handed to a merchant opening the
+ * page in a real tab is the address a shopper would use.
+ */
+export function locateInStore(
+  value: unknown,
+  store: unknown,
+): StoreLocation | null {
+  const url = parseUrl(value);
+  const base = parseUrl(store);
+  if (!url || !base || url.origin !== base.origin) return null;
+  const root = base.pathname.replace(/\/+$/, "");
+  if (root && url.pathname !== root && !url.pathname.startsWith(`${root}/`))
+    return null;
+  url.searchParams.delete(SESSION_PARAM);
+  const path = `${url.pathname.slice(root.length) || "/"}${url.search}${url.hash}`;
+  return { href: url.href, path };
 }
 
 export type EntityKind = "product" | "category";
@@ -133,7 +172,8 @@ export type Region = { target: string; value: string; rect: Rect | null };
 export type FrameCommand =
   | { type: "regions"; regions: Region[] }
   | { type: "hover"; target: string | null }
-  | { type: "select"; target: string };
+  | { type: "select"; target: string }
+  | { type: "navigate"; url: string };
 export type AdminCommand =
   | { type: "discover" }
   | { type: "preview"; target: string; value: string }
@@ -264,6 +304,10 @@ function parse<T extends AdminCommand | FrameCommand>(
         (data.target === null || !!parseTarget(data.target));
     if (data.type === "select")
       valid = keysAre(data, [...base, "target"]) && !!parseTarget(data.target);
+    // Whether that address is still the merchant's Store is the admin's
+    // question, asked with `locateInStore` against the Store it opened.
+    if (data.type === "navigate")
+      valid = keysAre(data, [...base, "url"]) && !!parseUrl(data.url);
     if (data.type === "regions") {
       valid =
         keysAre(data, [...base, "regions"]) &&

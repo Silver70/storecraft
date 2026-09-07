@@ -27,13 +27,31 @@ function boot() {
     return;
 
   const peer = { origin, source: window.parent, session };
-  const page = crypto.randomUUID();
   const selector = "[data-commerce-edit]";
+  // A page is a rendering of one address. A navigation mints a new one, so a
+  // command aimed at the page the merchant has left lands on nothing.
+  let page = crypto.randomUUID();
+  let here = "";
   const send = (command: FrameCommand) =>
     window.parent.postMessage(message(session, page, command), origin);
   let hovered: string | null = null;
   let scheduled = 0;
   let lastRegions = "";
+
+  /**
+   * Announces the address the frame is showing, on arrival and on every move.
+   * The admin decides whether that address is still the merchant's Store; the
+   * frame only reports where it went.
+   */
+  function moved(): boolean {
+    if (location.href === here) return false;
+    here = location.href;
+    page = crypto.randomUUID();
+    hovered = null;
+    lastRegions = "";
+    send({ type: "navigate", url: here });
+    return true;
+  }
 
   function elements(): Map<string, HTMLElement[]> {
     const found = new Map<string, HTMLElement[]>();
@@ -55,6 +73,7 @@ function boot() {
   }
 
   function announce(force = false) {
+    if (moved()) force = true;
     const regions: Region[] = [];
     let budget = MAX_REGIONS_TEXT;
     for (const [target, matches] of elements()) {
@@ -135,6 +154,7 @@ function boot() {
   document.addEventListener(
     "click",
     (event) => {
+      markLink(event);
       const target = targetAt(event);
       if (!target) return;
       event.preventDefault();
@@ -144,6 +164,51 @@ function boot() {
     },
     true,
   );
+  /**
+   * Keeps the editing marker on the address a link leads to, so a link that
+   * loads a whole new document — which, on a storefront that is not a
+   * single-page app, is every link — lands in the same editing session. A
+   * storefront whose router handles the click itself navigates in place and
+   * never reads the rewritten address, so this costs it nothing.
+   */
+  function markLink(event: MouseEvent) {
+    if (
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    )
+      return;
+    const anchor =
+      event.target instanceof Element
+        ? event.target.closest<HTMLAnchorElement>("a[href]")
+        : null;
+    if (
+      !anchor ||
+      anchor.hasAttribute("download") ||
+      (anchor.target && anchor.target !== "_self")
+    )
+      return;
+    try {
+      const next = new URL(anchor.href, location.href);
+      if (
+        next.origin !== location.origin ||
+        next.searchParams.get(SESSION_PARAM) === peer.session
+      )
+        return;
+      next.searchParams.set(SESSION_PARAM, peer.session);
+      anchor.href = next.href;
+    } catch {
+      // Not an address this bridge can rewrite; leave the link alone.
+    }
+  }
+  document.addEventListener("pointerdown", markLink, true);
+  // A navigation with nothing else to show for it — a hash link, the back
+  // button — still has to be announced, and no mutation reports it.
+  setInterval(() => {
+    if (moved()) announce(true);
+  }, 250);
   document.addEventListener("scroll", schedule, true);
   window.addEventListener("resize", schedule);
   // Re-announce after hydration, text wrapping, images loading and SPA renders.

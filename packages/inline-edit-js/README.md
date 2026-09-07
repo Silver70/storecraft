@@ -3,8 +3,9 @@
 Build with `npm run build --workspace @repo/inline-edit-js`. The backend serves
 the minified IIFE at `/ie.js`, with a content ETag, just like `/ca.js`.
 
-Version 2 covers the copy fields of two entity kinds. An editable region names
-what it is — kind, id, field — never where it sits:
+Version 3 covers the copy fields of two entity kinds, and the frame announcing
+where it has navigated to. An editable region names what it is — kind, id,
+field — never where it sits:
 
 | Kind       | Fields                                              | Limits (UTF-16 units) |
 | ---------- | --------------------------------------------------- | --------------------- |
@@ -44,8 +45,9 @@ An ordinary visit must omit the script. Even if included accidentally, it
 returns before registering listeners or observers when there is no framed
 session. A session UUID correlates messages; it grants no API permission.
 
-Every envelope has `channel: "commerce-inline-edit"`, `version: 2`, `session`,
-`page` (a UUID minted per frame document), and `type`. Frame events are `regions`
+Every envelope has `channel: "commerce-inline-edit"`, `version: 3`, `session`,
+`page` (a UUID minted for each address the frame shows), and `type`. Frame
+events are `navigate` (the address the frame has landed on), `regions`
 (identity, text and viewport rectangle, or `null` for a region with no
 geometry), `hover`, and `select`. Admin commands are `discover`, `preview`
 (identity and literal text), and `focus` (scroll to identity). `preview` uses
@@ -57,6 +59,30 @@ entries and 32 KiB of text, and every value to the limit of its own field.
 Duplicate declarations of an identity preview together; the first occurrence
 that renders supplies the geometry.
 
+## Navigating the Store
+
+The merchant walks around the Store inside the frame, and editing follows. On
+arrival and on every move the bridge mints a fresh `page`, sends `navigate`
+with `location.href` (bounded at 2048 characters, http(s), no credentials), and
+re-announces the regions of the page it landed on. A command addressed to the
+page the merchant has left therefore lands on nothing.
+
+The bridge only reports where it went. Whether that address is still the
+merchant's Store is the admin's question, answered by `locateInStore(url,
+storefrontUrl)` against the Store the editor opened: a different origin, or a
+path above the Store's root, returns `null`, and the admin stops editing rather
+than carrying on as though it were still that Store. `locateInStore` also drops
+the session marker, so the address the admin offers for opening in a real tab
+is the address a shopper would use.
+
+So that a link which loads a whole new document lands in the same session — on
+a storefront that is not a single-page app, that is every link — the bridge
+rewrites same-origin link addresses to carry `?__commerce_edit=<session>` as
+the click happens. A storefront whose router handles the click itself navigates
+in place and never reads the rewritten address, so this costs it nothing. A
+link opening a new tab, a download, and a modified or non-primary click are all
+left alone.
+
 Copy is text throughout. `sanitizeText` normalises line endings, drops control
 characters, and keeps a single-line field free of newlines; `applyPaste`
 refuses an oversized paste outright rather than truncating it. Neither strips
@@ -67,6 +93,10 @@ The admin owns the draft, input, hover outline, Save and Cancel. No protocol
 message saves anything. Only the deliberate admin action calls the existing
 authenticated `PATCH /api/admin/products/:id` or `PATCH /api/admin/categories/:id`,
 both under `products.update`.
+
+The admin also owns the way out: it shows which page of the Store the frame is
+displaying, offers it in a real tab, and has an **Exit editor** control that
+returns to the admin. Nothing about leaving is the storefront's business.
 
 Run the pure protocol specs with `npm test --workspace @repo/inline-edit-js`.
 Backend persistence/permission specs are in `apps/backend/test/inline-edit.e2e-spec.ts`.

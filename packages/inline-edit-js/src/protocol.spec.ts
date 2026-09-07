@@ -3,13 +3,17 @@ import {
   applyPaste,
   fieldSpec,
   FIELDS,
+  locateInStore,
   MAX_PAYLOAD_BYTES,
+  MAX_URL_LENGTH,
   message,
   parseAdminMessage,
   parseFrameMessage,
   parseTarget,
   parseOrigin,
+  parseUrl,
   sanitizeText,
+  SESSION_PARAM,
 } from "./protocol";
 
 const session = "11111111-1111-4111-8111-111111111111";
@@ -157,6 +161,10 @@ describe("untrusted messages", () => {
       message(session, page, { type: "hover", target }),
       message(session, page, { type: "hover", target: null }),
       message(session, page, { type: "select", target }),
+      message(session, page, {
+        type: "navigate",
+        url: "https://store.example/products/kettle?category=kitchen#reviews",
+      }),
     ])
       expect(parseFrameMessage(event(command), peer)).toEqual({
         ok: true,
@@ -209,7 +217,7 @@ describe("untrusted messages", () => {
     }
   });
   it("reports unknown and missing versions distinctly so the admin can explain them", () => {
-    for (const version of [1, 3, "2", undefined]) {
+    for (const version of [2, 4, "3", undefined]) {
       for (const parse of [parseAdminMessage, parseFrameMessage]) {
         expect(parse(event({ ...preview, version }), peer)).toEqual({
           ok: false,
@@ -303,5 +311,101 @@ describe("untrusted messages", () => {
       ok: true,
       command: literal,
     });
+  });
+});
+
+describe("where the frame says it is", () => {
+  const store = "https://store.example";
+  const navigate = (url: unknown) => ({
+    ...message(session, page, {
+      type: "navigate",
+      url: "https://store.example/",
+    }),
+    url,
+  });
+
+  it("is announced by the frame and never accepted from the admin", () => {
+    const command = navigate("https://store.example/products/kettle");
+    expect(parseFrameMessage(event(command), peer).ok).toBe(true);
+    expect(parseAdminMessage(event(command), peer).ok).toBe(false);
+  });
+  it.each([
+    null,
+    42,
+    "/products/kettle",
+    "javascript:alert(1)",
+    "data:text/html,<h1>hi</h1>",
+    "https://user:pass@store.example/",
+    `https://store.example/${"a".repeat(MAX_URL_LENGTH)}`,
+  ])("refuses an address that is not a plain absolute page: %j", (url) => {
+    expect(parseFrameMessage(event(navigate(url)), peer)).toEqual({
+      ok: false,
+      reason: "payload",
+    });
+  });
+  it("refuses a navigation with no address at all", () => {
+    expect(parseFrameMessage(event(navigate(undefined)), peer).ok).toBe(false);
+  });
+  it("is refused from another origin and under an unknown version", () => {
+    const command = navigate("https://store.example/products/kettle");
+    expect(
+      parseFrameMessage(
+        { ...event(command), origin: "https://attacker.example" },
+        peer,
+      ),
+    ).toEqual({ ok: false, reason: "origin" });
+    expect(parseFrameMessage(event({ ...command, version: 2 }), peer)).toEqual({
+      ok: false,
+      reason: "version",
+    });
+  });
+
+  it("locates a page of the Store, keeping its query and fragment", () => {
+    expect(
+      locateInStore(
+        "https://store.example/products?category=kitchen#top",
+        store,
+      ),
+    ).toEqual({
+      href: "https://store.example/products?category=kitchen#top",
+      path: "/products?category=kitchen#top",
+    });
+    expect(locateInStore(store, store)).toEqual({
+      href: "https://store.example/",
+      path: "/",
+    });
+  });
+  it("hands back an address a shopper could use, without the editing marker", () => {
+    expect(
+      locateInStore(
+        `https://store.example/products/kettle?${SESSION_PARAM}=${session}`,
+        store,
+      ),
+    ).toEqual({
+      href: "https://store.example/products/kettle",
+      path: "/products/kettle",
+    });
+  });
+  it("locates pages under a Store that lives on a path", () => {
+    const nested = "https://example.test/shop/";
+    expect(locateInStore("https://example.test/shop/cart", nested)).toEqual({
+      href: "https://example.test/shop/cart",
+      path: "/cart",
+    });
+    expect(locateInStore("https://example.test/other", nested)).toBeNull();
+    expect(locateInStore("https://example.test/shopping", nested)).toBeNull();
+  });
+  it.each([
+    "https://other.example/products/kettle",
+    "http://store.example/products/kettle",
+    "https://store.example:8443/products/kettle",
+    "https://store.example.evil.test/",
+    "not a url",
+  ])("refuses to call %s a page of the Store", (url) => {
+    expect(locateInStore(url, store)).toBeNull();
+  });
+  it("refuses to locate anything against an unusable Store address", () => {
+    expect(locateInStore("https://store.example/", "not a url")).toBeNull();
+    expect(parseUrl("ftp://store.example/")).toBeNull();
   });
 });

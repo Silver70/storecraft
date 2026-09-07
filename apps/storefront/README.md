@@ -54,16 +54,16 @@ Run from `apps/storefront/`:
 
 The storefront reads the following settings from its environment.
 
-| Var                              | Scope       | Notes                                           |
-| -------------------------------- | ----------- | ----------------------------------------------- |
-| `COMMERCE_API_URL`               | server-only | Backend base URL, no `/graphql` suffix          |
-| `COMMERCE_API_KEY`               | server-only | Storefront `X-API-Key` for this store           |
+| Var                              | Scope       | Notes                                                                                                                                 |
+| -------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `COMMERCE_API_URL`               | server-only | Backend base URL, no `/graphql` suffix                                                                                                |
+| `COMMERCE_API_KEY`               | server-only | Storefront `X-API-Key` for this store                                                                                                 |
 | `ADMIN_ORIGIN`                   | server      | Exact trusted admin origin for inline editing; defaults to `http://localhost:3000` in development, required in production for editing |
-| `VITE_STRIPE_PUBLISHABLE_KEY`    | browser     | Stripe publishable key (safe by design)         |
-| `VITE_ATTRIBUTION_LOOKBACK_DAYS` | browser     | First-touch memory; match the backend (def. 30) |
-| `VITE_ANALYTICS_URL`             | browser     | Origin serving `ca.js` — usually the backend    |
-| `VITE_ANALYTICS_KEY`             | browser     | Ingest key for `ca.js`. **Use a separate key.** |
-| `VITE_ANALYTICS_AUTOCAPTURE`     | browser     | `none` (default) \| `click` \| `form` \| `all`  |
+| `VITE_STRIPE_PUBLISHABLE_KEY`    | browser     | Stripe publishable key (safe by design)                                                                                               |
+| `VITE_ATTRIBUTION_LOOKBACK_DAYS` | browser     | First-touch memory; match the backend (def. 30)                                                                                       |
+| `VITE_ANALYTICS_URL`             | browser     | Origin serving `ca.js` — usually the backend                                                                                          |
+| `VITE_ANALYTICS_KEY`             | browser     | Ingest key for `ca.js`. **Use a separate key.**                                                                                       |
+| `VITE_ANALYTICS_AUTOCAPTURE`     | browser     | `none` (default) \| `click` \| `form` \| `all`                                                                                        |
 
 `NODE_ENV` is read too — once, to decide the `Secure` flag on session cookies —
 but it belongs in neither file: `vite dev` and the production server each set
@@ -89,10 +89,10 @@ task while developing the bridge. In the admin, open **Store** and walk to the
 page you want, or choose **Edit in Store** on an active product or a category.
 The editable regions this Store declares are:
 
-| Page             | Region                                                       |
-| ---------------- | ------------------------------------------------------------ |
-| `/products/:slug` | product name, description, SEO title, SEO description        |
-| `/products?category=` | the selected category’s name and description             |
+| Page                  | Region                                                |
+| --------------------- | ----------------------------------------------------- |
+| `/products/:slug`     | product name, description, SEO title, SEO description |
+| `/products?category=` | the selected category’s name and description          |
 
 Click any outlined text, type, and use **Save** to make it live — Enter commits
 a single-line field, Cmd/Ctrl+Enter a paragraph. **Cancel** (or Escape) restores
@@ -109,13 +109,26 @@ currently renders nothing. Renaming a product or a category also changes its
 slug through the existing endpoint, so the editor reopens the saved page at the
 address it now has.
 
+Browse the Store as a shopper would and editing comes with you: follow a link
+from a product to its category or back to the homepage and the newly-loaded
+page announces its own editable regions, with no reload of the admin. The
+editor shows which page of the Store the frame is on, opens that page in a real
+tab, and has an **Exit editor** control back to the admin. An edit you saved
+before following a link is saved; one you had not committed goes with the page,
+and the editor says so. A page outside your Store — another site, or a path
+above the Store’s root — pauses editing and offers a way back rather than
+leaving the editor believing it is still on your Store.
+
+So that this works on a storefront that reloads on every link, the bridge keeps
+`?__commerce_edit=<session>` on the addresses same-origin links lead to while a
+session is open. This app’s router navigates in place and never reads it.
+
 The script is injected only after hydration in a frame carrying an editing
 session, and the regions that exist only for editing are absent from a
 shopper’s page entirely. Ordinary visits never download `/ie.js`. In
 production, any `frame-ancestors` policy on the storefront must permit the
 configured admin. See [the bridge package](../../packages/inline-edit-js/README.md)
-for the v2 contract. Content slots and navigation controls belong to subsequent
-issues.
+for the v3 contract. Content slots belong to subsequent issues.
 
 ## Project layout
 

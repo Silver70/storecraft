@@ -1,10 +1,11 @@
 import * as React from "react";
-import { getRouteApi } from "@tanstack/react-router";
+import { getRouteApi, useRouter } from "@tanstack/react-router";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import {
   SESSION_PARAM,
   applyPaste,
   fieldSpec,
+  locateInStore,
   message,
   parseFrameMessage,
   parseTarget,
@@ -12,6 +13,7 @@ import {
   type AdminCommand,
   type FieldSpec,
   type Region,
+  type StoreLocation,
   type Target,
 } from "@repo/inline-edit-js/protocol";
 import { Button } from "~/components/ui/button";
@@ -28,7 +30,7 @@ type Entry = { path: string; category?: string };
 
 export function StoreEditorPage() {
   const { data: config } = useSuspenseQuery(inlineEditQueryOptions());
-  const { productSlug, categorySlug } = route.useSearch();
+  const { productSlug, categorySlug, returnTo } = route.useSearch();
   const entry: Entry = productSlug
     ? { path: `products/${encodeURIComponent(productSlug)}` }
     : categorySlug
@@ -40,6 +42,7 @@ export function StoreEditorPage() {
       key={`${config.storefrontUrl}:${config.canEditProducts}:${entry.path}:${entry.category ?? ""}`}
       {...config}
       entry={entry}
+      returnTo={returnTo}
     />
   );
 }
@@ -48,12 +51,15 @@ function StoreEditor({
   storefrontUrl,
   canEditProducts,
   entry: initialEntry,
+  returnTo,
 }: {
   storefrontUrl: string;
   canEditProducts: boolean;
   entry: Entry;
+  returnTo?: string;
 }) {
   const queryClient = useQueryClient();
+  const router = useRouter();
   const frame = React.useRef<HTMLIFrameElement>(null);
   const surface = React.useRef<HTMLDivElement>(null);
   const input = React.useRef<HTMLTextAreaElement>(null);
@@ -62,6 +68,9 @@ function StoreEditor({
   const currentRegions = React.useRef<Region[]>([]);
   const saving = React.useRef(false);
   const blocked = React.useRef(false);
+  const waiting = React.useRef(0);
+  const arrived = React.useRef(false);
+  const astray = React.useRef(false);
   const [session, setSession] = React.useState<string | null>(null);
   const [entry, setEntry] = React.useState(initialEntry);
   const [regions, setRegions] = React.useState<Region[]>([]);
@@ -72,6 +81,10 @@ function StoreEditor({
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState("");
   const [size, setSize] = React.useState({ width: 1000, height: 700 });
+  /** Where the frame says it is. Null until it has said, or once it has left. */
+  const [location, setLocation] = React.useState<StoreLocation | null>(null);
+  const [offStore, setOffStore] = React.useState(false);
+  const [reload, setReload] = React.useState(0);
 
   const url = React.useMemo(() => {
     try {
@@ -105,6 +118,87 @@ function StoreEditor({
     }
   }
 
+  /**
+   * Forgets the page the frame was showing. Called whenever the document in
+   * the frame is replaced or has moved somewhere this editor cannot follow.
+   */
+  function forgetPage() {
+    currentPage.current = null;
+    currentRegions.current = [];
+    setRegions([]);
+    setHovered(null);
+    setConnected(false);
+  }
+
+  /**
+   * The frame has landed on a new page of the Store. An edit the merchant
+   * never committed goes with the page it belonged to; one already sent to
+   * save is travelling through the admin API and finishes regardless.
+   */
+  function enterPage(page: string) {
+    if (currentPage.current === page) return;
+    currentPage.current = page;
+    currentRegions.current = [];
+    setRegions([]);
+    setHovered(null);
+    setError(null);
+    const edit = currentDraft.current;
+    if (edit && !saving.current) {
+      setDraft(null);
+      setNotice(
+        "The Store moved to another page, so the edit you hadn’t saved was discarded.",
+      );
+    }
+  }
+
+  /**
+   * The frame is somewhere this editor has no business editing — another site,
+   * or a page above the Store's root. Editing stops rather than continuing to
+   * point at a Store the merchant is no longer looking at.
+   */
+  function leaveStore(reason: string) {
+    astray.current = true;
+    forgetPage();
+    setOffStore(true);
+    setLocation(null);
+    if (!saving.current) setDraft(null);
+    setError(reason);
+  }
+
+  /** Puts the frame back on the page the editor was opened at. */
+  function returnToStore() {
+    astray.current = false;
+    forgetPage();
+    setOffStore(false);
+    setLocation(null);
+    setError(null);
+    setNotice("");
+    setEntry(initialEntry);
+    setReload((count) => count + 1);
+  }
+
+  /**
+   * Waits for the document in the frame to say where it is. Silence means it
+   * is not carrying the bridge: on arrival that is a setup problem worth
+   * explaining, and afterwards it means the frame has left the Store for
+   * somewhere this editor cannot hear.
+   */
+  function awaitFrame() {
+    if (!canEditProducts) return;
+    window.clearTimeout(waiting.current);
+    waiting.current = window.setTimeout(
+      () =>
+        arrived.current
+          ? leaveStore(
+              "The frame is showing a page that isn’t part of your Store, so editing is off here.",
+            )
+          : setError(
+              "The Store hasn’t connected to the editor. Check its ADMIN_ORIGIN, the backend STOREFRONT_URL, and that /ie.js is available, then reload.",
+            ),
+      arrived.current ? 8000 : 12000,
+    );
+  }
+
   React.useEffect(() => {
     setSession(crypto.randomUUID());
   }, []);
@@ -123,13 +217,7 @@ function StoreEditor({
 
   React.useEffect(() => {
     if (!url || !session || !canEditProducts) return;
-    const timeout = window.setTimeout(
-      () =>
-        setError(
-          "The Store hasn’t connected to the editor. Check its ADMIN_ORIGIN, the backend STOREFRONT_URL, and that /ie.js is available, then reload.",
-        ),
-      12000,
-    );
+    awaitFrame();
 
     function receive(event: MessageEvent) {
       const parsed = parseFrameMessage(event, {
@@ -140,7 +228,7 @@ function StoreEditor({
       if (!parsed.ok) {
         if (parsed.reason === "version") {
           blocked.current = true;
-          clearTimeout(timeout);
+          window.clearTimeout(waiting.current);
           setConnected(false);
           setError(
             "This Store uses an unsupported editing protocol version. Update the Store’s edit script and reload to continue.",
@@ -150,12 +238,31 @@ function StoreEditor({
       }
       if (blocked.current) return;
       const command = parsed.command;
-      if (command.type === "regions") {
-        clearTimeout(timeout);
+      if (command.type === "navigate") {
+        window.clearTimeout(waiting.current);
+        arrived.current = true;
+        // Whether the frame is still showing this merchant's Store is decided
+        // against the Store the editor opened, never against what it claims.
+        const at = locateInStore(command.url, storefrontUrl);
+        if (!at) {
+          leaveStore(
+            "The frame has left your Store, so editing is off. Return to your Store to carry on editing.",
+          );
+          return;
+        }
+        astray.current = false;
+        setOffStore(false);
+        setLocation(at);
+        enterPage(command.page);
+      } else if (astray.current) {
+        // The frame has already said it is somewhere else. Only another
+        // navigation, back into the Store, makes it editable again.
+        return;
+      } else if (command.type === "regions") {
+        window.clearTimeout(waiting.current);
+        arrived.current = true;
+        enterPage(command.page);
         setConnected(true);
-        if (!currentPage.current) setError(null);
-        if (currentPage.current !== command.page) setHovered(null);
-        currentPage.current = command.page;
         currentRegions.current = command.regions;
         setRegions(command.regions);
         // Hydration/re-renders may replace text nodes. The admin remains the
@@ -186,10 +293,10 @@ function StoreEditor({
     }
     window.addEventListener("message", receive);
     return () => {
-      clearTimeout(timeout);
+      window.clearTimeout(waiting.current);
       window.removeEventListener("message", receive);
     };
-  }, [url, session, canEditProducts]);
+  }, [url, session, canEditProducts, storefrontUrl]);
 
   React.useEffect(() => {
     const field = input.current;
@@ -290,10 +397,8 @@ function StoreEditor({
   /** Reopen the Store at a page whose address the save has just changed. */
   function reopen(next: Entry) {
     if (next.path === entry.path && next.category === entry.category) return;
-    currentPage.current = null;
-    currentRegions.current = [];
-    setRegions([]);
-    setConnected(false);
+    forgetPage();
+    setLocation(null);
     setEntry(next);
   }
 
@@ -370,6 +475,10 @@ function StoreEditor({
     }
   }
 
+  // Until the frame has said where it is — and for a role that never loads the
+  // bridge — the honest answer is the address the editor pointed it at.
+  const showing =
+    location ?? (url ? locateInStore(url.href, storefrontUrl) : null);
   const editingTarget: Target | null = draft ? parseTarget(draft.target) : null;
   const spec = editingTarget ? fieldSpec(editingTarget) : null;
   const selected = regions.find(
@@ -394,20 +503,34 @@ function StoreEditor({
 
   return (
     <div className="flex flex-1 flex-col gap-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Store</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {canEditProducts
-            ? "Click any outlined text to edit it, or pick a field from the list below the Store. Save makes the change live; Cancel restores the original."
-            : "You can view the Store. Your role does not have permission to edit product and category copy."}
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Store</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {canEditProducts
+              ? "Browse your Store as a shopper would; editing follows you from page to page. Click any outlined text to edit it, or pick a field from the list below the Store. Save makes the change live; Cancel restores the original."
+              : "You can view the Store. Your role does not have permission to edit product and category copy."}
+          </p>
+        </div>
+        {/* Editing is a mode, so it has a door out as well as a door in. */}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() =>
+            void router.navigate({ href: returnTo ?? "/admin/dashboard" })
+          }
+        >
+          Exit editor
+        </Button>
       </div>
       <div aria-live="polite" className="text-sm">
         {notice ||
           (canEditProducts
-            ? connected
-              ? "Editor connected"
-              : "Connecting to the Store…"
+            ? offStore
+              ? "Editing paused"
+              : connected
+                ? "Editor connected"
+                : "Connecting to the Store…"
             : "View only")}
       </div>
       {!draft && error && (
@@ -421,14 +544,48 @@ function StoreEditor({
         </p>
       ) : (
         <div className="overflow-hidden rounded-lg border bg-background">
+          {/* Which page of the Store this is, and a way to see it for real. */}
+          <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 text-sm">
+            <span className="text-muted-foreground">
+              {offStore
+                ? "Left your Store"
+                : location
+                  ? "Showing"
+                  : "Opened at"}
+            </span>
+            <code
+              title={offStore ? undefined : showing?.href}
+              className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 text-xs"
+            >
+              {offStore ? "A page outside your Store" : (showing?.path ?? "…")}
+            </code>
+            {offStore && (
+              <Button variant="outline" size="sm" onClick={returnToStore}>
+                Return to your Store
+              </Button>
+            )}
+            {showing && !offStore && (
+              <Button asChild variant="outline" size="sm">
+                <a
+                  href={showing.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Open in new tab
+                </a>
+              </Button>
+            )}
+          </div>
           <div ref={surface} className="relative h-[70vh] min-h-[420px]">
             {session && (
               <iframe
+                key={reload}
                 ref={frame}
                 title="Store preview"
                 src={url.href}
                 className="block h-full w-full border-0"
                 referrerPolicy="strict-origin-when-cross-origin"
+                onLoad={awaitFrame}
                 onPointerLeave={() => setHovered(null)}
               />
             )}
