@@ -3,9 +3,10 @@
 Build with `npm run build --workspace @repo/inline-edit-js`. The backend serves
 the minified IIFE at `/ie.js`, with a content ETag, just like `/ca.js`.
 
-Version 3 covers the copy fields of two entity kinds, and the frame announcing
-where it has navigated to. An editable region names what it is — kind, id,
-field — never where it sits:
+Version 4 covers the copy fields of two entity kinds, the Content Slots a
+storefront declares, and the frame announcing where it has navigated to. An
+editable region names what it is — kind, id, field, or a Slot key — never where
+it sits:
 
 | Kind       | Fields                                              | Limits (UTF-16 units) |
 | ---------- | --------------------------------------------------- | --------------------- |
@@ -17,6 +18,57 @@ field — never where it sits:
   Product name
 </h1>
 ```
+
+## Content Slots
+
+A Content Slot is a named region **your storefront** renders at a stable key,
+holding copy the merchant edits in the admin instead of in your source. You
+declare which Slots exist; the merchant is offered those and cannot invent
+others. A Slot is not a page and is not composed of nested blocks.
+
+Mark it with `slot:<key>` and declare its content type and a human label. A key
+is lowercase words separated by dots or dashes, at most 64 characters:
+
+```html
+<h1
+  data-commerce-edit="slot:homepage.hero"
+  data-commerce-slot-type="heading"
+  data-commerce-slot-label="Homepage headline"
+>
+  Winter kit, ready when you are.
+</h1>
+```
+
+| Type      | Shape          | Limit |
+| --------- | -------------- | ----- |
+| `heading` | one line       | 120   |
+| `text`    | multiple lines | 2000  |
+
+A Slot marked without a type and label the protocol recognises is not announced
+at all, because the admin would have no honest way to offer it.
+
+Read the published values from the public storefront GraphQL API:
+
+```graphql
+query {
+  contentSlots {
+    key
+    type
+    value
+  }
+}
+```
+
+That read returns **published values only**, and takes no argument that would
+change it — the public type has no draft field. Render a Slot with no published
+value as **nothing**: no placeholder, no fallback headline. Render the element
+anyway inside an editing session so the merchant can find and fill a region
+that currently shows nothing.
+
+Unlike an entity field, a Slot edit is saved as a draft and published
+separately. The admin holds the draft and pushes it into your page as a
+`preview`; your Store keeps rendering the published value, so nothing you do
+here can put unfinished copy in front of a shopper.
 
 A region the page declares but does not display — SEO copy, say — is announced
 with `rect: null` and offered by the admin in a list rather than outlined. Mark
@@ -45,11 +97,11 @@ An ordinary visit must omit the script. Even if included accidentally, it
 returns before registering listeners or observers when there is no framed
 session. A session UUID correlates messages; it grants no API permission.
 
-Every envelope has `channel: "commerce-inline-edit"`, `version: 3`, `session`,
+Every envelope has `channel: "commerce-inline-edit"`, `version: 4`, `session`,
 `page` (a UUID minted for each address the frame shows), and `type`. Frame
 events are `navigate` (the address the frame has landed on), `regions`
-(identity, text and viewport rectangle, or `null` for a region with no
-geometry), `hover`, and `select`. Admin commands are `discover`, `preview`
+(identity, text, viewport rectangle — `null` for a region with no geometry —
+and the Slot declaration, `null` for an entity field), `hover`, and `select`. Admin commands are `discover`, `preview`
 (identity and literal text), and `focus` (scroll to identity). `preview` uses
 `textContent`; it never interprets HTML. Both receivers validate the exact
 origin, source window, session, version and complete shape. Commands also have
@@ -87,16 +139,22 @@ Copy is text throughout. `sanitizeText` normalises line endings, drops control
 characters, and keeps a single-line field free of newlines; `applyPaste`
 refuses an oversized paste outright rather than truncating it. Neither strips
 markup, because nothing parses it: a preview is applied with `textContent` and
-the storefront renders the stored string as characters.
+the storefront renders the stored string as characters. A Slot goes further —
+the backend reduces whatever was pasted to its text before storing it, so a
+Store cannot acquire markup through its own CMS.
 
-The admin owns the draft, input, hover outline, Save and Cancel. No protocol
-message saves anything. Only the deliberate admin action calls the existing
-authenticated `PATCH /api/admin/products/:id` or `PATCH /api/admin/categories/:id`,
-both under `products.update`.
+The admin owns the draft, input, hover outline, Save, Publish and Cancel. No
+protocol message saves anything. Only the deliberate admin action calls the
+existing authenticated `PATCH /api/admin/products/:id` or
+`PATCH /api/admin/categories/:id`, both under `products.update`, or
+`PUT /api/admin/content/slots/:key/draft` and
+`POST /api/admin/content/slots/:key/publish`, both under `content.write`.
 
 The admin also owns the way out: it shows which page of the Store the frame is
 displaying, offers it in a real tab, and has an **Exit editor** control that
 returns to the admin. Nothing about leaving is the storefront's business.
 
 Run the pure protocol specs with `npm test --workspace @repo/inline-edit-js`.
-Backend persistence/permission specs are in `apps/backend/test/inline-edit.e2e-spec.ts`.
+Backend persistence/permission specs are in
+`apps/backend/test/inline-edit.e2e-spec.ts` and
+`apps/backend/test/content-slots.e2e-spec.ts`.

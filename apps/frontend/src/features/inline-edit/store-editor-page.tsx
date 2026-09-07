@@ -1,18 +1,23 @@
 import * as React from "react";
 import { getRouteApi, useRouter } from "@tanstack/react-router";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import {
+  useQuery,
+  useQueryClient,
+  useSuspenseQuery,
+} from "@tanstack/react-query";
 import {
   SESSION_PARAM,
   applyPaste,
-  fieldSpec,
   locateInStore,
   message,
   parseFrameMessage,
   parseTarget,
+  regionSpec,
   sanitizeText,
   type AdminCommand,
   type FieldSpec,
   type Region,
+  type SlotDeclaration,
   type StoreLocation,
   type Target,
 } from "@repo/inline-edit-js/protocol";
@@ -22,9 +27,28 @@ import {
   updateProductServerFn,
 } from "~/features/products/server";
 import { inlineEditQueryOptions } from "./server";
+import {
+  contentSlotsQueryOptions,
+  publishContentSlotServerFn,
+  saveContentSlotDraftServerFn,
+  type ContentSlot,
+} from "./content-server";
 
 const route = getRouteApi("/admin/store");
-type Draft = { target: string; original: string; value: string; page: string };
+/**
+ * An edit in progress. It carries the spec it was opened with rather than
+ * looking one up as it goes, so a re-render of the Store cannot change the
+ * rules half way through typing — and, for a Content Slot, the declaration the
+ * storefront made, which is what the draft is saved as.
+ */
+type Draft = {
+  target: string;
+  original: string;
+  value: string;
+  page: string;
+  spec: FieldSpec;
+  slot: SlotDeclaration | null;
+};
 /** Which Store page the frame is pointed at. `path` is relative to the Store. */
 type Entry = { path: string; category?: string };
 
@@ -39,7 +63,7 @@ export function StoreEditorPage() {
   // Changing the configured Store or entry page creates a fresh frame/session.
   return (
     <StoreEditor
-      key={`${config.storefrontUrl}:${config.canEditProducts}:${entry.path}:${entry.category ?? ""}`}
+      key={`${config.storefrontUrl}:${config.canEditProducts}:${config.canEditContent}:${entry.path}:${entry.category ?? ""}`}
       {...config}
       entry={entry}
       returnTo={returnTo}
@@ -50,16 +74,29 @@ export function StoreEditorPage() {
 function StoreEditor({
   storefrontUrl,
   canEditProducts,
+  canEditContent,
   entry: initialEntry,
   returnTo,
 }: {
   storefrontUrl: string;
   canEditProducts: boolean;
+  canEditContent: boolean;
   entry: Entry;
   returnTo?: string;
 }) {
+  // A role that can edit either kind of copy gets an editing session; what it
+  // may actually change is decided per region, by the same permissions the
+  // admin forms use.
+  const canEdit = canEditProducts || canEditContent;
   const queryClient = useQueryClient();
   const router = useRouter();
+  /**
+   * Every Slot of this Store, published value and draft alike. Held here
+   * because the admin owns draft state: the frame renders published copy —
+   * it is a shopper's view of the Store — and the editor pushes the drafts
+   * over the top so the merchant is editing what they will publish.
+   */
+  const slots = React.useRef<Map<string, ContentSlot>>(new Map());
   const frame = React.useRef<HTMLIFrameElement>(null);
   const surface = React.useRef<HTMLDivElement>(null);
   const input = React.useRef<HTMLTextAreaElement>(null);
@@ -85,6 +122,8 @@ function StoreEditor({
   const [location, setLocation] = React.useState<StoreLocation | null>(null);
   const [offStore, setOffStore] = React.useState(false);
   const [reload, setReload] = React.useState(0);
+  /** Bumped when a draft is saved or published, to re-render what says so. */
+  const [slotsChanged, setSlotsChanged] = React.useState(0);
 
   const url = React.useMemo(() => {
     try {
@@ -96,13 +135,12 @@ function StoreEditor({
       base.searchParams.delete("category");
       if (entry.category) base.searchParams.set("category", entry.category);
       base.searchParams.delete(SESSION_PARAM);
-      if (canEditProducts && session)
-        base.searchParams.set(SESSION_PARAM, session);
+      if (canEdit && session) base.searchParams.set(SESSION_PARAM, session);
       return base;
     } catch {
       return null;
     }
-  }, [storefrontUrl, entry, canEditProducts, session]);
+  }, [storefrontUrl, entry, canEdit, session]);
 
   function setDraft(value: Draft | null) {
     currentDraft.current = value;
@@ -184,7 +222,7 @@ function StoreEditor({
    * somewhere this editor cannot hear.
    */
   function awaitFrame() {
-    if (!canEditProducts) return;
+    if (!canEdit) return;
     window.clearTimeout(waiting.current);
     waiting.current = window.setTimeout(
       () =>
@@ -216,7 +254,7 @@ function StoreEditor({
   }, [session]);
 
   React.useEffect(() => {
-    if (!url || !session || !canEditProducts) return;
+    if (!url || !session || !canEdit) return;
     awaitFrame();
 
     function receive(event: MessageEvent) {
@@ -286,6 +324,7 @@ function StoreEditor({
             url!.origin,
           );
         }
+        showDrafts(command.regions, command.page);
       } else if (command.page === currentPage.current) {
         if (command.type === "hover") setHovered(command.target);
         if (command.type === "select") open(command.target, command.page);
@@ -296,16 +335,57 @@ function StoreEditor({
       window.clearTimeout(waiting.current);
       window.removeEventListener("message", receive);
     };
-  }, [url, session, canEditProducts, storefrontUrl]);
+  }, [url, session, canEdit, storefrontUrl]);
+
+  /**
+   * Puts the merchant's unpublished drafts over the published copy the frame
+   * rendered, so the editing frame shows what they are working on. It is the
+   * only place a draft is ever visible: the Store's own read returns published
+   * values, and a shopper's browser has no way to ask for anything else.
+   */
+  function showDrafts(
+    list = currentRegions.current,
+    page = currentPage.current,
+  ) {
+    if (!canEditContent || !session || !url || !page || blocked.current) return;
+    const edit = currentDraft.current;
+    for (const region of list) {
+      const parsed = parseTarget(region.target);
+      if (!parsed || parsed.kind !== "slot") continue;
+      // An open edit is the merchant's most recent word; it is reapplied
+      // above, and a saved draft must not overwrite what they are typing.
+      if (edit?.target === region.target) continue;
+      const value = slots.current.get(parsed.key)?.draftValue;
+      if (value == null || value === region.value) continue;
+      frame.current?.contentWindow?.postMessage(
+        message(session, page, {
+          type: "preview",
+          target: region.target,
+          value,
+        }),
+        url.origin,
+      );
+    }
+  }
+
+  const slotQuery = useQuery({
+    ...contentSlotsQueryOptions(),
+    enabled: canEditContent,
+  });
+  React.useEffect(() => {
+    if (!slotQuery.data) return;
+    slots.current = new Map(slotQuery.data.map((slot) => [slot.key, slot]));
+    setSlotsChanged((count) => count + 1);
+    showDrafts();
+  }, [slotQuery.data]);
 
   React.useEffect(() => {
     const field = input.current;
     if (!draft || !field) return;
     field.focus();
-    const target = parseTarget(draft.target);
     // Selecting a whole paragraph would put one keystroke between a merchant
     // and their copy; a single line is the thing you came to replace.
-    if (target && fieldSpec(target).multiline)
+    if (draft.spec.multiline)
       field.setSelectionRange(field.value.length, field.value.length);
     else field.select();
   }, [draft?.target]);
@@ -320,23 +400,43 @@ function StoreEditor({
     const region = currentRegions.current.find(
       (item) => item.target === target,
     );
-    if (!region) return;
+    const parsed = region && parseTarget(region.target);
+    const spec = parsed && regionSpec(parsed, region.slot);
+    if (!region || !parsed || !spec) return;
+    if (parsed.kind === "slot" ? !canEditContent : !canEditProducts) {
+      setError(
+        `Your role does not have permission to edit ${
+          parsed.kind === "slot" ? "this region" : "product and category copy"
+        }.`,
+      );
+      return;
+    }
+    // A Slot is opened on the merchant's own latest word — their unpublished
+    // draft if they have one, and what shoppers are reading if they do not.
+    const stored =
+      parsed.kind === "slot" ? slots.current.get(parsed.key) : undefined;
+    const original =
+      stored?.draftValue ??
+      (parsed.kind === "slot" ? (stored?.value ?? region.value) : region.value);
     setDraft({
       target: region.target,
-      original: region.value,
-      value: region.value,
+      original,
+      value: original,
       page,
+      spec,
+      slot: region.slot,
     });
     setError(null);
     setNotice("");
+    if (original !== region.value)
+      send({ type: "preview", target: region.target, value: original }, page);
     if (region.rect) send({ type: "focus", target }, page);
   }
 
   function change(value: string) {
     const edit = currentDraft.current;
-    const target = edit && parseTarget(edit.target);
-    if (!edit || !target || saving.current || blocked.current) return;
-    const spec = fieldSpec(target);
+    if (!edit || saving.current || blocked.current) return;
+    const spec = edit.spec;
     const text = sanitizeText(value, spec);
     if (text.length > spec.maxLength) {
       setError(
@@ -402,18 +502,71 @@ function StoreEditor({
     setEntry(next);
   }
 
-  async function save() {
+  /**
+   * Saves a Slot's draft, and publishes it when the merchant asked to. Both go
+   * through the admin API on the admin's origin, under `content.write` — the
+   * frame never holds a credential and never writes anything.
+   */
+  async function saveSlot(edit: Draft, key: string, andPublish: boolean) {
+    if (!canEditContent || !edit.slot) return;
+    saving.current = true;
+    setSaving(true);
+    setError(null);
+    try {
+      let record = await saveContentSlotDraftServerFn({
+        data: { key, type: edit.slot.type, value: edit.value },
+      });
+      if (andPublish) {
+        record = await publishContentSlotServerFn({ data: { key } });
+      }
+      slots.current.set(key, record);
+      setSlotsChanged((count) => count + 1);
+      // Show back what was stored. The merchant keeps seeing their draft in
+      // the frame after saving one, which is the point: they are editing what
+      // they will publish, not what is currently live.
+      send(
+        {
+          type: "preview",
+          target: edit.target,
+          value: record.draftValue ?? record.value ?? "",
+        },
+        edit.page,
+      );
+      setDraft(null);
+      setHovered(null);
+      setNotice(
+        andPublish
+          ? `${edit.spec.label} published. It is live on your Store now.`
+          : `${edit.spec.label} saved as a draft. Shoppers still see the published copy until you publish it.`,
+      );
+      void queryClient.invalidateQueries({ queryKey: ["content-slots"] });
+    } catch (cause) {
+      setError(
+        `Couldn’t save. Your text is still here; try again. ${cause instanceof Error ? cause.message : ""}`,
+      );
+    } finally {
+      saving.current = false;
+      setSaving(false);
+    }
+  }
+
+  /**
+   * Commits the open edit.
+   *
+   * The two kinds of copy behave differently on purpose, and the editor says
+   * so rather than hiding it. An entity field goes through the same admin
+   * endpoint the admin form uses and is live the moment it is saved. A Content
+   * Slot is saved to its draft, and only the merchant sees it until they
+   * publish — so the copy on their live Store is never half-written, and
+   * shoppers keep reading what was already there.
+   */
+  async function save(andPublish = false) {
     const edit = currentDraft.current;
     const target = edit && parseTarget(edit.target);
-    if (
-      !edit ||
-      !target ||
-      saving.current ||
-      blocked.current ||
-      !canEditProducts
-    )
-      return;
-    const spec = fieldSpec(target);
+    if (!edit || !target || saving.current || blocked.current) return;
+    if (target.kind === "slot") return saveSlot(edit, target.key, andPublish);
+    if (!canEditProducts) return;
+    const spec = edit.spec;
     if (target.field === "name" && !edit.value.trim()) {
       setError(`Enter a ${spec.label.toLowerCase()} before saving.`);
       return;
@@ -480,7 +633,9 @@ function StoreEditor({
   const showing =
     location ?? (url ? locateInStore(url.href, storefrontUrl) : null);
   const editingTarget: Target | null = draft ? parseTarget(draft.target) : null;
-  const spec = editingTarget ? fieldSpec(editingTarget) : null;
+  const spec = draft?.spec ?? null;
+  /** A Slot is drafted and published; an entity field is live when saved. */
+  const drafting = editingTarget?.kind === "slot";
   const selected = regions.find(
     (region) => region.target === (draft?.target ?? hovered),
   );
@@ -507,10 +662,33 @@ function StoreEditor({
         <div>
           <h1 className="text-2xl font-semibold">Store</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {canEditProducts
-              ? "Browse your Store as a shopper would; editing follows you from page to page. Click any outlined text to edit it, or pick a field from the list below the Store. Save makes the change live; Cancel restores the original."
-              : "You can view the Store. Your role does not have permission to edit product and category copy."}
+            {canEdit
+              ? "Browse your Store as a shopper would; editing follows you from page to page. Click any outlined text to edit it, or pick a field from the list below the Store."
+              : "You can view the Store. Your role does not have permission to edit its copy."}
           </p>
+          {/* The two behaviours differ, so the editor says which is which
+              before the merchant meets either of them. */}
+          {canEdit && (
+            <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+              {canEditProducts && (
+                <li>
+                  <strong className="font-medium text-foreground">
+                    Product and category copy
+                  </strong>{" "}
+                  goes live the moment you save it.
+                </li>
+              )}
+              {canEditContent && (
+                <li>
+                  <strong className="font-medium text-foreground">
+                    Page regions
+                  </strong>{" "}
+                  — your homepage headline and the like — are saved as a draft
+                  only you can see, and go live when you publish them.
+                </li>
+              )}
+            </ul>
+          )}
         </div>
         {/* Editing is a mode, so it has a door out as well as a door in. */}
         <Button
@@ -525,7 +703,7 @@ function StoreEditor({
       </div>
       <div aria-live="polite" className="text-sm">
         {notice ||
-          (canEditProducts
+          (canEdit
             ? offStore
               ? "Editing paused"
               : connected
@@ -649,10 +827,20 @@ function StoreEditor({
                     className="mt-2 w-full rounded-md border bg-background p-2 text-sm"
                     style={{ resize: spec.multiline ? "vertical" : "none" }}
                   />
+                  {/* Said where the merchant is working, because this is the
+                      one place the difference between the two behaviours
+                      matters and the one place they will read it. */}
                   <p className="text-xs text-muted-foreground">
-                    Live when saved · {draft.value.length}/{spec.maxLength}
+                    {drafting ? "Saved as a draft" : "Live when saved"} ·{" "}
+                    {draft.value.length}/{spec.maxLength}
                     {spec.multiline ? " · Ctrl+Enter saves" : ""}
                   </p>
+                  {drafting && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Shoppers keep seeing the published copy until you press
+                      Publish.
+                    </p>
+                  )}
                   {error && (
                     <p role="alert" className="mt-2 text-sm text-destructive">
                       {error}
@@ -671,10 +859,23 @@ function StoreEditor({
                     <Button
                       type="submit"
                       size="sm"
+                      variant={drafting ? "outline" : "default"}
                       disabled={isSaving || blocked.current}
                     >
-                      {isSaving ? "Saving…" : "Save"}
+                      {isSaving ? "Saving…" : drafting ? "Save draft" : "Save"}
                     </Button>
+                    {/* Going live is its own button, so it is a decision the
+                        merchant made rather than a side effect of typing. */}
+                    {drafting && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => void save(true)}
+                        disabled={isSaving || blocked.current}
+                      >
+                        Publish
+                      </Button>
+                    )}
                   </div>
                 </form>
               </>
@@ -682,24 +883,33 @@ function StoreEditor({
           </div>
         </div>
       )}
-      {canEditProducts && connected && regions.length > 0 && (
-        <PageFields regions={regions} busy={!!draft} onOpen={open} />
+      {canEdit && connected && regions.length > 0 && (
+        <PageFields
+          key={slotsChanged}
+          regions={regions}
+          slots={slots.current}
+          busy={!!draft}
+          onOpen={open}
+        />
       )}
     </div>
   );
 }
 
 /**
- * Every field this page carries, including the ones it does not display. SEO
+ * Every region this page carries, including the ones it does not display. SEO
  * copy belongs to the page it describes but has no text on it to click, and a
- * list is the only honest way to offer it from that page.
+ * Content Slot the merchant has never filled in shows nothing at all — a list
+ * is the only honest way to offer either from the page they belong to.
  */
 function PageFields({
   regions,
+  slots,
   busy,
   onOpen,
 }: {
   regions: Region[];
+  slots: Map<string, ContentSlot>;
   busy: boolean;
   onOpen: (target: string) => void;
 }) {
@@ -709,8 +919,11 @@ function PageFields({
       <ul className="mt-3 grid gap-2 sm:grid-cols-2">
         {regions.map((region) => {
           const target = parseTarget(region.target);
-          if (!target) return null;
-          const spec = fieldSpec(target);
+          const spec = target && regionSpec(target, region.slot);
+          if (!target || !spec) return null;
+          const slot =
+            target.kind === "slot" ? slots.get(target.key) : undefined;
+          const shown = slot?.draftValue ?? slot?.value ?? region.value;
           return (
             <li key={region.target}>
               <button
@@ -721,8 +934,19 @@ function PageFields({
               >
                 <span className="block font-medium">{spec.label}</span>
                 <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                  {region.value.trim() || "Empty"}
+                  {shown.trim() || "Empty"}
                 </span>
+                {/* A region whose copy is not what shoppers are reading says
+                    so here, where the merchant is choosing what to work on. */}
+                {target.kind === "slot" && (
+                  <span className="mt-0.5 block text-xs text-muted-foreground">
+                    {slot?.draftValue != null
+                      ? "Draft — not published yet"
+                      : slot?.value
+                        ? "Published"
+                        : "Nothing published yet"}
+                  </span>
+                )}
                 {!region.rect && (
                   <span className="mt-0.5 block text-xs text-muted-foreground">
                     Not shown on the page

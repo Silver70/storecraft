@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   applyPaste,
   fieldSpec,
+  regionSpec,
   FIELDS,
+  SLOT_SPECS,
   locateInStore,
   MAX_PAYLOAD_BYTES,
   MAX_URL_LENGTH,
@@ -14,6 +16,7 @@ import {
   parseUrl,
   sanitizeText,
   SESSION_PARAM,
+  type Region,
 } from "./protocol";
 
 const session = "11111111-1111-4111-8111-111111111111";
@@ -31,6 +34,7 @@ const region = {
   target,
   value: "Original",
   rect: { x: 100, y: 200, width: 300, height: 40 },
+  slot: null,
 };
 const event = (data: unknown) => ({ ...peer, data });
 const nameLimit = FIELDS.product.name!.maxLength;
@@ -67,6 +71,42 @@ describe("target descriptors", () => {
     `product:${id}:name `,
   ])("refuses malformed or unsupported descriptors: %j", (value) => {
     expect(parseTarget(value)).toBeNull();
+  });
+});
+
+describe("Content Slot targets", () => {
+  it("parses a Slot target to its key and nothing else", () => {
+    expect(parseTarget("slot:homepage.hero")).toEqual({
+      kind: "slot",
+      key: "homepage.hero",
+    });
+  });
+  it.each([
+    "slot:",
+    "slot",
+    "slot:Homepage.Hero",
+    "slot:homepage hero",
+    "slot:homepage.hero:name",
+    "slot:homepage..hero",
+    "slot:.homepage",
+    `slot:${"a".repeat(65)}`,
+  ])(
+    "refuses a malformed Slot descriptor rather than guessing: %j",
+    (value) => {
+      expect(parseTarget(value)).toBeNull();
+    },
+  );
+  it("takes a Slot's shape from what the storefront declared", () => {
+    const slotTarget = { kind: "slot", key: "homepage.hero" } as const;
+    expect(
+      regionSpec(slotTarget, { type: "heading", label: "Homepage headline" }),
+    ).toEqual({
+      label: "Homepage headline",
+      maxLength: SLOT_SPECS.heading.maxLength,
+      multiline: false,
+    });
+    // An undeclared Slot has no shape, so the admin has nothing to offer.
+    expect(regionSpec(slotTarget, null)).toBeNull();
   });
 });
 
@@ -176,6 +216,7 @@ describe("untrusted messages", () => {
       target: `product:${id}:seoDescription`,
       value: "Search snippet",
       rect: null,
+      slot: null,
     };
     const command = message(session, page, {
       type: "regions",
@@ -184,6 +225,73 @@ describe("untrusted messages", () => {
     expect(parseFrameMessage(event(command), peer)).toEqual({
       ok: true,
       command,
+    });
+  });
+  it("accepts a Slot region carrying the storefront's declaration", () => {
+    const command = message(session, page, {
+      type: "regions",
+      regions: [
+        {
+          target: "slot:homepage.hero",
+          value: "Winter, sorted.",
+          rect: { x: 0, y: 0, width: 600, height: 60 },
+          slot: { type: "heading", label: "Homepage headline" },
+        },
+      ],
+    });
+    expect(parseFrameMessage(event(command), peer)).toEqual({
+      ok: true,
+      command,
+    });
+  });
+  it.each([
+    ["a Slot the page never declared", "slot:homepage.hero", null],
+    [
+      "a content type no storefront can render",
+      "slot:homepage.hero",
+      { type: "carousel", label: "Hero" },
+    ],
+    [
+      "a Slot with nothing to call it",
+      "slot:homepage.hero",
+      { type: "heading", label: "  " },
+    ],
+    [
+      "a declaration attached to an entity field",
+      target,
+      { type: "heading", label: "Homepage headline" },
+    ],
+  ])("refuses %s", (_case, descriptor, declaration) => {
+    const region = {
+      target: descriptor,
+      value: "Winter, sorted.",
+      rect: null,
+      slot: declaration,
+    } as unknown as Region;
+    const command = message(session, page, {
+      type: "regions",
+      regions: [region],
+    });
+    expect(parseFrameMessage(event(command), peer)).toEqual({
+      ok: false,
+      reason: "payload",
+    });
+  });
+  it("bounds a Slot's announced value by the type it was declared as", () => {
+    const oversized = message(session, page, {
+      type: "regions",
+      regions: [
+        {
+          target: "slot:homepage.hero",
+          value: "x".repeat(SLOT_SPECS.heading.maxLength + 1),
+          rect: null,
+          slot: { type: "heading", label: "Homepage headline" },
+        },
+      ],
+    });
+    expect(parseFrameMessage(event(oversized), peer)).toEqual({
+      ok: false,
+      reason: "payload",
     });
   });
   it("refuses another origin even when its payload is valid", () => {
@@ -217,7 +325,7 @@ describe("untrusted messages", () => {
     }
   });
   it("reports unknown and missing versions distinctly so the admin can explain them", () => {
-    for (const version of [2, 4, "3", undefined]) {
+    for (const version of [3, 5, "4", undefined]) {
       for (const parse of [parseAdminMessage, parseFrameMessage]) {
         expect(parse(event({ ...preview, version }), peer)).toEqual({
           ok: false,

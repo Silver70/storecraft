@@ -132,6 +132,19 @@ A named, Store-scoped region a storefront renders — `homepage.hero`,
 knows about. Not a page, and not composed of arbitrary nested blocks.
 _Avoid_: Block, section, widget, component, page
 
+**Slot Draft**:
+A Content Slot's unpublished value. Visible to the merchant in the editing
+frame and nowhere else — no public read returns one, under any argument. A Slot
+holds one draft and one published value, and no history of either.
+_Avoid_: Version, revision, preview, staged
+
+**Publishing** (a Slot):
+The deliberate act that makes a Slot's draft the value shoppers see. Separate
+from saving, so going live is a decision rather than a side effect of typing.
+An entity field has no equivalent: it is live the moment it is saved, and the
+editor says so where the merchant is working.
+_Avoid_: Deploy, go live, commit, release
+
 **Inline Editing**:
 Editing a field in place on the rendered storefront rather than in a form in the
 admin. The editable target is always an existing entity field or a Content Slot;

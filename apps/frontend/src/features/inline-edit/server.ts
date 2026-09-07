@@ -10,6 +10,7 @@ export const getInlineEditConfig = createServerFn({ method: "GET" }).handler(
       const { data } = await apiClient.get<{
         storefrontUrl: string;
         canEditProducts: boolean;
+        canEditContent: boolean;
       }>("/api/admin/inline-edit", {
         headers: { ...(await authHeader()), ...adminStoreHeader() },
       });

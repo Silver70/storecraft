@@ -25,6 +25,12 @@ export class AdminClient {
     ).send(body ?? {});
   }
 
+  put(path: string, body?: unknown) {
+    return this.authed(
+      request(this.app.getHttpServer()).put(this.url(path)),
+    ).send(body ?? {});
+  }
+
   patch(path: string, body?: unknown) {
     return this.authed(
       request(this.app.getHttpServer()).patch(this.url(path)),

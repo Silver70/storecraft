@@ -27,19 +27,19 @@ no argument to it that changes that.
 
 **Blocked by:** 01 (Edit a product name in place).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] A `content_slots` table exists, tenant-scoped with `organization_id` as its second column and also scoped by `store_id`, holding the Slot key, its content type, the published value, the draft value, a status, when it was last published, and timestamps
-- [ ] The Slot key is unique per Store; the same key in two Stores is two different Slots
-- [ ] There is deliberately **no version history** — a Slot holds what is published and what is being drafted, and nothing else
-- [ ] Slot content is stored as text, never as markup
-- [ ] New `content.read` and `content.write` permissions exist, following the shape the discounts and campaigns permissions already use — available to super admins and product managers, not to support agents
-- [ ] Admin endpoints list a Store's Slots, save a draft, and publish, guarded by those permissions
-- [ ] The public storefront GraphQL read returns a Store's Slots with **published values only**, guarded by the existing storefront API-key auth
-- [ ] `products` and `categories` gain no new columns
-- [ ] The Starter Storefront declares `homepage.hero` — key, type, and a human label — renders its published value, and announces it to the editor
-- [ ] A Slot with no published value renders nothing on the live Store, rather than placeholder text
-- [ ] The merchant edits the hero in place in the editor, sees their draft in the frame, and publishes it deliberately
-- [ ] The published value keeps rendering to shoppers while a draft exists
-- [ ] The UI states plainly that a Slot edit is drafted until published, where the merchant is working
-- [ ] End-to-end coverage in the existing backend harness: a Slot with a draft and no published value is absent from the public read; a Slot with both returns the published value and never the draft; no argument to the public read exposes a draft; publishing makes the drafted value public; a Slot in one Store is invisible to another Store's API key; and saving a draft and publishing both require `content.write`, with a support agent refused
+- [x] A `content_slots` table exists, tenant-scoped with `organization_id` as its second column and also scoped by `store_id`, holding the Slot key, its content type, the published value, the draft value, a status, when it was last published, and timestamps
+- [x] The Slot key is unique per Store; the same key in two Stores is two different Slots
+- [x] There is deliberately **no version history** — a Slot holds what is published and what is being drafted, and nothing else
+- [x] Slot content is stored as text, never as markup
+- [x] New `content.read` and `content.write` permissions exist, following the shape the discounts and campaigns permissions already use — available to super admins and product managers, not to support agents
+- [x] Admin endpoints list a Store's Slots, save a draft, and publish, guarded by those permissions
+- [x] The public storefront GraphQL read returns a Store's Slots with **published values only**, guarded by the existing storefront API-key auth
+- [x] `products` and `categories` gain no new columns
+- [x] The Starter Storefront declares `homepage.hero` — key, type, and a human label — renders its published value, and announces it to the editor
+- [x] A Slot with no published value renders nothing on the live Store, rather than placeholder text
+- [x] The merchant edits the hero in place in the editor, sees their draft in the frame, and publishes it deliberately
+- [x] The published value keeps rendering to shoppers while a draft exists
+- [x] The UI states plainly that a Slot edit is drafted until published, where the merchant is working
+- [x] End-to-end coverage in the existing backend harness: a Slot with a draft and no published value is absent from the public read; a Slot with both returns the published value and never the draft; no argument to the public read exposes a draft; publishing makes the drafted value public; a Slot in one Store is invisible to another Store's API key; and saving a draft and publishing both require `content.write`, with a support agent refused

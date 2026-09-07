@@ -1,16 +1,19 @@
 import {
   isSession,
-  fieldSpec,
   parseOrigin,
+  parseSlotDeclaration,
   parseTarget,
   parseAdminMessage,
   message,
+  targetLimit,
   MAX_REGIONS,
   MAX_REGIONS_TEXT,
   SESSION_PARAM,
+  SLOT_SPECS,
   type FrameCommand,
   type Rect,
   type Region,
+  type SlotDeclaration,
 } from "./protocol";
 
 // No credential, persistence, editing UI, or boot-time listeners for shoppers.
@@ -64,12 +67,29 @@ function boot() {
     return found;
   }
 
+  /**
+   * What the page says about a Content Slot it renders. A Slot marked without
+   * a usable type and label is not announced at all: the admin would have no
+   * honest way to offer it, and guessing a shape is how a Slot ends up holding
+   * something the storefront cannot render.
+   */
+  function declaration(element: HTMLElement): SlotDeclaration | null {
+    return parseSlotDeclaration({
+      type: element.dataset.commerceSlotType,
+      label: element.dataset.commerceSlotLabel,
+    });
+  }
+
   function fits(element: Element, target: string): boolean {
     const parsed = parseTarget(target);
-    return (
-      !!parsed &&
-      (element.textContent?.length ?? 0) <= fieldSpec(parsed).maxLength
-    );
+    if (!parsed) return false;
+    const slot =
+      parsed.kind === "slot" && element instanceof HTMLElement
+        ? declaration(element)
+        : null;
+    if (parsed.kind === "slot" && !slot) return false;
+    const limit = slot ? SLOT_SPECS[slot.type].maxLength : targetLimit(parsed);
+    return (element.textContent?.length ?? 0) <= limit;
   }
 
   function announce(force = false) {
@@ -90,7 +110,8 @@ function boot() {
         const box = shown.getBoundingClientRect();
         rect = { x: box.x, y: box.y, width: box.width, height: box.height };
       }
-      regions.push({ target, value, rect });
+      const slot = target.startsWith("slot:") ? declaration(element) : null;
+      regions.push({ target, value, rect, slot });
     }
     const snapshot = JSON.stringify(regions);
     if (force || snapshot !== lastRegions) {

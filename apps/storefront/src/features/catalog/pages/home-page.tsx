@@ -2,6 +2,7 @@ import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { storeConfig } from "~/config/store.config";
 import { homeSections, type HomeSection } from "~/config/home-sections";
+import { ContentSlot } from "~/features/content/content-slot";
 import { Button } from "~/components/ui/button";
 import { SectionHeading } from "~/components/layout/section-heading";
 import { categoriesQueryOptions, productsQueryOptions } from "../queries";
@@ -32,9 +33,15 @@ function Hero() {
   return (
     <section className="border-b bg-muted/30">
       <div className="mx-auto max-w-6xl px-4 py-24 text-center">
-        <h1 className="font-heading text-4xl font-semibold tracking-tight sm:text-5xl">
-          {storeConfig.name}
-        </h1>
+        {/* The headline above the fold is a Content Slot, not a config value:
+            seasonal copy on the most valuable text on the Store is a thing the
+            merchant changes in the editor, not a deploy. Until they publish
+            one, the hero simply has no headline. */}
+        <ContentSlot
+          slotKey="homepage.hero"
+          as="h1"
+          className="font-heading text-4xl font-semibold tracking-tight sm:text-5xl"
+        />
         <p className="mx-auto mt-4 max-w-xl text-muted-foreground">
           {storeConfig.description}
         </p>

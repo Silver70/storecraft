@@ -10,6 +10,19 @@
  * is a future option.
  */
 
+// ─── Content ────────────────────────────────────────────────────────────────
+
+/**
+ * A published Content Slot. The public API returns published values only —
+ * there is no draft field on this type, because a draft has no business in a
+ * shopper's browser.
+ */
+export interface ContentSlot {
+  key: string;
+  type: "heading" | "text";
+  value: string;
+}
+
 // ─── Catalog ────────────────────────────────────────────────────────────────
 
 export interface ProductOptionValue {

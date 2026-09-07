@@ -1,11 +1,12 @@
 /**
- * Version 3 covers the copy fields of a product and a category, and the frame
- * announcing where it has navigated to. No command in the protocol saves
- * anything: the frame is a rendering surface and an event source, and every
- * write happens in the admin, on the admin's origin.
+ * Version 4 covers the copy fields of a product and a category, the Content
+ * Slots a storefront declares, and the frame announcing where it has navigated
+ * to. No command in the protocol saves anything: the frame is a rendering
+ * surface and an event source, and every write happens in the admin, on the
+ * admin's origin.
  */
 export const CHANNEL = "commerce-inline-edit";
-export const VERSION = 3;
+export const VERSION = 4;
 export const SESSION_PARAM = "__commerce_edit";
 export const MAX_PAYLOAD_BYTES = 64 * 1024;
 export const MAX_REGIONS = 100;
@@ -105,22 +106,102 @@ export const FIELDS: Record<EntityKind, Record<string, FieldSpec>> = {
   },
 };
 
-export type Target =
+/**
+ * The shape of a Content Slot's content. A closed set, because a Slot the
+ * storefront cannot render is worse than one the merchant cannot fill: the
+ * type is what lets the admin offer the right editor and bound the paste.
+ * Adding a shape is a change to this table and to the storefronts that render
+ * it, which is why the protocol carries a version.
+ */
+export type SlotType = "heading" | "text";
+export const SLOT_SPECS: Record<
+  SlotType,
+  { maxLength: number; multiline: boolean }
+> = {
+  heading: { maxLength: 120, multiline: false },
+  text: { maxLength: 2000, multiline: true },
+};
+export const MAX_SLOT_KEY = 64;
+export const MAX_SLOT_LABEL = 60;
+/** The widest any Slot value may be, for bounding a value of unstated type. */
+export const MAX_SLOT_VALUE = Math.max(
+  ...Object.values(SLOT_SPECS).map((spec) => spec.maxLength),
+);
+/** Dotted lowercase segments — `homepage.hero`. A name, not a path. */
+const SLOT_KEY = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/;
+export function parseSlotKey(value: unknown): string | null {
+  return typeof value === "string" &&
+    value.length <= MAX_SLOT_KEY &&
+    SLOT_KEY.test(value)
+    ? value
+    : null;
+}
+
+/**
+ * What a storefront says about a Slot it renders: the shape of its content and
+ * what to call the region in front of the merchant. The storefront declares
+ * it; the admin never invents one, so a merchant is only ever offered regions
+ * that exist on the page they are looking at.
+ */
+export type SlotDeclaration = { type: SlotType; label: string };
+export function parseSlotDeclaration(value: unknown): SlotDeclaration | null {
+  if (!record(value) || !keysAre(value, ["type", "label"])) return null;
+  const { type, label } = value;
+  if (typeof type !== "string" || !Object.hasOwnProperty.call(SLOT_SPECS, type))
+    return null;
+  if (
+    typeof label !== "string" ||
+    !label.trim() ||
+    label.length > MAX_SLOT_LABEL
+  )
+    return null;
+  return { type: type as SlotType, label };
+}
+
+export type EntityTarget =
   | {
       kind: "product";
       id: string;
       field: "name" | "description" | "seoTitle" | "seoDescription";
     }
   | { kind: "category"; id: string; field: "name" | "description" };
+/** A Slot is addressed by its key alone: it is a region, not a row. */
+export type SlotTarget = { kind: "slot"; key: string };
+export type Target = EntityTarget | SlotTarget;
 
-export function fieldSpec(target: Target): FieldSpec {
+export function fieldSpec(target: EntityTarget): FieldSpec {
   return FIELDS[target.kind][target.field]!;
 }
+export function slotSpec(declaration: SlotDeclaration): FieldSpec {
+  return { label: declaration.label, ...SLOT_SPECS[declaration.type] };
+}
+/**
+ * How to edit a region: for an entity field the protocol already knows, and
+ * for a Slot whatever the storefront declared. A Slot with no declaration has
+ * no spec — the admin offers nothing rather than guessing a shape.
+ */
+export function regionSpec(
+  target: Target,
+  slot: SlotDeclaration | null,
+): FieldSpec | null {
+  return target.kind === "slot" ? slot && slotSpec(slot) : fieldSpec(target);
+}
+/** The most a value for this target may ever be, before its type is known. */
+export function targetLimit(target: Target): number {
+  return target.kind === "slot" ? MAX_SLOT_VALUE : fieldSpec(target).maxLength;
+}
 
-/** `<kind>:<uuid>:<field>` — identity, never a position on the page. */
+/**
+ * `<kind>:<uuid>:<field>` for an entity field, `slot:<key>` for a Content
+ * Slot — identity, never a position on the page.
+ */
 export function parseTarget(descriptor: unknown): Target | null {
-  if (typeof descriptor !== "string" || descriptor.length > 64) return null;
+  if (typeof descriptor !== "string" || descriptor.length > 128) return null;
   const parts = descriptor.split(":");
+  if (parts[0] === "slot") {
+    const key = parts.length === 2 ? parseSlotKey(parts[1]) : null;
+    return key ? { kind: "slot", key } : null;
+  }
   if (parts.length !== 3) return null;
   const [kind, id, field] = parts as [string, string, string];
   if (!Object.hasOwnProperty.call(FIELDS, kind) || !UUID.test(id)) return null;
@@ -129,7 +210,9 @@ export function parseTarget(descriptor: unknown): Target | null {
   return { kind, id, field } as Target;
 }
 export function describeTarget(target: Target): string {
-  return `${target.kind}:${target.id}:${target.field}`;
+  return target.kind === "slot"
+    ? `slot:${target.key}`
+    : `${target.kind}:${target.id}:${target.field}`;
 }
 
 /**
@@ -167,8 +250,17 @@ export function applyPaste(
 }
 
 export type Rect = { x: number; y: number; width: number; height: number };
-/** `rect` is null for a region the page declares but does not display. */
-export type Region = { target: string; value: string; rect: Rect | null };
+/**
+ * `rect` is null for a region the page declares but does not display. `slot`
+ * carries the storefront's declaration for a Content Slot and is null for an
+ * entity field, whose shape the protocol already knows.
+ */
+export type Region = {
+  target: string;
+  value: string;
+  rect: Rect | null;
+  slot: SlotDeclaration | null;
+};
 export type FrameCommand =
   | { type: "regions"; regions: Region[] }
   | { type: "hover"; target: string | null }
@@ -253,17 +345,22 @@ function validRect(value: unknown): value is Rect | null {
   );
 }
 /** Every value is bounded by the field it belongs to, never by one limit. */
-function validText(value: unknown, target: Target): value is string {
-  return (
-    typeof value === "string" && value.length <= fieldSpec(target).maxLength
-  );
+function validText(value: unknown, limit: number): value is string {
+  return typeof value === "string" && value.length <= limit;
 }
 function validRegion(value: unknown): value is Region {
-  if (!record(value) || !keysAre(value, ["target", "value", "rect"]))
+  if (!record(value) || !keysAre(value, ["target", "value", "rect", "slot"]))
     return false;
   const target = parseTarget(value.target);
-  return (
-    target !== null && validText(value.value, target) && validRect(value.rect)
+  if (!target || !validRect(value.rect)) return false;
+  // A Slot arrives with the declaration that says how to edit it; an entity
+  // field carries none. Either way the announced value is bounded by the shape
+  // the region actually has, never by the widest shape in the protocol.
+  const slot = target.kind === "slot" ? parseSlotDeclaration(value.slot) : null;
+  if (target.kind === "slot" ? !slot : value.slot !== null) return false;
+  return validText(
+    value.value,
+    slot ? SLOT_SPECS[slot.type].maxLength : targetLimit(target),
   );
 }
 
@@ -295,7 +392,7 @@ function parse<T extends AdminCommand | FrameCommand>(
       valid =
         keysAre(data, [...base, "target", "value"]) &&
         target !== null &&
-        validText(data.value, target);
+        validText(data.value, targetLimit(target));
     }
   } else {
     if (data.type === "hover")
