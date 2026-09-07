@@ -19,14 +19,14 @@ shows nothing is to already know it exists.
 
 **Blocked by:** 04 (The homepage hero as a Content Slot).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] The Starter Storefront declares and renders a listing-page banner Slot, and announces it to the editor
-- [ ] A Slot with no published value is announced and editable in the editor while rendering nothing on the live Store
-- [ ] An empty Slot is visible enough in the editor to be found and filled, without becoming visible to shoppers
-- [ ] A draft can be discarded, leaving the published value untouched
-- [ ] The editor shows which Slots have unpublished drafts
-- [ ] The editor shows when each Slot was last published
-- [ ] Slot content is validated against the Slot's declared type, so a Slot cannot end up holding something the storefront cannot render
-- [ ] Publishing and discarding require `content.write`
-- [ ] End-to-end coverage: discarding a draft leaves the published value unchanged and still public, and a type-mismatched value is refused
+- [x] The Starter Storefront declares and renders a listing-page banner Slot, and announces it to the editor
+- [x] A Slot with no published value is announced and editable in the editor while rendering nothing on the live Store
+- [x] An empty Slot is visible enough in the editor to be found and filled, without becoming visible to shoppers
+- [x] A draft can be discarded, leaving the published value untouched
+- [x] The editor shows which Slots have unpublished drafts
+- [x] The editor shows when each Slot was last published
+- [x] Slot content is validated against the Slot's declared type, so a Slot cannot end up holding something the storefront cannot render
+- [x] Publishing and discarding require `content.write`
+- [x] End-to-end coverage: discarding a draft leaves the published value unchanged and still public, and a type-mismatched value is refused

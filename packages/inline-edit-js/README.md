@@ -65,10 +65,17 @@ value as **nothing**: no placeholder, no fallback headline. Render the element
 anyway inside an editing session so the merchant can find and fill a region
 that currently shows nothing.
 
-Unlike an entity field, a Slot edit is saved as a draft and published
-separately. The admin holds the draft and pushes it into your page as a
-`preview`; your Store keeps rendering the published value, so nothing you do
-here can put unfinished copy in front of a shopper.
+Unlike an entity field, a Slot edit is saved as a draft, and published or
+discarded separately. The admin holds the draft and pushes it into your page as
+a `preview`; your Store keeps rendering the published value, so nothing you do
+here can put unfinished copy in front of a shopper, and discarding a draft
+leaves that published value exactly where it was.
+
+A Slot's content type is fixed by the declaration it is first saved with, and
+every later write is measured against it — a `heading` Slot refuses `text`
+content rather than handing your page something it has no layout for. Give a
+region whose shape genuinely changes a new key: the copy written for a headline
+is not the copy for a paragraph.
 
 A region the page declares but does not display — SEO copy, say — is announced
 with `rect: null` and offered by the admin in a list rather than outlined. Mark
@@ -143,12 +150,13 @@ the storefront renders the stored string as characters. A Slot goes further —
 the backend reduces whatever was pasted to its text before storing it, so a
 Store cannot acquire markup through its own CMS.
 
-The admin owns the draft, input, hover outline, Save, Publish and Cancel. No
-protocol message saves anything. Only the deliberate admin action calls the
-existing authenticated `PATCH /api/admin/products/:id` or
+The admin owns the draft, input, hover outline, Save, Publish, Discard and
+Cancel. No protocol message saves anything. Only the deliberate admin action
+calls the existing authenticated `PATCH /api/admin/products/:id` or
 `PATCH /api/admin/categories/:id`, both under `products.update`, or
-`PUT /api/admin/content/slots/:key/draft` and
-`POST /api/admin/content/slots/:key/publish`, both under `content.write`.
+`PUT /api/admin/content/slots/:key/draft`,
+`POST /api/admin/content/slots/:key/publish` and
+`DELETE /api/admin/content/slots/:key/draft`, all under `content.write`.
 
 The admin also owns the way out: it shows which page of the Store the frame is
 displaying, offers it in a real tab, and has an **Exit editor** control that

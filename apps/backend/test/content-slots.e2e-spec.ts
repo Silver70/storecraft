@@ -67,15 +67,21 @@ describe('Content slots (e2e)', () => {
     return data.contentSlots;
   }
 
-  function saveDraft(value: string, key = HERO, client = fixture.admin.client) {
-    return client.put(`/content/slots/${key}/draft`, {
-      type: 'heading',
-      value,
-    });
+  function saveDraft(
+    value: string,
+    key = HERO,
+    client = fixture.admin.client,
+    type = 'heading',
+  ) {
+    return client.put(`/content/slots/${key}/draft`, { type, value });
   }
 
   function publish(key = HERO, client = fixture.admin.client) {
     return client.post(`/content/slots/${key}/publish`);
+  }
+
+  function discard(key = HERO, client = fixture.admin.client) {
+    return client.delete(`/content/slots/${key}/draft`);
   }
 
   describe('what a shopper can see', () => {
@@ -144,6 +150,54 @@ describe('Content slots (e2e)', () => {
     });
   });
 
+  describe('abandoning a draft', () => {
+    it('leaves the published value unchanged and still public', async () => {
+      await saveDraft('Live copy').expect(200);
+      await publish().expect(201);
+      await saveDraft('An idea I thought better of').expect(200);
+
+      const discarded = await discard().expect(200);
+      const row = discarded.body as ContentSlot;
+      expect(row.draftValue).toBeNull();
+      expect(row.status).toBe('published');
+      expect(row.value).toBe('Live copy');
+      expect(row.lastPublishedAt).not.toBeNull();
+
+      // What matters is what a shopper reads: abandoning an idea never takes
+      // live copy down with it.
+      expect(await published()).toEqual([
+        { key: HERO, type: 'heading', value: 'Live copy' },
+      ]);
+    });
+
+    it('leaves a never-published slot showing nothing at all', async () => {
+      await saveDraft('Never mind').expect(200);
+
+      await discard().expect(200);
+
+      expect(await published()).toEqual([]);
+      const list = await fixture.admin.client.get('/content/slots').expect(200);
+      const slots = list.body as ContentSlot[];
+      expect(slots).toHaveLength(1);
+      expect(slots[0].draftValue).toBeNull();
+      expect(slots[0].value).toBeNull();
+      expect(slots[0].status).toBe('draft');
+    });
+
+    it('is not an error when there is no draft to discard', async () => {
+      await saveDraft('Live copy').expect(200);
+      await publish().expect(201);
+
+      await discard().expect(200);
+
+      expect((await published())[0].value).toBe('Live copy');
+    });
+
+    it('refuses a slot this store does not have', async () => {
+      await discard('never.declared').expect(400);
+    });
+  });
+
   describe('one store’s slots are not another’s', () => {
     it('is invisible to another store’s API key', async () => {
       await saveDraft('Ours, published').expect(200);
@@ -194,6 +248,21 @@ describe('Content slots (e2e)', () => {
       expect((await published())[0].value).toBe('Theirs to write');
     });
 
+    it('refuses a support agent discarding a draft', async () => {
+      const support = await fixture.addUser('support_agent');
+      await saveDraft('Live copy').expect(200);
+      await publish().expect(201);
+      await saveDraft('Mine to abandon').expect(200);
+
+      await discard(HERO, support.client).expect(403);
+
+      // Refused, so the merchant's own unpublished work is still there.
+      const list = await fixture.admin.client.get('/content/slots').expect(200);
+      expect((list.body as ContentSlot[])[0].draftValue).toBe(
+        'Mine to abandon',
+      );
+    });
+
     it('refuses a support agent the slot list', async () => {
       const support = await fixture.addUser('support_agent');
       await support.client.get('/content/slots').expect(403);
@@ -210,6 +279,37 @@ describe('Content slots (e2e)', () => {
 
     it('refuses an oversized value rather than truncating it', async () => {
       await saveDraft('a'.repeat(200)).expect(400);
+
+      const list = await fixture.admin.client.get('/content/slots').expect(200);
+      expect(list.body).toEqual([]);
+    });
+
+    it('refuses a value of a type the region was not declared with', async () => {
+      await saveDraft('Winter, sorted.').expect(200);
+      await publish().expect(201);
+
+      // The storefront declared this region a heading. A value claiming to be
+      // something else is refused rather than stored, so the Slot can never
+      // hold content the page that renders it has no layout for.
+      const refused = await saveDraft(
+        'a'.repeat(500),
+        HERO,
+        fixture.admin.client,
+        'text',
+      ).expect(400);
+      expect((refused.body as { message: string }).message).toMatch(/heading/);
+
+      expect((await published())[0].value).toBe('Winter, sorted.');
+      const list = await fixture.admin.client.get('/content/slots').expect(200);
+      const slot = (list.body as ContentSlot[])[0];
+      expect(slot.type).toBe('heading');
+      expect(slot.draftValue).toBeNull();
+    });
+
+    it('refuses a type that is not one the protocol carries', async () => {
+      await saveDraft('Fine copy', HERO, fixture.admin.client, 'html').expect(
+        400,
+      );
 
       const list = await fixture.admin.client.get('/content/slots').expect(200);
       expect(list.body).toEqual([]);

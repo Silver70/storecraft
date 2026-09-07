@@ -3,6 +3,7 @@ import { getRouteApi } from "@tanstack/react-router";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import type { Product, ProductFilter } from "~/types/api";
 import { useInlineEditSession } from "~/features/inline-edit/use-inline-edit";
+import { ContentSlot } from "~/features/content/content-slot";
 import { Button } from "~/components/ui/button";
 import { CategoryFilter } from "../components/category-filter";
 import { ProductGrid } from "../components/product-grid";
@@ -23,6 +24,16 @@ export function ProductListPage() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-10">
+      {/* The promotion strip, on every listing page. A Content Slot rather
+          than a config value, because running a promotion is a thing the
+          merchant does on a Tuesday and a deploy is not. Empty until they
+          publish one, and then it is simply not here. */}
+      <ContentSlot
+        slotKey="plp.banner"
+        as="p"
+        className="mb-6 rounded-lg border bg-muted/40 px-4 py-3 text-sm leading-relaxed whitespace-pre-line"
+      />
+
       {/* The selected category's own copy, on the listing page it titles. The
           sidebar links stay links: a merchant reaches a category's fields by
           walking to it, not by having navigation turn into an edit. */}

@@ -52,6 +52,19 @@ export class ContentSlotService {
     orgId: string,
     storeId: string,
   ): Promise<ContentSlot> {
+    const existing = await this.slots.findByKey(key, orgId, storeId);
+    // A Slot's type is declared once, by the storefront that renders the
+    // region, and every later write is measured against it. Without this a
+    // heading Slot could acquire a two-thousand-character value by claiming to
+    // be a text one, and the storefront would be asked to render something it
+    // has no layout for. A region whose shape genuinely changes is a different
+    // region and gets a different key: copy written for a headline is not the
+    // copy for a paragraph.
+    if (existing && existing.type !== input.type) {
+      throw new BadRequestException(
+        `"${key}" is a ${existing.type} region, so it cannot hold ${input.type} content. Nothing was saved.`,
+      );
+    }
     const value = toSlotText(input.value, input.type);
     const limit = CONTENT_SLOT_VALUE_LIMITS[input.type];
     if (value.length > limit) {
@@ -60,6 +73,40 @@ export class ContentSlotService {
       );
     }
     return this.slots.saveDraft(key, input.type, value, orgId, storeId);
+  }
+
+  /**
+   * Throws away the merchant's unpublished work, leaving what shoppers are
+   * reading exactly as it was. Abandoning an idea is one action, so trying a
+   * headline costs nothing.
+   *
+   * Discarding a Slot that has no draft is not an error: the outcome the
+   * merchant asked for already holds, and reporting a failure for it would only
+   * teach them to distrust the button.
+   */
+  async discardDraft(
+    key: string,
+    orgId: string,
+    storeId: string,
+  ): Promise<ContentSlot> {
+    const slot = await this.slots.findByKey(key, orgId, storeId);
+    if (!slot) {
+      throw new BadRequestException(`No content slot named "${key}".`);
+    }
+    if (slot.draftValue === null) return slot;
+    // A Slot that has never been published goes back to having nothing in it
+    // at all, which is the state it started in and the state that renders
+    // nothing to a shopper.
+    const discarded = await this.slots.discardDraft(
+      key,
+      orgId,
+      storeId,
+      slot.value === null ? 'draft' : 'published',
+    );
+    if (!discarded) {
+      throw new BadRequestException(`No content slot named "${key}".`);
+    }
+    return discarded;
   }
 
   /**

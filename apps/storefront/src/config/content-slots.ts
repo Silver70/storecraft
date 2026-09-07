@@ -18,6 +18,13 @@ import type { SlotDeclaration } from "@repo/inline-edit-js/protocol";
 export const contentSlots = {
   /** The headline above the fold on the homepage. */
   "homepage.hero": { type: "heading", label: "Homepage headline" },
+  /**
+   * The promotion strip above the products on every listing page. One Slot
+   * across all of them, not one per category: the region a merchant reaches
+   * for weekly is "the banner on my listing pages", and a Slot per category
+   * would be a page builder's worth of keys for a sentence.
+   */
+  "plp.banner": { type: "text", label: "Listing page banner" },
 } as const satisfies Record<string, SlotDeclaration>;
 
 export type SlotKey = keyof typeof contentSlots;

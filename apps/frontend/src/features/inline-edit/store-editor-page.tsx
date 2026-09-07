@@ -8,6 +8,7 @@ import {
 import {
   SESSION_PARAM,
   applyPaste,
+  describeTarget,
   locateInStore,
   message,
   parseFrameMessage,
@@ -29,6 +30,7 @@ import {
 import { inlineEditQueryOptions } from "./server";
 import {
   contentSlotsQueryOptions,
+  discardContentSlotDraftServerFn,
   publishContentSlotServerFn,
   saveContentSlotDraftServerFn,
   type ContentSlot,
@@ -97,6 +99,13 @@ function StoreEditor({
    * over the top so the merchant is editing what they will publish.
    */
   const slots = React.useRef<Map<string, ContentSlot>>(new Map());
+  /**
+   * What the storefront calls each Slot, learned from the regions it announces
+   * and kept for the rest of the session. A Slot the merchant drafted on
+   * another page is still theirs to publish from here, and "Homepage headline"
+   * is what they called it — `homepage.hero` is what the code calls it.
+   */
+  const slotLabels = React.useRef<Map<string, string>>(new Map());
   const frame = React.useRef<HTMLIFrameElement>(null);
   const surface = React.useRef<HTMLDivElement>(null);
   const input = React.useRef<HTMLTextAreaElement>(null);
@@ -303,6 +312,7 @@ function StoreEditor({
         setConnected(true);
         currentRegions.current = command.regions;
         setRegions(command.regions);
+        learnSlotLabels(command.regions);
         // Hydration/re-renders may replace text nodes. The admin remains the
         // source of the draft and reapplies it by entity identity if necessary.
         const edit = currentDraft.current;
@@ -366,6 +376,24 @@ function StoreEditor({
         url.origin,
       );
     }
+  }
+
+  /**
+   * Remembers what the storefront calls the Slots on this page, so a draft the
+   * merchant left somewhere else can be listed by its name rather than by its
+   * key. Only a name it has not seen re-renders anything: regions are
+   * announced on every scroll and resize.
+   */
+  function learnSlotLabels(list: Region[]) {
+    let learned = false;
+    for (const region of list) {
+      const parsed = parseTarget(region.target);
+      if (parsed?.kind !== "slot" || !region.slot) continue;
+      if (slotLabels.current.get(parsed.key) === region.slot.label) continue;
+      slotLabels.current.set(parsed.key, region.slot.label);
+      learned = true;
+    }
+    if (learned) setSlotsChanged((count) => count + 1);
   }
 
   const slotQuery = useQuery({
@@ -551,6 +579,58 @@ function StoreEditor({
   }
 
   /**
+   * Runs one of the two things a merchant can do to a draft they already have,
+   * from wherever they are — the panel they are typing in, or the list of
+   * everything they have left unpublished. Both go through the admin API under
+   * `content.write`; neither can touch a published value except by replacing
+   * it, which is what publishing is.
+   */
+  async function actOnDraft(key: string, action: "publish" | "discard") {
+    if (!canEditContent || saving.current) return;
+    saving.current = true;
+    setSaving(true);
+    setError(null);
+    try {
+      const record =
+        action === "publish"
+          ? await publishContentSlotServerFn({ data: { key } })
+          : await discardContentSlotDraftServerFn({ data: { key } });
+      slots.current.set(key, record);
+      setSlotsChanged((count) => count + 1);
+      // Put back what the Slot now holds. After a discard that is the copy
+      // shoppers were reading all along; after a publish it is the same text
+      // the merchant was already looking at.
+      const target = describeTarget({ kind: "slot", key });
+      send({ type: "preview", target, value: record.value ?? "" });
+      if (currentDraft.current?.target === target) {
+        setDraft(null);
+        setHovered(null);
+      }
+      const name = slotName(key);
+      setNotice(
+        action === "publish"
+          ? `${name} published. It is live on your Store now.`
+          : record.value === null
+            ? `Draft discarded. ${name} is empty again, and shoppers see nothing there.`
+            : `Draft discarded. ${name} still shows the copy you published.`,
+      );
+      void queryClient.invalidateQueries({ queryKey: ["content-slots"] });
+    } catch (cause) {
+      setError(
+        `Couldn’t ${action} that draft. Nothing changed on your Store; try again. ${cause instanceof Error ? cause.message : ""}`,
+      );
+    } finally {
+      saving.current = false;
+      setSaving(false);
+    }
+  }
+
+  /** What the storefront calls this Slot, falling back to its key. */
+  function slotName(key: string) {
+    return slotLabels.current.get(key) ?? key;
+  }
+
+  /**
    * Commits the open edit.
    *
    * The two kinds of copy behave differently on purpose, and the editor says
@@ -636,6 +716,16 @@ function StoreEditor({
   const spec = draft?.spec ?? null;
   /** A Slot is drafted and published; an entity field is live when saved. */
   const drafting = editingTarget?.kind === "slot";
+  /** Whether the open Slot has work already saved that could be thrown away. */
+  const storedDraft =
+    editingTarget?.kind === "slot" &&
+    slots.current.get(editingTarget.key)?.draftValue != null;
+  /**
+   * Every Slot of this Store the merchant has touched, read straight from the
+   * ref because a save, a publish and a discard all rewrite it and bump
+   * `slotsChanged`, which is what re-renders this.
+   */
+  const storeSlots = [...slots.current.values()];
   const selected = regions.find(
     (region) => region.target === (draft?.target ?? hovered),
   );
@@ -846,7 +936,23 @@ function StoreEditor({
                       {error}
                     </p>
                   )}
-                  <div className="mt-3 flex justify-end gap-2">
+                  <div className="mt-3 flex flex-wrap justify-end gap-2">
+                    {/* Abandoning an idea is one action, and it leaves what
+                        shoppers are reading exactly where it was. */}
+                    {drafting && storedDraft && editingTarget && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="mr-auto text-destructive"
+                        onClick={() =>
+                          void actOnDraft(editingTarget.key, "discard")
+                        }
+                        disabled={isSaving || blocked.current}
+                      >
+                        Discard draft
+                      </Button>
+                    )}
                     <Button
                       type="button"
                       variant="outline"
@@ -883,6 +989,15 @@ function StoreEditor({
           </div>
         </div>
       )}
+      {canEditContent && storeSlots.length > 0 && (
+        <ContentRegions
+          slots={storeSlots}
+          name={slotName}
+          busy={isSaving}
+          onPublish={(key) => void actOnDraft(key, "publish")}
+          onDiscard={(key) => void actOnDraft(key, "discard")}
+        />
+      )}
       {canEdit && connected && regions.length > 0 && (
         <PageFields
           key={slotsChanged}
@@ -892,6 +1007,124 @@ function StoreEditor({
           onOpen={open}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * When a Slot was last published, said the way a merchant would date it, so
+ * copy written this morning can be told apart from copy written six weeks ago
+ * and forgotten. Null for a Slot that has never gone live — the state beside
+ * it already says as much, and saying it twice says it less.
+ */
+function publishedOn(at: string | null | undefined): string | null {
+  if (!at) return null;
+  const when = new Date(at);
+  return Number.isNaN(when.getTime())
+    ? null
+    : `Last published ${when.toLocaleDateString("en-US", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      })}`;
+}
+
+/**
+ * Every Content Slot of this Store, and the state each one is in.
+ *
+ * This exists because a draft is otherwise silent. The frame only shows the
+ * page it is on, so unpublished work on any other page would sit there
+ * unmentioned until a merchant happened to walk back to it — and copy they
+ * wrote six weeks ago and forgot is indistinguishable from copy they wrote
+ * this morning unless something says when it last went live.
+ *
+ * Publishing and discarding are offered here as well as in the editing panel,
+ * so a merchant clearing up what they left behind does not have to find the
+ * page each draft belongs to first.
+ */
+function ContentRegions({
+  slots,
+  name,
+  busy,
+  onPublish,
+  onDiscard,
+}: {
+  slots: ContentSlot[];
+  name: (key: string) => string;
+  busy: boolean;
+  onPublish: (key: string) => void;
+  onDiscard: (key: string) => void;
+}) {
+  // What is waiting on the merchant comes first; the rest keep a stable order.
+  const ordered = [...slots].sort((a, b) => {
+    const waiting = Number(b.draftValue != null) - Number(a.draftValue != null);
+    return waiting || a.key.localeCompare(b.key);
+  });
+  const drafts = ordered.filter((slot) => slot.draftValue != null).length;
+
+  return (
+    <div className="rounded-lg border bg-background p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-medium">Page regions across your Store</h2>
+        <p className="text-xs text-muted-foreground">
+          {drafts === 0
+            ? "Nothing unpublished"
+            : `${drafts} ${drafts === 1 ? "region has" : "regions have"} an unpublished draft`}
+        </p>
+      </div>
+      <ul className="mt-3 space-y-2">
+        {ordered.map((slot) => {
+          const waiting = slot.draftValue != null;
+          const published = publishedOn(slot.lastPublishedAt);
+          return (
+            <li
+              key={slot.key}
+              className="flex flex-wrap items-start justify-between gap-3 rounded-md border px-3 py-2"
+            >
+              <div className="min-w-0">
+                <span className="block text-sm font-medium">
+                  {name(slot.key)}
+                </span>
+                <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                  {(waiting ? slot.draftValue : slot.value)?.trim() || "Empty"}
+                </span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  {waiting
+                    ? slot.value
+                      ? "Draft — shoppers still see the published copy"
+                      : "Draft — nothing is showing to shoppers yet"
+                    : slot.value
+                      ? "Published"
+                      : "Nothing published yet"}
+                  {published && ` · ${published}`}
+                </span>
+              </div>
+              {waiting && (
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive"
+                    disabled={busy}
+                    onClick={() => onDiscard(slot.key)}
+                  >
+                    Discard
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => onPublish(slot.key)}
+                  >
+                    Publish
+                  </Button>
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
@@ -924,6 +1157,7 @@ function PageFields({
           const slot =
             target.kind === "slot" ? slots.get(target.key) : undefined;
           const shown = slot?.draftValue ?? slot?.value ?? region.value;
+          const published = publishedOn(slot?.lastPublishedAt);
           return (
             <li key={region.target}>
               <button
@@ -945,6 +1179,7 @@ function PageFields({
                       : slot?.value
                         ? "Published"
                         : "Nothing published yet"}
+                    {published && ` · ${published}`}
                   </span>
                 )}
                 {!region.rect && (

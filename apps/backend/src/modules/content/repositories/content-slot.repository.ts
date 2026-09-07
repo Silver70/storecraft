@@ -4,6 +4,7 @@ import type { DrizzleClient } from '../../../shared/database/database.module';
 import { DRIZZLE_CLIENT } from '../../../shared/database/database.module';
 import type {
   ContentSlot,
+  ContentSlotStatus,
   ContentSlotType,
 } from '../../../shared/database/schema';
 import { contentSlots } from '../../../shared/database/schema';
@@ -116,6 +117,31 @@ export class ContentSlotRepository {
       })
       .returning();
     return row;
+  }
+
+  /**
+   * Throws the draft away. The published value and the time it was published
+   * are deliberately untouched: abandoning an idea is one action, and it can
+   * never be the action that takes a Store's live copy down with it.
+   */
+  async discardDraft(
+    key: string,
+    orgId: string,
+    storeId: string,
+    status: ContentSlotStatus,
+  ): Promise<ContentSlot | null> {
+    const [row] = await this.db
+      .update(contentSlots)
+      .set({ draftValue: null, status, updatedAt: new Date() })
+      .where(
+        and(
+          eq(contentSlots.organizationId, orgId),
+          eq(contentSlots.storeId, storeId),
+          eq(contentSlots.key, key),
+        ),
+      )
+      .returning();
+    return row ?? null;
   }
 
   /** Moves the draft into the published value and clears it. */

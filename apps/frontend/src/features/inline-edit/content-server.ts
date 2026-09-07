@@ -72,6 +72,26 @@ export const saveContentSlotDraftServerFn = createServerFn({ method: "POST" })
     }
   });
 
+/**
+ * Throws the draft away and leaves the published value exactly as it was, so
+ * abandoning an idea is one action and never takes live copy down with it.
+ */
+export const discardContentSlotDraftServerFn = createServerFn({
+  method: "POST",
+})
+  .inputValidator(z.object({ key: slotKeySchema }))
+  .handler(async ({ data }): Promise<ContentSlot> => {
+    try {
+      const res = await apiClient.delete<ContentSlot>(
+        `/api/admin/content/slots/${encodeURIComponent(data.key)}/draft`,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (error) {
+      throw new Error(getErrorMessage(error));
+    }
+  });
+
 /** Makes the drafted value the one shoppers see. */
 export const publishContentSlotServerFn = createServerFn({ method: "POST" })
   .inputValidator(z.object({ key: slotKeySchema }))

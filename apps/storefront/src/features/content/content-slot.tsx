@@ -15,10 +15,10 @@ import { contentSlotsQueryOptions } from "./queries";
  * placeholder text, not a fallback headline. An unconfigured Store shows
  * shoppers no scaffolding, and a region that is empty is empty.
  *
- * In an editing session it renders anyway, empty, so a merchant can find and
- * fill a region that currently shows nothing at all. That is the only
- * difference between the two, and it costs a shopper nothing: outside a
- * session this component never even asks whether one is running.
+ * In an editing session it renders anyway, empty, marked out with the region's
+ * own label so it can be found and filled rather than only stumbled on. That
+ * is the only difference between the two, and it costs a shopper nothing:
+ * outside a session this component never even asks whether one is running.
  *
  * What it renders is always the published value. The merchant's draft is
  * pushed into the frame by the admin as a live preview; nothing here fetches
@@ -46,9 +46,14 @@ export function ContentSlot({
       data-commerce-edit={`slot:${slotKey}`}
       data-commerce-slot-type={declaration.type}
       data-commerce-slot-label={declaration.label}
-      // An empty region still has to be big enough to hover and click, or the
-      // merchant cannot reach the thing they came to fill in.
-      className={cn(className, !value && "min-h-8")}
+      // An unfilled region is outlined and named in the editor, because the
+      // only other way to fill a region that shows nothing is to already know
+      // it is there. The rules behind this class apply only while the region
+      // is empty, so a previewed draft replaces the placeholder rather than
+      // sitting under it, and the label they draw comes from the attribute
+      // above — generated content is not part of `textContent`, so what the
+      // editor is told this region holds is still the nothing it holds.
+      className={cn(className, editing && "commerce-empty-region")}
     >
       {value}
     </Component>

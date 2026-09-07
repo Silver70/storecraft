@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Post,
@@ -31,9 +32,10 @@ import {
  * endpoints because they are separate decisions: a merchant writes next week's
  * promotion whenever they like, and it goes live when they say so.
  *
- * There is no delete. A Slot exists because the storefront renders a region at
- * that key; removing the row would not remove the region, it would only lose
- * what the merchant put in it.
+ * Discarding throws away a draft, not a Slot. There is no delete for the Slot
+ * itself: it exists because the storefront renders a region at that key, and
+ * removing the row would not remove the region — it would only lose what the
+ * merchant put in it.
  */
 @ApiTags('Content')
 @ApiBearerAuth()
@@ -70,6 +72,22 @@ export class AdminContentSlotController {
   ): Promise<ContentSlot> {
     const { organizationId, storeId } = requireStoreContext(tenant);
     return this.slots.saveDraft(params.key, body, organizationId, storeId);
+  }
+
+  @Delete(':key/draft')
+  @RequirePermission('content.write')
+  @ApiOperation({
+    summary: "Discard a slot's draft",
+    description:
+      'Throws away the unpublished work and leaves the published value exactly as it was, so abandoning an idea is one action and never takes live copy down with it.',
+  })
+  @ApiResponse({ status: 200 })
+  async discardDraft(
+    @Param() params: ContentSlotKeyParamDto,
+    @CurrentTenant() tenant: TenantContext,
+  ): Promise<ContentSlot> {
+    const { organizationId, storeId } = requireStoreContext(tenant);
+    return this.slots.discardDraft(params.key, organizationId, storeId);
   }
 
   @Post(':key/publish')

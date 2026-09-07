@@ -116,3 +116,45 @@
     outline: none !important;
   }
 }
+
+/*
+ * An unfilled Content Slot, drawn only inside an admin editing session — the
+ * component that carries this class renders nothing at all to a shopper, so
+ * these rules never reach one.
+ *
+ * Everything is under `:empty`, so the affordance is exactly as long-lived as
+ * the emptiness it describes: the moment the editor previews a draft into the
+ * region, the region is the copy and not a placeholder for it.
+ *
+ * The label comes from the region's own declaration through `attr()`. That is
+ * deliberate rather than clever: generated content is not part of an element's
+ * `textContent`, which is what the edit bridge announces to the editor, so a
+ * region that reads "Listing page banner — empty" to the merchant still
+ * announces the empty string it actually holds.
+ */
+.commerce-empty-region:empty {
+  display: block;
+  min-height: 2.5rem;
+  /* The region's own padding belongs to its copy; the placeholder brings its
+     own, so an empty region is the size of the label and not of the layout
+     the copy would have had. */
+  padding: 0;
+  border: 1px dashed var(--muted-foreground);
+  border-radius: var(--radius-md);
+}
+
+.commerce-empty-region:empty::before {
+  content: attr(data-commerce-slot-label) " — empty. Click to add copy.";
+  display: block;
+  padding: 0.5rem 0.75rem;
+  /* The region may be a hero headline; the placeholder is never one. */
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 400;
+  font-style: normal;
+  line-height: 1.5rem;
+  letter-spacing: normal;
+  text-align: start;
+  text-transform: none;
+  color: var(--muted-foreground);
+}
