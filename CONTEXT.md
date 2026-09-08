@@ -45,14 +45,24 @@ A named thing an Organization spends money on to acquire traffic — a boosted
 post, an ad set, an email push. A first-class record with its own Spend and,
 where applicable, an external ad-platform id. Deliberately _not_ the same object
 as a UTM string: one Campaign absorbs many UTM variants via its matching rules.
-_Avoid_: Ad, ad campaign, promotion (a Discount is not a Campaign)
+The parent of its Ads: a Campaign is what gets funded, an Ad is what runs.
+_Avoid_: Ad campaign, promotion (a Discount is not a Campaign)
+
+**Ad**:
+One creative running under a Campaign — the thing a visitor actually sees. Owns
+its own Ad Tag, flight dates, creative and Spend, so two variants of one
+Campaign can be told apart. A Campaign may have none: an Ad is a subdivision a
+merchant opts into, never a wrapper invented around a Campaign that has one.
+_Avoid_: Creative (that is the image, not the Ad), variant, ad unit, placement
 
 **Matching Rule**:
 One statement by a merchant that a Campaign owns a value — a UTM field or a
 referrer host, compared with `equals` or `starts_with`. Both sides are compared
 normalized (trimmed, lowercased, hyphens/underscores/whitespace collapsed), so
 `summer_sale` and `Summer-Sale` are one rule, not two. Applied at read time, so
-adding one repairs past reports as well as future ones.
+adding one repairs past reports as well as future ones. A rule belongs to a
+Campaign or to an Ad, and the two are never in one contest: the Campaign is
+resolved first, and an Ad only among that Campaign's own Ads.
 _Avoid_: Filter, mapping, pattern, alias
 
 **Campaign Tag**:
@@ -61,6 +71,19 @@ name at creation, unique within the Store, and fixed thereafter so links already
 running in an ad platform keep matching after a rename. Every Campaign is
 created already owning a Matching Rule on its own Tag.
 _Avoid_: Slug, code, campaign id (that is the ad platform's `external_id`)
+
+**Ad Tag**:
+The canonical `utm_content` value one Ad owns — unique within its Campaign
+rather than within the Store, so every Campaign is free to call its variants
+`video-a` and `still-b`. Fixed at creation for the same reason a Campaign Tag
+is: a link already running cannot be recalled.
+_Avoid_: Content tag, creative id, variant code
+
+**Placement**:
+Where on a platform an Ad was shown — Instagram feed, Facebook stories. Carried
+for recognition only, filled in by a sync and blank otherwise. Not a dimension
+anything is reported by, because one Ad runs in several at once.
+_Avoid_: Channel, surface, position, network
 
 **Tagged Link**:
 A URL generated from a Campaign for a page of the Store, carrying that
@@ -108,18 +131,51 @@ An Order with no qualifying Touch in the Lookback Window. Always its own visible
 bucket; never silently redistributed across Campaigns.
 _Avoid_: Direct, organic, unknown, other
 
+**Unassigned**:
+An Order a Campaign claimed but none of its Ads did — an untagged link, a typo,
+an Ad created after the fact. Its own visible bucket inside the Campaign, on the
+same principle as Unattributed: never spread across whichever Ads happen to
+exist.
+_Avoid_: Other, remainder, leftover, unattributed (that is the Store-level one)
+
 **Spend**:
-Money an Organization paid for a Campaign, recorded one row per Campaign per
-day, in the Store's currency and in minor units like all other money here.
+Money an Organization paid, recorded one row per day against a Campaign and,
+where the merchant has split it, against one of that Campaign's Ads. In the
+Store's currency and in minor units like all other money here. A row naming no
+Ad means the cost is known and its split is not — never that it belongs to no
+Ad.
 _Avoid_: Cost, budget, ad cost
 
+**Reported Figure**:
+A number an ad platform states about a Campaign or an Ad — its own spend, ROAS
+or conversions, on its own attribution window and in its ad account's currency.
+Kept beside our figures and always labelled with its source, never merged into
+them and never an input to Contribution Margin, which has no cost basis behind
+it.
+_Avoid_: Actual spend, true spend, platform truth, synced metrics
+
+**Platform State**:
+What an ad platform says an Ad is doing right now — approved, rejected, in
+review, delivering, paused. Read-only, and absent for anything not synced.
+Distinct from an Ad's status, which is the merchant's own lifecycle and is never
+overwritten by it.
+_Avoid_: Status (unqualified), review status, delivery status
+
+**Unlinked Ad**:
+An ad a platform is spending on that no Ad in the Store claims yet. Held for the
+merchant to claim onto a Campaign or dismiss, never created automatically — an
+Ad invented from a sync carries cost with no way to earn revenue, and would read
+as the worst performer in the account.
+_Avoid_: Orphan, unmatched, imported ad, pending ad
+
 **ROAS**:
-Attributed revenue ÷ Spend for a Campaign over a period. Compared against ad
+Attributed revenue ÷ Spend for a Campaign or one of its Ads over a period. Compared against ad
 platforms, so it moves with the Lookback Window.
 _Avoid_: Return, ad ROI
 
 **Contribution Margin**:
-Attributed revenue − cost of goods − discounts − Spend, for a Campaign. The
+Attributed revenue − cost of goods − discounts − Spend, for a Campaign or one
+of its Ads. The
 figure that says whether to keep spending, where ROAS only says how much came
 back. Reported with its cost-price coverage, never as a bare number.
 _Avoid_: Profit, net, margin (unqualified)
