@@ -22,6 +22,7 @@ import {
   createCampaignMatcher,
   type MatchableRule,
 } from './campaign-matching.util';
+import { createAdMatcher } from './ad-matching.util';
 
 const SUMMER = 'campaign-summer';
 const SPRING = 'campaign-spring';
@@ -130,7 +131,14 @@ function revenueAfterSaving(
   existingRules: MatchableRule[] = SAVED_RULES,
 ) {
   const matcher = createCampaignMatcher([...existingRules, candidate]);
-  return tallyAttributedRevenue(orders.map(costless), matcher, LOOKBACK);
+  // No Ad rules: a preview answers which Campaign a rule would claim, and the
+  // split beneath it is not part of that question.
+  return tallyAttributedRevenue(
+    orders.map(costless),
+    matcher,
+    createAdMatcher([]),
+    LOOKBACK,
+  );
 }
 
 const EMPTY = { orders: 0, revenue: 0 };

@@ -1,12 +1,15 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
+  Ad,
+  AdStatus,
   CampaignPlatform,
   CampaignStatus,
 } from '../../../shared/database/schema';
 import { resolveLookbackDays } from '../../../shared/attribution/lookback';
 import { pct } from '../../../shared/utils/percent.util';
 import { StoreService } from '../../tenant/services/store.service';
+import { AdRepository } from '../repositories/ad.repository';
 import { CampaignRepository } from '../repositories/campaign.repository';
 import { CampaignSpendRepository } from '../repositories/campaign-spend.repository';
 import {
@@ -14,12 +17,15 @@ import {
   type AttributionTouch,
 } from '../repositories/attribution.repository';
 import { createCampaignMatcher } from '../utils/campaign-matching.util';
+import { createAdMatcher } from '../utils/ad-matching.util';
 import {
   resolvePeriodRange,
   type AttributionPeriod,
 } from '../utils/attribution-period.util';
 import {
   tallyAttributedRevenue,
+  type AdTally,
+  type GoodsBucket,
   type RevenueBucket,
 } from '../utils/attributed-revenue.util';
 import { spendDayRange } from '../utils/spend-day.util';
@@ -38,12 +44,16 @@ import {
 
 export type { AttributionTouch, AttributionPeriod };
 
-export interface CampaignRevenueLine extends MarginInput, CampaignMargin {
-  campaignId: string;
-  name: string;
-  tag: string;
-  platform: CampaignPlatform;
-  status: CampaignStatus;
+/**
+ * The figures every line of this report carries, at whatever grain it is read
+ * — a Campaign, one of its Ads, or the Unassigned residue between them.
+ *
+ * One shape rather than three, because the arithmetic is one arithmetic. A
+ * per-Ad ROAS computed a second way would be free to disagree with the Campaign
+ * ROAS above it, and a merchant reading a split that does not add up cannot
+ * tell which half to believe.
+ */
+export interface PerformanceFigures extends MarginInput, CampaignMargin {
   orders: number;
   /**
    * Attributed revenue on the **Order-total basis** — what Stage 1 reported and
@@ -55,8 +65,11 @@ export interface CampaignRevenueLine extends MarginInput, CampaignMargin {
    */
   revenue: number;
   /**
-   * Spend recorded against this Campaign for the period, in the smallest
-   * currency unit. Zero for a Campaign nobody recorded a cost against.
+   * Spend recorded for the period, in the smallest currency unit. Zero for a
+   * line nobody recorded a cost against.
+   *
+   * Declared on `MarginInput`, named here because it is one of the two figures
+   * the ratio beside it divides.
    */
   spend: number;
   /**
@@ -65,6 +78,56 @@ export interface CampaignRevenueLine extends MarginInput, CampaignMargin {
    * apply to it. Null when nothing was spent: see `roasFor`.
    */
   roas: number | null;
+}
+
+/**
+ * One creative's return, beneath the Campaign that funds it.
+ *
+ * Its revenue is the Orders whose `utm_content` resolved onto this Ad in the
+ * second pass (ADR-0004); its Spend is the rows recorded against this Ad alone.
+ * Both are real subdivisions of the Campaign line above, never estimates of it.
+ */
+export interface AdRevenueLine extends PerformanceFigures {
+  adId: string;
+  name: string;
+  /** The Ad's canonical `utm_content` value. Unique within its Campaign. */
+  tag: string;
+  status: AdStatus;
+}
+
+/**
+ * The part of a Campaign no Ad of its explains.
+ *
+ * Revenue that matched the Campaign and none of its Ads, and Spend recorded
+ * against the Campaign without naming one. **Its own visible bucket**, on the
+ * same principle that keeps Unattributed visible at the Store level: spreading
+ * it across whichever creatives happen to exist would make every one of them
+ * look better than it is.
+ *
+ * It is a different outcome from Unattributed, and the two are never folded
+ * together. Unattributed has no Campaign at all; this has one, and it is the
+ * Campaign this line sits under.
+ */
+export type UnassignedRevenueLine = PerformanceFigures;
+
+export interface CampaignRevenueLine extends PerformanceFigures {
+  campaignId: string;
+  name: string;
+  tag: string;
+  platform: CampaignPlatform;
+  status: CampaignStatus;
+  /**
+   * How this Campaign's period divides across its creatives.
+   *
+   * Empty for a Campaign nobody has split, which is not an incomplete report:
+   * an Ad is a subdivision a merchant opts into, and a Campaign without one
+   * reports exactly as it did before Ads existed.
+   *
+   * Every figure on these lines plus the one on `unassigned` adds back up to
+   * this line — the split changes nothing about the Campaign's own totals.
+   */
+  ads: AdRevenueLine[];
+  unassigned: UnassignedRevenueLine;
 }
 
 export interface AttributedRevenueReport {
@@ -155,6 +218,84 @@ export interface MarketingSummary {
 
 const EMPTY: RevenueBucket = { orders: 0, revenue: 0 };
 
+/** A Campaign nobody split, or that earned nothing: no Ads, nothing assigned. */
+const NO_ADS: AdTally = {
+  byAd: new Map(),
+  goodsByAd: new Map(),
+  unassigned: EMPTY,
+  unassignedGoods: NO_GOODS,
+};
+
+/**
+ * One line of the report, from the three things a line is made of: what it
+ * earned, the goods behind that, and what it cost.
+ *
+ * Every grain goes through here — Campaign, Ad and Unassigned alike — so ROAS
+ * and Contribution Margin mean exactly one thing on this report and the null
+ * semantics are the same wherever a merchant reads them: no ROAS without Spend
+ * rather than a zero, and no margin without cost coverage rather than a
+ * fiction.
+ */
+function figuresFor(
+  bucket: RevenueBucket,
+  goods: GoodsBucket,
+  spend: number,
+): PerformanceFigures {
+  return {
+    orders: bucket.orders,
+    revenue: bucket.revenue,
+    spend,
+    roas: roasFor(bucket.revenue, spend),
+    ...goods,
+    ...marginFor({ ...goods, spend }),
+  };
+}
+
+/**
+ * The Ads of one Campaign, as lines beneath it.
+ *
+ * The three grounds for appearing are the Campaign's own, one level down: an
+ * active creative is shown even at zero, because "this variant produced
+ * nothing" is exactly what a merchant splitting a push wants to find out; an
+ * archived one appears only if it earned or cost something in the period, so
+ * finished creatives do not accumulate on the page forever.
+ *
+ * Sorted as the Campaigns are, and for the same reason: Spend breaks the tie
+ * before order count, so among the creatives that earned nothing the ones
+ * burning money sort above the ones that are merely idle.
+ */
+function adLinesFor(
+  ads: readonly Ad[],
+  tally: AdTally,
+  spendByAd: ReadonlyMap<string, number>,
+): AdRevenueLine[] {
+  return ads
+    .map((ad) => ({
+      ad,
+      bucket: tally.byAd.get(ad.id) ?? EMPTY,
+      goods: tally.goodsByAd.get(ad.id) ?? NO_GOODS,
+      spend: spendByAd.get(ad.id) ?? 0,
+    }))
+    .filter(
+      ({ ad, bucket, spend }) =>
+        ad.status === 'active' || bucket.orders > 0 || spend > 0,
+    )
+    .map(({ ad, bucket, goods, spend }) => ({
+      adId: ad.id,
+      name: ad.name,
+      tag: ad.tag,
+      status: ad.status,
+      ...figuresFor(bucket, goods, spend),
+    }))
+    .sort(
+      (a, b) =>
+        b.revenue - a.revenue ||
+        b.spend - a.spend ||
+        b.orders - a.orders ||
+        a.name.localeCompare(b.name),
+    );
+}
+
 /**
  * What each Campaign returned for a period, and what it cost — the question
  * this whole feature exists to answer.
@@ -177,6 +318,14 @@ const EMPTY: RevenueBucket = { orders: 0, revenue: 0 };
  * Contribution Margin is built on. They are not the same number and nothing
  * here pretends otherwise; naming which is which is the caller's job, and the
  * report page does it on screen.
+ *
+ * **Two grains leave here, from one read.** Each Campaign line carries the
+ * split across its own Ads and the Unassigned residue between them. Both come
+ * from the same tally over the same Orders and the same Spend read as the
+ * Campaign line itself, so there is one definition of the period and one
+ * calculation behind every figure — a split computed by a second read would be
+ * free to disagree with the line it sits under, and a merchant cannot tell
+ * which half of a contradiction to believe.
  */
 @Injectable()
 export class AttributedRevenueService {
@@ -184,6 +333,7 @@ export class AttributedRevenueService {
 
   constructor(
     private readonly campaigns: CampaignRepository,
+    private readonly ads: AdRepository,
     private readonly attribution: AttributionRepository,
     private readonly spend: CampaignSpendRepository,
     private readonly stores: StoreService,
@@ -212,13 +362,15 @@ export class AttributedRevenueService {
     if (!store) throw new NotFoundException('Store not found');
     const { from, to } = spendDayRange(start, end, store.timezone);
 
-    // Tenancy is enforced on all four reads. The matcher itself is pure and
-    // will faithfully match whatever rules it is handed, so a Store's rules
-    // never meeting another Store's orders is a property of this method.
-    const [campaignRows, rules, orderRows, spendByCampaign] = await Promise.all(
-      [
+    // Tenancy is enforced on all six reads. Both matchers are pure and will
+    // faithfully match whatever rules they are handed, so a Store's rules never
+    // meeting another Store's orders is a property of this method.
+    const [campaignRows, rules, adRows, adRules, orderRows, spendTotals] =
+      await Promise.all([
         this.campaigns.findMany(orgId, storeId),
         this.campaigns.findMatchableRules(orgId, storeId),
+        this.ads.findManyForStore(orgId, storeId),
+        this.ads.findMatchableAdRules(orgId, storeId),
         this.attribution.findAttributableOrders(
           orgId,
           storeId,
@@ -226,15 +378,30 @@ export class AttributedRevenueService {
           start,
           end,
         ),
-        this.spend.sumByCampaign(orgId, storeId, from, to),
-      ],
-    );
+        this.spend.sumByGrain(orgId, storeId, from, to),
+      ]);
 
+    // Two matchers, two passes, one tally (ADR-0004). The Campaign matcher runs
+    // exactly as it did before Ads existed and decides the Campaign alone; the
+    // Ad matcher is then asked for a creative *within* that Campaign, and can
+    // reach nothing outside it. Both resolve at read time, so an Ad created
+    // today claims the Orders its links already produced.
     const tally = tallyAttributedRevenue(
       orderRows,
       createCampaignMatcher(rules),
+      createAdMatcher(adRules),
       this.lookbackDays,
     );
+
+    // The Ads themselves, grouped so each Campaign line can name the creatives
+    // its split is made of. Distinct from `tally.adsByCampaign`, which holds
+    // what those creatives *earned*.
+    const adRowsByCampaign = new Map<string, Ad[]>();
+    for (const ad of adRows) {
+      const siblings = adRowsByCampaign.get(ad.campaignId);
+      if (siblings) siblings.push(ad);
+      else adRowsByCampaign.set(ad.campaignId, [ad]);
+    }
 
     // Three reasons to appear, and the third is the point of the cost report:
     // an archived Campaign that quietly spent money in the period must not
@@ -249,26 +416,37 @@ export class AttributedRevenueService {
         // The same read-time matching produced both buckets in the same pass,
         // so a Campaign's margin arrives exactly when its revenue does.
         goods: tally.goodsByCampaign.get(campaign.id) ?? NO_GOODS,
-        spend: spendByCampaign.get(campaign.id) ?? 0,
+        ads: tally.adsByCampaign.get(campaign.id) ?? NO_ADS,
+        spend: spendTotals.byCampaign.get(campaign.id) ?? 0,
       }))
       .filter(({ campaign, bucket, spend }) => {
         return campaign.status === 'active' || bucket.orders > 0 || spend > 0;
       })
-      .map(({ campaign, bucket, goods, spend }) => ({
+      .map(({ campaign, bucket, goods, ads, spend: campaignSpend }) => ({
         campaignId: campaign.id,
         name: campaign.name,
         tag: campaign.tag,
         platform: campaign.platform,
         status: campaign.status,
-        orders: bucket.orders,
-        revenue: bucket.revenue,
-        spend,
-        roas: roasFor(bucket.revenue, spend),
         // Both bases travel to the caller. They are different numbers and the
         // page has to name which is which rather than leave a merchant to
         // notice that ROAS and margin do not reconcile.
-        ...goods,
-        ...marginFor({ ...goods, spend }),
+        ...figuresFor(bucket, goods, campaignSpend),
+        ads: adLinesFor(
+          adRowsByCampaign.get(campaign.id) ?? [],
+          ads,
+          spendTotals.byAd,
+        ),
+        // The residue at both grains, from the same tally and the same spend
+        // read: revenue this Campaign earned that no Ad of its claimed, and
+        // cost recorded against the Campaign without naming one. Its own line,
+        // never divided among the Ads above it — which is what makes those Ads
+        // plus this line add back up to the Campaign's own figures.
+        unassigned: figuresFor(
+          ads.unassigned,
+          ads.unassignedGoods,
+          spendTotals.unsplitByCampaign.get(campaign.id) ?? 0,
+        ),
       }))
       // Spend breaks the tie before order count does, so among the lines that
       // earned nothing the ones burning money sort above the ones that are

@@ -18,6 +18,7 @@ import type {
   Period,
 } from "~/types/api";
 import { attributedRevenueQueryOptions } from "../queries";
+import { AdBreakdown } from "./ad-breakdown";
 import {
   AttributionTouchTabs,
   attributionTouchHint,
@@ -153,6 +154,11 @@ function LoadedFigures({
  * from the returned report. Spend, ROAS, margin, coverage, the period boundary,
  * and the Lookback Window therefore come from the exact read behind the table;
  * none of them are recalculated for this panel.
+ *
+ * The split by Ad beneath comes from that same line, for the same reason. It is
+ * the answer to the question the figures above cannot give — which of the four
+ * creatives under this push actually sold something — and it appears only for a
+ * Campaign that has Ads.
  */
 export function CampaignPerformancePanel({
   campaignId,
@@ -212,12 +218,17 @@ export function CampaignPerformancePanel({
           </Button>
         </div>
       ) : line ? (
-        <LoadedFigures
-          line={line}
-          currency={currency}
-          spendFrom={report.spendFrom}
-          spendTo={report.spendTo}
-        />
+        <>
+          <LoadedFigures
+            line={line}
+            currency={currency}
+            spendFrom={report.spendFrom}
+            spendTo={report.spendTo}
+          />
+          {/* From the same line, so the split and the figures above it cannot
+              describe different periods or disagree about what was spent. */}
+          <AdBreakdown line={line} currency={currency} />
+        </>
       ) : (
         <p className="text-sm text-muted-foreground">
           This archived campaign has no spend or attributed sales in the

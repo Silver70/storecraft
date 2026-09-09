@@ -51,13 +51,21 @@ const IS_BOT = sql<boolean>`EXISTS (
     )
 )`;
 
-/** The Touch column group the selected mode reads, as stored on the Order. */
+/**
+ * The Touch column group the selected mode reads, as stored on the Order.
+ *
+ * `utm_content` is read alongside the rest because an Ad is resolved from the
+ * same Touch as its Campaign (ADR-0004), and both Touches have carried it since
+ * ADR-0001 — which is what makes the split by Ad retroactive rather than
+ * something that starts measuring from the day it ships.
+ */
 function touchColumns(touch: AttributionTouch) {
   return touch === 'first'
     ? {
         utmSource: orders.firstTouchUtmSource,
         utmMedium: orders.firstTouchUtmMedium,
         utmCampaign: orders.firstTouchUtmCampaign,
+        utmContent: orders.firstTouchUtmContent,
         referrer: orders.firstTouchReferrer,
         touchedAt: orders.firstTouchAt,
       }
@@ -65,6 +73,7 @@ function touchColumns(touch: AttributionTouch) {
         utmSource: orders.lastTouchUtmSource,
         utmMedium: orders.lastTouchUtmMedium,
         utmCampaign: orders.lastTouchUtmCampaign,
+        utmContent: orders.lastTouchUtmContent,
         referrer: orders.lastTouchReferrer,
         touchedAt: orders.lastTouchAt,
       };
@@ -157,6 +166,7 @@ export class AttributionRepository {
         utmSource: columns.utmSource,
         utmMedium: columns.utmMedium,
         utmCampaign: columns.utmCampaign,
+        utmContent: columns.utmContent,
         referrer: columns.referrer,
         touchedAt: columns.touchedAt,
         isBot: IS_BOT,
@@ -200,6 +210,7 @@ export class AttributionRepository {
         utmSource: row.utmSource,
         utmMedium: row.utmMedium,
         utmCampaign: row.utmCampaign,
+        utmContent: row.utmContent,
         referrer: row.referrer,
         at: row.touchedAt,
       },

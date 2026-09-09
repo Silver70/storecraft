@@ -17,6 +17,7 @@ import {
   createCampaignMatcher,
   type MatchableRule,
 } from './campaign-matching.util';
+import { createAdMatcher, type MatchableAdRule } from './ad-matching.util';
 import { DEFAULT_ATTRIBUTION_LOOKBACK_DAYS } from '../../../shared/attribution/lookback';
 
 const SUMMER = 'campaign-summer';
@@ -46,6 +47,41 @@ const RULES: MatchableRule[] = [
 
 const matcher = createCampaignMatcher(RULES);
 const noRules = createCampaignMatcher([]);
+
+const VIDEO_A = 'ad-summer-video-a';
+const STILL_B = 'ad-summer-still-b';
+/** Spring's own `video-a`: the same tag under a different Campaign. */
+const SPRING_VIDEO_A = 'ad-spring-video-a';
+
+const AD_RULES: MatchableAdRule[] = [
+  {
+    adId: VIDEO_A,
+    campaignId: SUMMER,
+    field: 'utm_content',
+    operator: 'equals',
+    value: 'video-a',
+    adCreatedAt: new Date('2026-02-01T00:00:00Z'),
+  },
+  {
+    adId: STILL_B,
+    campaignId: SUMMER,
+    field: 'utm_content',
+    operator: 'equals',
+    value: 'still-b',
+    adCreatedAt: new Date('2026-02-02T00:00:00Z'),
+  },
+  {
+    adId: SPRING_VIDEO_A,
+    campaignId: SPRING,
+    field: 'utm_content',
+    operator: 'equals',
+    value: 'video-a',
+    adCreatedAt: new Date('2026-02-03T00:00:00Z'),
+  },
+];
+
+const adMatcher = createAdMatcher(AD_RULES);
+const noAds = createAdMatcher([]);
 
 function order(overrides: Partial<CostedOrder> = {}): CostedOrder {
   return {
@@ -170,8 +206,8 @@ describe('campaignCreditFor', () => {
 });
 
 describe('tallyAttributedRevenue', () => {
-  const tally = (orders: CostedOrder[], m = matcher) =>
-    tallyAttributedRevenue(orders, m, DEFAULT_ATTRIBUTION_LOOKBACK_DAYS);
+  const tally = (orders: CostedOrder[], m = matcher, a = noAds) =>
+    tallyAttributedRevenue(orders, m, a, DEFAULT_ATTRIBUTION_LOOKBACK_DAYS);
 
   it('sums revenue and order count per campaign', () => {
     const result = tally([
@@ -316,6 +352,214 @@ describe('tallyAttributedRevenue', () => {
 
       expect(result.goodsByCampaign.size).toBe(0);
       expect(result.unattributed).toEqual({ orders: 1, revenue: 3000 });
+    });
+  });
+
+  // ─── The split by ad ────────────────────────────────────────────────────────
+
+  describe('the split by ad', () => {
+    /** The same order, arriving through a creative's link. */
+    const via = (
+      utmContent: string | null,
+      overrides: Partial<CostedOrder> = {},
+    ) =>
+      order({
+        ...overrides,
+        touch: { ...order().touch, ...overrides.touch, utmContent },
+      });
+
+    const split = (orders: CostedOrder[]) => tally(orders, matcher, adMatcher);
+
+    it('credits each ad the orders its tag claimed', () => {
+      const result = split([
+        via('video-a', { total: 3000 }),
+        via('video-a', { total: 1000 }),
+        via('still-b', { total: 500 }),
+      ]);
+
+      const ads = result.adsByCampaign.get(SUMMER)!;
+      expect(ads.byAd.get(VIDEO_A)).toEqual({ orders: 2, revenue: 4000 });
+      expect(ads.byAd.get(STILL_B)).toEqual({ orders: 1, revenue: 500 });
+    });
+
+    it('keeps an order that matched no ad of the campaign unassigned', () => {
+      const result = split([
+        via('video-a', { total: 3000 }),
+        via('carousel-c', { total: 700 }),
+        via(null, { total: 300 }),
+      ]);
+
+      const ads = result.adsByCampaign.get(SUMMER)!;
+      expect(ads.byAd.get(VIDEO_A)).toEqual({ orders: 1, revenue: 3000 });
+      // Its own bucket. Never spread across the ads that do exist, which would
+      // make both of them look better than they are.
+      expect(ads.unassigned).toEqual({ orders: 2, revenue: 1000 });
+      expect(ads.byAd.has(STILL_B)).toBe(false);
+    });
+
+    it('never folds unassigned into unattributed', () => {
+      // Two different outcomes: one order has a campaign and no ad, the other
+      // has no campaign at all.
+      const result = split([
+        via('carousel-c', { total: 700 }),
+        via('video-a', {
+          total: 900,
+          touch: { ...order().touch, utmCampaign: 'nothing-owns-this' },
+        }),
+      ]);
+
+      expect(result.adsByCampaign.get(SUMMER)!.unassigned).toEqual({
+        orders: 1,
+        revenue: 700,
+      });
+      expect(result.unattributed).toEqual({ orders: 1, revenue: 900 });
+      expect(result.adsByCampaign.has(SPRING)).toBe(false);
+    });
+
+    it('resolves two campaigns owning the same ad tag independently', () => {
+      const result = split([
+        via('video-a', { total: 3000 }),
+        via('Video_A', {
+          total: 900,
+          touch: { ...order().touch, utmCampaign: 'Spring-Sale' },
+        }),
+      ]);
+
+      expect(result.adsByCampaign.get(SUMMER)!.byAd.get(VIDEO_A)).toEqual({
+        orders: 1,
+        revenue: 3000,
+      });
+      expect(
+        result.adsByCampaign.get(SPRING)!.byAd.get(SPRING_VIDEO_A),
+      ).toEqual({ orders: 1, revenue: 900 });
+      // Neither campaign's tally has heard of the other's creative.
+      expect(result.adsByCampaign.get(SUMMER)!.byAd.has(SPRING_VIDEO_A)).toBe(
+        false,
+      );
+      expect(result.adsByCampaign.get(SPRING)!.byAd.has(VIDEO_A)).toBe(false);
+    });
+
+    it('offers an uncredited order to no ad at all', () => {
+      // The second pass only ever runs on an order a campaign already claimed.
+      const result = split([
+        via('video-a', { total: 3000, isBot: true }),
+        via('video-a', { total: 500, touch: { ...order().touch, at: null } }),
+      ]);
+
+      expect(result.adsByCampaign.size).toBe(0);
+      expect(result.unattributed).toEqual({ orders: 2, revenue: 3500 });
+    });
+
+    it('leaves a campaign’s own totals unchanged by the split', () => {
+      // The figure a merchant already trusted must not move because the report
+      // learned to divide it.
+      const orders = [
+        via('video-a', { total: 3000 }),
+        via('still-b', { total: 1000 }),
+        via('carousel-c', { total: 700 }),
+      ];
+
+      expect(split(orders).byCampaign.get(SUMMER)).toEqual(
+        tally(orders).byCampaign.get(SUMMER),
+      );
+    });
+
+    it('reconciles the ads plus unassigned back to the campaign line', () => {
+      const orders = [
+        via('video-a', {
+          total: 3000,
+          goodsRevenue: 2500,
+          cost: 1000,
+          revenueWithCost: 2500,
+          discount: 100,
+        }),
+        via('still-b', {
+          total: 1000,
+          goodsRevenue: 900,
+          cost: 300,
+          revenueWithCost: 900,
+          discount: 0,
+        }),
+        via('carousel-c', {
+          total: 700,
+          goodsRevenue: 600,
+          cost: 0,
+          revenueWithCost: 0,
+          discount: 50,
+        }),
+      ];
+      const result = split(orders);
+      const ads = result.adsByCampaign.get(SUMMER)!;
+
+      const sum = <T>(
+        buckets: T[],
+        key: { [K in keyof T]: T[K] extends number ? K : never }[keyof T],
+      ) =>
+        buckets.reduce((total, bucket) => total + (bucket[key] as number), 0);
+
+      const revenueBuckets = [...ads.byAd.values(), ads.unassigned];
+      expect(sum(revenueBuckets, 'revenue')).toBe(
+        result.byCampaign.get(SUMMER)!.revenue,
+      );
+      expect(sum(revenueBuckets, 'orders')).toBe(
+        result.byCampaign.get(SUMMER)!.orders,
+      );
+
+      const goodsBuckets = [...ads.goodsByAd.values(), ads.unassignedGoods];
+      const campaignGoods = result.goodsByCampaign.get(SUMMER)!;
+      for (const key of [
+        'goodsRevenue',
+        'cost',
+        'revenueWithCost',
+        'discount',
+      ] as const) {
+        expect(sum(goodsBuckets, key)).toBe(campaignGoods[key]);
+      }
+    });
+
+    it('buckets the goods basis by the same ad as the revenue', () => {
+      const result = split([
+        via('video-a', {
+          goodsRevenue: 2500,
+          cost: 1000,
+          revenueWithCost: 2500,
+        }),
+        via('video-a', {
+          goodsRevenue: 1000,
+          cost: 400,
+          revenueWithCost: 1000,
+        }),
+        via('carousel-c', {
+          goodsRevenue: 600,
+          cost: 200,
+          revenueWithCost: 600,
+        }),
+      ]);
+      const ads = result.adsByCampaign.get(SUMMER)!;
+
+      expect(ads.goodsByAd.get(VIDEO_A)).toEqual({
+        goodsRevenue: 3500,
+        cost: 1400,
+        revenueWithCost: 3500,
+        discount: 0,
+      });
+      // Unassigned carries a goods basis where unattributed does not: money was
+      // spent against this campaign, and the split has to reconcile with it.
+      expect(ads.unassignedGoods).toEqual({
+        goodsRevenue: 600,
+        cost: 200,
+        revenueWithCost: 600,
+        discount: 0,
+      });
+    });
+
+    it('assigns nothing when the campaign has no ads', () => {
+      // A campaign nobody split reports exactly as it did before ads existed.
+      const result = tally([via('video-a', { total: 3000 })], matcher, noAds);
+      const ads = result.adsByCampaign.get(SUMMER)!;
+
+      expect(ads.byAd.size).toBe(0);
+      expect(ads.unassigned).toEqual({ orders: 1, revenue: 3000 });
     });
   });
 });

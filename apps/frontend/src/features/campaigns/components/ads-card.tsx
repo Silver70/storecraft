@@ -50,11 +50,16 @@ export function AdsCard({ campaignId }: { campaignId: string }) {
   const [error, setError] = React.useState<string | null>(null);
 
   // Every list under this campaign, so a status change is reflected whichever
-  // filter is showing.
+  // filter is showing — and the performance report beside it, because the split
+  // by ad is resolved at read time: adding an ad claims the orders its links
+  // already produced, and the panel should say so without a reload.
   const invalidate = () =>
-    queryClient.invalidateQueries({
-      queryKey: ["campaigns", "detail", campaignId, "ads"],
-    });
+    Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: ["campaigns", "detail", campaignId, "ads"],
+      }),
+      queryClient.invalidateQueries({ queryKey: ["campaigns", "revenue"] }),
+    ]);
 
   const addMutation = useMutation({
     mutationFn: () =>

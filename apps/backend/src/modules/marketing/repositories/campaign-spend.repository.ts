@@ -9,6 +9,28 @@ import type {
 import { campaignSpend } from '../../../shared/database/schema';
 import type { SpendDay } from '../utils/spend-day.util';
 
+/**
+ * A period's Spend read at every grain the performance report shows it at.
+ *
+ * The three are not independent: `byCampaign` is the total of an entry in
+ * `unsplitByCampaign` and every one of that Campaign's entries in `byAd`. They
+ * are returned together, from one read, precisely so that identity holds — a
+ * Campaign whose line disagreed with the sum of the lines beneath it would
+ * discredit both.
+ */
+export interface SpendTotals {
+  /** Per Campaign id: its own rows plus its Ads'. Minor units. */
+  byCampaign: Map<string, number>;
+  /** Per Ad id. Minor units. */
+  byAd: Map<string, number>;
+  /**
+   * Per Campaign id: the part recorded without naming an Ad — cost known,
+   * split not. Never "spend on no Ad", and never divided among the Ads that
+   * exist.
+   */
+  unsplitByCampaign: Map<string, number>;
+}
+
 /** What a merchant supplies for one day's Spend, once validated. */
 export interface RecordSpendRow {
   organizationId: string;
@@ -83,33 +105,37 @@ export class CampaignSpendRepository {
   }
 
   /**
-   * Total Spend per Campaign for an inclusive range of calendar days, for the
-   * whole Store.
+   * Total Spend for an inclusive range of calendar days, for the whole Store,
+   * at every grain the report reads it at.
    *
-   * Both grains roll up into the Campaign, because `ad_id` is not in the
-   * grouping: a Campaign's cost is its own rows plus its Ads', and a report
-   * that counted only one of them would understate what the push cost.
+   * **One query, three roll-ups.** Spend is recorded either against a Campaign
+   * as a whole or against one of its Ads, and the performance report needs all
+   * three views of that: what each push cost, what each creative cost, and what
+   * part of a push nobody has split yet. Three reads would be three chances for
+   * the day range, the tenant filter or the `bigint` cast to drift apart, and
+   * the drift would show up as a Campaign disagreeing with the sum of its own
+   * lines.
    *
-   * Summed in SQL rather than by loading every row: the report needs one figure
-   * per Campaign, and a period of 90 days across a Store's Campaigns is a page
-   * of rows nobody looks at. Campaigns with no Spend in the range are simply
-   * absent from the map — the caller reads that as zero, which is the same
-   * answer without inventing rows.
+   * Summed in SQL rather than by loading every row: a period of 90 days across
+   * a Store's Campaigns is a page of rows nobody looks at. Grains with no Spend
+   * in the range are simply absent from the maps — the caller reads that as
+   * zero, which is the same answer without inventing rows.
    *
    * `::int` because the column is an integer in minor units and Postgres sums
    * integers as `bigint`, which reaches the driver as a string. The cast keeps
    * the money a number all the way through, as every other summed money column
    * in this codebase does.
    */
-  async sumByCampaign(
+  async sumByGrain(
     orgId: string,
     storeId: string,
     from: SpendDay,
     to: SpendDay,
-  ): Promise<Map<string, number>> {
+  ): Promise<SpendTotals> {
     const rows = await this.db
       .select({
         campaignId: campaignSpend.campaignId,
+        adId: campaignSpend.adId,
         amount: sql<number>`coalesce(sum(${campaignSpend.amount}), 0)::int`,
       })
       .from(campaignSpend)
@@ -120,9 +146,32 @@ export class CampaignSpendRepository {
           between(campaignSpend.day, from, to),
         ),
       )
-      .groupBy(campaignSpend.campaignId);
+      .groupBy(campaignSpend.campaignId, campaignSpend.adId);
 
-    return new Map(rows.map((row) => [row.campaignId, row.amount]));
+    const byCampaign = new Map<string, number>();
+    const byAd = new Map<string, number>();
+    const unsplitByCampaign = new Map<string, number>();
+
+    for (const row of rows) {
+      // A Campaign's cost is its own rows plus its Ads'. Rolling both into
+      // `byCampaign` here is what keeps the Campaign line the total of the
+      // lines beneath it rather than a fourth figure computed elsewhere.
+      byCampaign.set(
+        row.campaignId,
+        (byCampaign.get(row.campaignId) ?? 0) + row.amount,
+      );
+
+      if (row.adId === null) {
+        unsplitByCampaign.set(
+          row.campaignId,
+          (unsplitByCampaign.get(row.campaignId) ?? 0) + row.amount,
+        );
+      } else {
+        byAd.set(row.adId, (byAd.get(row.adId) ?? 0) + row.amount);
+      }
+    }
+
+    return { byCampaign, byAd, unsplitByCampaign };
   }
 
   /**

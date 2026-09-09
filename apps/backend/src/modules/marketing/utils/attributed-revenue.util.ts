@@ -26,6 +26,7 @@ import type {
   AttributionTuple,
   CampaignMatcher,
 } from './campaign-matching.util';
+import type { AdMatcher } from './ad-matching.util';
 import { lookbackMs } from '../../../shared/attribution/lookback';
 
 /** One Order, reduced to what deciding its Campaign credit actually needs. */
@@ -85,6 +86,37 @@ export interface RevenueBucket {
   revenue: number;
 }
 
+/**
+ * How one Campaign's credit divides across its own Ads.
+ *
+ * The same two bases as the Campaign level, one level down, filled in the same
+ * pass from the same Order and the same matching decision — so an Ad created
+ * today claims the Orders its links already produced, exactly as a Campaign
+ * created after its ads ran does.
+ *
+ * `unassigned` holds the Campaign's Orders that matched none of its Ads. It is
+ * **not** Unattributed: those Orders have a Campaign, and it is the one this
+ * tally belongs to. The two are different outcomes and are never folded
+ * together.
+ *
+ * Unlike Unattributed, Unassigned carries a goods basis. Money really was spent
+ * against this Campaign, and the split has to reconcile with the Campaign's own
+ * line — every Ad's figures plus this one add back up to it, on every basis.
+ */
+export interface AdTally {
+  /** Credit per Ad id. An Ad that earned none is simply absent. */
+  byAd: Map<string, RevenueBucket>;
+  /** The goods basis of the same credit, per Ad id. */
+  goodsByAd: Map<string, GoodsBucket>;
+  /**
+   * Everything this Campaign earned that no Ad of its claimed. Always its own
+   * bucket — never spread across the Ads that happen to exist, which would make
+   * every one of them look better than it is.
+   */
+  unassigned: RevenueBucket;
+  unassignedGoods: GoodsBucket;
+}
+
 export interface AttributionTally {
   /** Credit per Campaign id. A Campaign that earned none is simply absent. */
   byCampaign: Map<string, RevenueBucket>;
@@ -100,6 +132,16 @@ export interface AttributionTally {
    * called revenue and invite the wrong one into a subtraction.
    */
   goodsByCampaign: Map<string, GoodsBucket>;
+  /**
+   * The same credit again, divided by Ad within each Campaign that earned any
+   * — the second pass of ADR-0004.
+   *
+   * Keyed by Campaign id, so a Campaign that earned nothing is absent here just
+   * as it is from `byCampaign`. Two Campaigns each owning an Ad tagged
+   * `video-a` therefore never meet: they are different entries holding
+   * different Ad ids.
+   */
+  adsByCampaign: Map<string, AdTally>;
   /**
    * Everything that qualified for no Campaign. Always its own bucket — never
    * spread across Campaigns, which would make every one of them look better
@@ -159,14 +201,64 @@ function addGoods(bucket: GoodsBucket, order: CostedOrder): void {
   bucket.discount += order.discount;
 }
 
-/** Runs the credit decision over a period's Orders and sums the result. */
+/** The bucket under `key`, created empty on first use. */
+function bucketFor(
+  map: Map<string, RevenueBucket>,
+  key: string,
+): RevenueBucket {
+  let bucket = map.get(key);
+  if (!bucket) {
+    bucket = { orders: 0, revenue: 0 };
+    map.set(key, bucket);
+  }
+  return bucket;
+}
+
+/** The goods bucket under `key`, created empty on first use. */
+function goodsFor(map: Map<string, GoodsBucket>, key: string): GoodsBucket {
+  let goods = map.get(key);
+  if (!goods) {
+    goods = { goodsRevenue: 0, cost: 0, revenueWithCost: 0, discount: 0 };
+    map.set(key, goods);
+  }
+  return goods;
+}
+
+function emptyAdTally(): AdTally {
+  return {
+    byAd: new Map(),
+    goodsByAd: new Map(),
+    unassigned: { orders: 0, revenue: 0 },
+    unassignedGoods: {
+      goodsRevenue: 0,
+      cost: 0,
+      revenueWithCost: 0,
+      discount: 0,
+    },
+  };
+}
+
+/**
+ * Runs the credit decision over a period's Orders and sums the result, at both
+ * grains.
+ *
+ * **One pass, two passes.** The loop is single — every figure the report shows
+ * comes from the same read of the same rows, so a Campaign and its Ads can
+ * never describe different periods or disagree about an Order. Within it the
+ * *resolution* is two-pass per ADR-0004: `matcher` picks the Campaign from the
+ * Touch, and only then does `adMatcher` pick an Ad, and only from that
+ * Campaign's own. An Order that no Campaign claims is never offered to an Ad at
+ * all.
+ */
 export function tallyAttributedRevenue(
   orders: Iterable<CostedOrder>,
   matcher: CampaignMatcher,
+  adMatcher: AdMatcher,
   lookbackDays: number,
 ): AttributionTally {
   const byCampaign = new Map<string, RevenueBucket>();
   const goodsByCampaign = new Map<string, GoodsBucket>();
+  const adsByCampaign = new Map<string, AdTally>();
   const unattributed: RevenueBucket = { orders: 0, revenue: 0 };
   const totals: RevenueBucket = { orders: 0, revenue: 0 };
 
@@ -179,20 +271,34 @@ export function tallyAttributedRevenue(
       continue;
     }
 
-    let bucket = byCampaign.get(campaignId);
-    if (!bucket) {
-      bucket = { orders: 0, revenue: 0 };
-      byCampaign.set(campaignId, bucket);
-    }
-    add(bucket, order);
+    add(bucketFor(byCampaign, campaignId), order);
+    addGoods(goodsFor(goodsByCampaign, campaignId), order);
 
-    let goods = goodsByCampaign.get(campaignId);
-    if (!goods) {
-      goods = { goodsRevenue: 0, cost: 0, revenueWithCost: 0, discount: 0 };
-      goodsByCampaign.set(campaignId, goods);
+    let ads = adsByCampaign.get(campaignId);
+    if (!ads) {
+      ads = emptyAdTally();
+      adsByCampaign.set(campaignId, ads);
     }
-    addGoods(goods, order);
+
+    // The second pass, over this Campaign's Ads alone. Null is Unassigned —
+    // the Order is the Campaign's and no creative of its claimed it — which is
+    // its own bucket and never divided among the Ads that do exist.
+    const adId = adMatcher(campaignId, order.touch);
+    if (adId === null) {
+      add(ads.unassigned, order);
+      addGoods(ads.unassignedGoods, order);
+      continue;
+    }
+
+    add(bucketFor(ads.byAd, adId), order);
+    addGoods(goodsFor(ads.goodsByAd, adId), order);
   }
 
-  return { byCampaign, goodsByCampaign, unattributed, totals };
+  return {
+    byCampaign,
+    goodsByCampaign,
+    adsByCampaign,
+    unattributed,
+    totals,
+  };
 }

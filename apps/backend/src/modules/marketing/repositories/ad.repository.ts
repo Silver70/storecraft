@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, eq, ne } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, ne } from 'drizzle-orm';
 import type { DrizzleClient } from '../../../shared/database/database.module';
 import { DRIZZLE_CLIENT } from '../../../shared/database/database.module';
 import type {
@@ -10,6 +10,7 @@ import type {
   NewCampaignMatchingRule,
 } from '../../../shared/database/schema';
 import { ads, campaignMatchingRules } from '../../../shared/database/schema';
+import type { MatchableAdRule } from '../utils/ad-matching.util';
 
 /**
  * Every method takes the organization and store explicitly and filters on both,
@@ -38,6 +39,23 @@ export class AdRepository {
           ...(status ? [eq(ads.status, status)] : []),
         ),
       )
+      .orderBy(asc(ads.createdAt));
+  }
+
+  /**
+   * Every Ad in the Store, across every Campaign — what the performance report
+   * needs to name the lines of its split.
+   *
+   * Archived included, and deliberately: an archived creative that earned money
+   * in the period, or that money was spent against, must still appear on the
+   * report with its name on it. Which of them is shown is the report's
+   * decision, made on the same three grounds it already applies to Campaigns.
+   */
+  async findManyForStore(orgId: string, storeId: string): Promise<Ad[]> {
+    return this.db
+      .select()
+      .from(ads)
+      .where(and(eq(ads.organizationId, orgId), eq(ads.storeId, storeId)))
       .orderBy(asc(ads.createdAt));
   }
 
@@ -156,6 +174,47 @@ export class AdRepository {
       .values(data)
       .returning();
     return row;
+  }
+
+  /**
+   * Every Ad rule in the Store, as the second-pass matcher reads them.
+   *
+   * The mirror image of `CampaignRepository.findMatchableRules`, which loads
+   * only the rules where `ad_id` is null: between them the two reads partition
+   * the rule table, and neither matcher can ever be handed the other's rules.
+   * That is ADR-0004's guarantee said in SQL, one layer below where
+   * `createAdMatcher` says it again in TypeScript.
+   *
+   * `campaignId` comes back on every row because it is the key the matcher
+   * groups candidates under — an Ad is only ever considered among the Ads of
+   * the Campaign that already won.
+   */
+  async findMatchableAdRules(
+    orgId: string,
+    storeId: string,
+  ): Promise<MatchableAdRule[]> {
+    const rows = await this.db
+      .select({
+        adId: campaignMatchingRules.adId,
+        campaignId: campaignMatchingRules.campaignId,
+        field: campaignMatchingRules.field,
+        operator: campaignMatchingRules.operator,
+        value: campaignMatchingRules.value,
+        adCreatedAt: ads.createdAt,
+      })
+      .from(campaignMatchingRules)
+      .innerJoin(ads, eq(ads.id, campaignMatchingRules.adId))
+      .where(
+        and(
+          eq(campaignMatchingRules.organizationId, orgId),
+          eq(campaignMatchingRules.storeId, storeId),
+          isNotNull(campaignMatchingRules.adId),
+        ),
+      );
+
+    // The inner join already guarantees a non-null `ad_id`; the cast is what
+    // tells the type system so, since the column is nullable on the table.
+    return rows.map((row) => ({ ...row, adId: row.adId as string }));
   }
 
   /** An Ad's own rules — the ones carrying its id, never its Campaign's. */

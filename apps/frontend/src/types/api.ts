@@ -610,17 +610,21 @@ export type CampaignMargin = {
   costCoveragePct: number;
 };
 
-export type CampaignRevenueLine = RevenueBucket &
+/**
+ * The figures every line of the performance report carries, at whatever grain
+ * it is read — a campaign, one of its ads, or the unassigned residue between
+ * them.
+ *
+ * One shape rather than three, because the backend computes them one way from
+ * one read. A split that did not add up to the line above it would leave a
+ * merchant unable to tell which half to believe.
+ */
+export type PerformanceFigures = RevenueBucket &
   CampaignGoods &
   CampaignMargin & {
-    campaignId: string;
-    name: string;
-    tag: string;
-    platform: CampaignPlatform;
-    status: CampaignStatus;
     /**
      * Spend recorded for the period, in the smallest currency unit. Zero for a
-     * campaign nobody recorded a cost against.
+     * line nobody recorded a cost against.
      */
     spend: number;
     /**
@@ -632,6 +636,51 @@ export type CampaignRevenueLine = RevenueBucket &
      */
     roas: number | null;
   };
+
+/**
+ * One creative's return, beneath the campaign that funds it.
+ *
+ * Its revenue is the orders whose `utm_content` resolved onto this ad, its
+ * spend the figures recorded against this ad alone. Both are real subdivisions
+ * of the campaign line above, never estimates of it.
+ */
+export type AdRevenueLine = PerformanceFigures & {
+  adId: string;
+  name: string;
+  /** The ad's canonical `utm_content` value. Unique within its campaign. */
+  tag: string;
+  status: AdStatus;
+};
+
+export type CampaignRevenueLine = PerformanceFigures & {
+  campaignId: string;
+  name: string;
+  tag: string;
+  platform: CampaignPlatform;
+  status: CampaignStatus;
+  /**
+   * How this campaign's period divides across its creatives.
+   *
+   * Empty for a campaign nobody has split, which is not an incomplete report:
+   * an ad is a subdivision a merchant opts into, and a campaign without one
+   * reports exactly as it did before ads existed.
+   *
+   * Every figure here plus the one on `unassigned` adds back up to this line.
+   */
+  ads: AdRevenueLine[];
+  /**
+   * The part of the campaign no ad of its explains: revenue that matched the
+   * campaign and none of its ads, plus spend recorded against the campaign
+   * without naming one.
+   *
+   * **Its own visible bucket**, on the same principle that keeps unattributed
+   * visible at the store level — spreading it across whichever creatives happen
+   * to exist would make every one of them look better than it is. It is a
+   * different outcome from unattributed, which has no campaign at all, and the
+   * two are never shown as one thing.
+   */
+  unassigned: PerformanceFigures;
+};
 
 /** Every campaign line summed, and the figures taken of the sums. */
 export type BlendedPerformance = CampaignGoods &
