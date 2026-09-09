@@ -4,7 +4,11 @@ import { CornerDownRightIcon, MegaphoneIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { formatMoney } from "~/lib/money";
 import { Card } from "~/components/ui/card";
-import type { AttributedRevenueReport, PerformanceFigures } from "~/types/api";
+import type {
+  AttributedRevenueReport,
+  MeasuredTraffic,
+  PerformanceFigures,
+} from "~/types/api";
 import type { CampaignGroup } from "../performance-rows";
 import {
   coverageNote,
@@ -15,8 +19,12 @@ import {
 } from "../utils";
 import { CampaignStatusBadge } from "./campaign-status-badge";
 
+// The measured pair sits at the far right, past every order-derived figure and
+// behind a rule. Column order is the table's version of the demotion the cards
+// make with type weight: a merchant scanning left to right reads the money
+// first and crosses a boundary to reach the estimates.
 const COLUMNS =
-  "grid-cols-[minmax(200px,1fr)_110px_104px_76px_112px_124px_88px_150px]";
+  "grid-cols-[minmax(200px,1fr)_110px_104px_76px_112px_124px_88px_150px_84px_96px]";
 
 /**
  * Contribution margin with the coverage that qualifies it directly beneath.
@@ -63,6 +71,43 @@ function MarginCell({ line }: { line: PerformanceFigures }) {
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * The two measured columns — the only ones on this table not derived from
+ * orders.
+ *
+ * Muted and lighter than every figure to their left, and separated from them by
+ * a rule, because they come from a stream an ad blocker can suppress and the
+ * retention purge deletes. A dash is absence and never a zero: "we saw nobody"
+ * and "nobody came" are different claims, and at forty rows the difference is
+ * what stops a merchant retiring a creative the tracker simply never saw.
+ *
+ * `null` for a grain that has no measured pair at all — the unassigned residue,
+ * which visitors do not subdivide into.
+ */
+function MeasuredCells({ measured }: { measured: MeasuredTraffic | null }) {
+  if (measured === null) {
+    return (
+      <>
+        <span className="border-l border-dashed pl-3 text-right text-sm text-muted-foreground/60">
+          —
+        </span>
+        <span className="text-right text-sm text-muted-foreground/60">—</span>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <span className="border-l border-dashed pl-3 text-right text-xs tabular-nums text-muted-foreground">
+        {measured.visitors.toLocaleString()}
+      </span>
+      <span className="text-right text-xs tabular-nums text-muted-foreground">
+        {measured.conversionRatePct.toFixed(1)}%
+      </span>
+    </>
   );
 }
 
@@ -140,7 +185,7 @@ export function PerformanceTable({
   return (
     <Card className="overflow-hidden gap-0 py-0">
       <div className="overflow-x-auto">
-        <div className="min-w-260">
+        <div className="min-w-308">
           <div
             className={cn(
               "grid items-center border-b bg-muted/20 px-5 py-2.5 text-xs font-medium text-muted-foreground",
@@ -155,6 +200,20 @@ export function PerformanceTable({
             <span className="text-right">Revenue</span>
             <span className="text-right">ROAS</span>
             <span className="text-right">Contribution margin</span>
+            {/* Labelled as measured where the columns start, so the two are
+                never read as more of the same. */}
+            <span className="border-l border-dashed pl-3 text-right font-normal text-muted-foreground/70">
+              Visitors
+              <span className="block text-[10px] uppercase tracking-wide">
+                measured
+              </span>
+            </span>
+            <span className="text-right font-normal text-muted-foreground/70">
+              Conv. rate
+              <span className="block text-[10px] uppercase tracking-wide">
+                measured
+              </span>
+            </span>
           </div>
 
           {groups.length === 0 ? (
@@ -210,15 +269,19 @@ export function PerformanceTable({
                     </div>
 
                     {line ? (
-                      <FigureCells
-                        line={line}
-                        lookbackDays={lookbackDays}
-                        burning={burning}
-                      />
+                      <>
+                        <FigureCells
+                          line={line}
+                          lookbackDays={lookbackDays}
+                          burning={burning}
+                        />
+                        <MeasuredCells measured={line.measured} />
+                      </>
                     ) : (
                       // No figures rather than zeroes, for the reason the card
-                      // gives: the report made no claim about this period.
-                      <span className="col-span-5 text-right text-xs text-muted-foreground">
+                      // gives: the report made no claim about this period —
+                      // measured or otherwise.
+                      <span className="col-span-7 text-right text-xs text-muted-foreground">
                         No revenue or spend in this period
                       </span>
                     )}
@@ -296,6 +359,7 @@ export function PerformanceTable({
                           lookbackDays={lookbackDays}
                           burning={adBurning}
                         />
+                        <MeasuredCells measured={ad.measured} />
                       </div>
                     );
                   })}
@@ -322,6 +386,10 @@ export function PerformanceTable({
                         line={line.unassigned}
                         lookbackDays={lookbackDays}
                       />
+                      {/* Visitors do not subdivide the way revenue does — one
+                          person can click two creatives — so there is no
+                          residue for them to be the answer to. */}
+                      <MeasuredCells measured={null} />
                     </div>
                   )}
                 </div>
@@ -358,6 +426,9 @@ export function PerformanceTable({
             {/* No spend went into this bucket, so there is no contribution to
                 attribute to one. Not a zero — a zero would be a claim. */}
             <span className="text-right text-sm text-muted-foreground">—</span>
+            {/* Nor a measured audience: this bucket is defined by the absence
+                of the tags the traffic join reads. */}
+            <MeasuredCells measured={null} />
           </div>
         </div>
       </div>

@@ -144,6 +144,10 @@ interface CaWindow extends Window {
       utmSource: qs.get("utm_source") || undefined,
       utmMedium: qs.get("utm_medium") || undefined,
       utmCampaign: qs.get("utm_campaign") || undefined,
+      // Which creative was clicked. Captured with the rest of the tuple and
+      // held for the session, so every event of a visit reports against the
+      // same Ad rather than only the landing hit.
+      utmContent: qs.get("utm_content") || undefined,
     };
   })();
 
@@ -219,6 +223,7 @@ interface CaWindow extends Window {
         utmSource: clip(attribution.utmSource, 255),
         utmMedium: clip(attribution.utmMedium, 255),
         utmCampaign: clip(attribution.utmCampaign, 255),
+        utmContent: clip(attribution.utmContent, 255),
       };
       if (o.eventName) ev.eventName = clip(o.eventName, 128);
       // productId/variantId must be UUIDs (server validates) — otherwise carry

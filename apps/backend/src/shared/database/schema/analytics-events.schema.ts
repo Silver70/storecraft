@@ -53,6 +53,13 @@ export const analyticsEvents = pgTable(
     utmSource: varchar('utm_source', { length: 255 }),
     utmMedium: varchar('utm_medium', { length: 255 }),
     utmCampaign: varchar('utm_campaign', { length: 255 }),
+    // Which creative the visitor clicked. The Ad Tag half of the pair the
+    // per-Ad traffic join reads (`utm_campaign` names the Campaign, this names
+    // the Ad within it) — the same two-pass resolution ADR-0004 defines for
+    // Orders, run over the event stream instead. Nullable and never backfilled:
+    // an event that arrived before this column existed carries no Ad Tag and is
+    // absent from the per-Ad figures rather than counted against some Ad.
+    utmContent: varchar('utm_content', { length: 255 }),
     // Server-derived from the request User-Agent at ingest (Phase 3.2). `bot`
     // is a device_type value so bot traffic can be filtered out of human counts.
     deviceType: varchar('device_type', { length: 16 }),

@@ -17,6 +17,7 @@ import { formatFlight, formatPlatform, isBurning } from "../utils";
 import { AdTaggedLink } from "./ad-tagged-link";
 import { CampaignStatusBadge } from "./campaign-status-badge";
 import { FigureList } from "./performance-figures";
+import { MeasuredPair } from "./measured-traffic";
 
 /**
  * The picture a merchant recognises an ad by, since nobody recognises a slug.
@@ -140,7 +141,18 @@ function CampaignCard({
 
       <div className="border-t bg-muted/10 px-5 py-4">
         {line ? (
-          <FigureList line={line} lookbackDays={lookbackDays} layout="row" />
+          <>
+            <FigureList line={line} lookbackDays={lookbackDays} layout="row" />
+            {/* Beneath the five, never among them: this pair comes from the
+                event stream and the rest from orders, and the campaign's own
+                figure is not the sum of its ads' — one person can click two
+                creatives. */}
+            <MeasuredPair
+              measured={line.measured}
+              layout="row"
+              className="mt-4"
+            />
+          </>
         ) : (
           // Not a row of zeroes. The report leaves an archived campaign with
           // nothing in the window off the page entirely; showing zeroes here
@@ -213,8 +225,13 @@ function AdCard({
         </div>
       </div>
 
-      <div className="border-t px-4 py-3">
+      <div className="space-y-2.5 border-t px-4 py-3">
         <FigureList line={ad} lookbackDays={lookbackDays} />
+        {/* The figure that separates a creative nobody clicked from one that
+            was clicked and did not convert — which is the only reason this
+            pair is on the card, and why it is not allowed to look as solid as
+            the money above it. */}
+        <MeasuredPair measured={ad.measured} />
       </div>
 
       <div className="flex items-center justify-between border-t bg-muted/10 px-2 py-1.5">

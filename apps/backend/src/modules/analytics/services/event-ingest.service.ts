@@ -50,6 +50,7 @@ export class EventIngestService {
       utmSource: e.utmSource ?? null,
       utmMedium: e.utmMedium ?? null,
       utmCampaign: e.utmCampaign ?? null,
+      utmContent: e.utmContent ?? null,
       deviceType: ua.deviceType,
       browser: ua.browser,
       os: ua.os,

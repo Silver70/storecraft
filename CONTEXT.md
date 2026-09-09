@@ -154,6 +154,17 @@ Ad means the cost is known and its split is not — never that it belongs to no
 Ad.
 _Avoid_: Cost, budget, ad cost
 
+**Measured Figure**:
+A number derived from the tracked event stream rather than from Orders —
+Visitors and Conversion Rate. A weaker class of fact than everything reported
+beside it: the stream is ad-blockable, absent entirely for a Store that has not
+embedded a tracker, and eventually deleted by the retention purge, while an
+Order is money that changed hands and is kept. Always presented demoted and
+labelled, never in the same typography as an order-derived figure, and always
+absent rather than zero when the stream holds nothing — "we saw nobody" is not
+"nobody came".
+_Avoid_: Traffic metric, analytics number, estimate, soft metric
+
 **Reported Figure**:
 A number an ad platform states about a Campaign or an Ad — its own spend, ROAS
 or conversions, on its own attribution window and in its ad account's currency.
@@ -180,6 +191,15 @@ _Avoid_: Orphan, unmatched, imported ad, pending ad
 Attributed revenue ÷ Spend for a Campaign or one of its Ads over a period. Compared against ad
 platforms, so it moves with the Lookback Window.
 _Avoid_: Return, ad ROI
+
+**Conversion Rate**:
+Purchases over Visitors for a Campaign or one of its Ads over a period. A
+Measured Figure, and the most fragile one: the numerator is every Order the line
+earned and the denominator only the Visitors the tracker saw, so blocked traffic
+shrinks the bottom alone and the rate reads high. A period ratio and not a
+cohort one — this period's purchases over this period's Visitors, never the fate
+of those Visitors.
+_Avoid_: CVR, conversion, close rate, checkout rate
 
 **Contribution Margin**:
 Attributed revenue − cost of goods − discounts − Spend, for a Campaign or one

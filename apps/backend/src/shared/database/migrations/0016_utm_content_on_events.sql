@@ -1,0 +1,19 @@
+-- The event stream can now say which creative a visitor clicked.
+--
+-- `utm_campaign` has been on this table since Phase 2 and names the Campaign;
+-- this names the Ad within it, which is the pair the per-Ad visitor join reads.
+-- Without it a click can only ever be resolved to a Campaign, so every Ad would
+-- report the Campaign's whole audience as its own.
+--
+-- Nullable and deliberately not backfilled. There is nothing to backfill from —
+-- an event ingested before this column existed did not carry the tag — and
+-- inventing one would credit a creative with visitors nobody can show it had.
+-- Those events keep counting toward their Campaign and are simply absent from
+-- the split beneath it, which is the same thing an untagged link produces.
+--
+-- No new index. The traffic read is scoped to one Organization, Store and
+-- period exactly as every other event query is, and is served by
+-- `analytics_events_org_store_time_idx`; this table is append-heavy and a sixth
+-- index on it would be paid on every beacon to save nothing on a read that
+-- already has one.
+ALTER TABLE "analytics_events" ADD COLUMN "utm_content" varchar(255);

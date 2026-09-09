@@ -88,6 +88,17 @@ export class TrackEventDto {
   utmCampaign?: string;
 
   /**
+   * Which creative was clicked — the Ad Tag half of the pair per-Ad traffic is
+   * joined on. Optional like every other tag: a storefront that sends nothing
+   * here reports against its Campaign and against no Ad, which is what an
+   * untagged link means.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  utmContent?: string;
+
+  /**
    * Arbitrary caller attributes + click/form detail (element tag, text, href,
    * form id, field names — never field values). Stored verbatim as jsonb.
    */

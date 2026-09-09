@@ -24,3 +24,23 @@ export function pct(numerator: number, denominator: number): number {
   if (denominator === 0) return 0;
   return Math.round((numerator / denominator) * 100);
 }
+
+/**
+ * The same percentage, to one decimal place — for the rates a whole number
+ * would destroy rather than merely round.
+ *
+ * A sibling of `pct` and not a replacement for it. Every share of *money*
+ * belongs above, where a whole number is honest and a decimal would imply a
+ * precision the rounding does not have. This one exists for conversion rates,
+ * which live between roughly 0.5% and 4%: rounded to whole numbers most of that
+ * range collapses onto 1% and 2%, and a genuine 0.4% becomes 0% — a figure that
+ * reads as "nobody converted" when four in a thousand did.
+ *
+ * Display-only and zero-denominator-safe on exactly the same terms as `pct`.
+ * Callers who must tell a real zero from an absent denominator decide that
+ * themselves, above this call.
+ */
+export function pctOneDecimal(numerator: number, denominator: number): number {
+  if (denominator === 0) return 0;
+  return Math.round((numerator / denominator) * 1000) / 10;
+}

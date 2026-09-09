@@ -12,6 +12,7 @@ import { StoreService } from '../../tenant/services/store.service';
 import { AdRepository } from '../repositories/ad.repository';
 import { CampaignRepository } from '../repositories/campaign.repository';
 import { CampaignSpendRepository } from '../repositories/campaign-spend.repository';
+import { TrafficRepository } from '../repositories/traffic.repository';
 import {
   AttributionRepository,
   type AttributionTouch,
@@ -29,6 +30,11 @@ import {
   type RevenueBucket,
 } from '../utils/attributed-revenue.util';
 import { spendDayRange } from '../utils/spend-day.util';
+import {
+  measuredTrafficFor,
+  tallyVisitors,
+  type MeasuredTraffic,
+} from '../utils/traffic.util';
 import {
   blendPerformance,
   roasFor,
@@ -109,6 +115,19 @@ export interface AdRevenueLine extends PerformanceFigures {
    */
   startsAt: string | null;
   endsAt: string | null;
+  /**
+   * Who this creative was *seen* by, from the event stream — the one figure on
+   * this line that Orders cannot tell us, and the one a merchant needs to
+   * separate a creative nobody clicked from one that was clicked and did not
+   * convert.
+   *
+   * It is nested rather than flattened alongside the rest **so that the UI
+   * cannot render it identically by accident**. Everything else on this line is
+   * derived from money that changed hands; this comes from a script that an ad
+   * blocker can suppress and the retention purge eventually deletes. Null when
+   * the stream holds nothing for this Ad — absent, never zero.
+   */
+  measured: MeasuredTraffic | null;
 }
 
 /**
@@ -144,6 +163,18 @@ export interface CampaignRevenueLine extends PerformanceFigures {
    */
   ads: AdRevenueLine[];
   unassigned: UnassignedRevenueLine;
+  /**
+   * The same measured pair one grain up: distinct visitors the stream saw on
+   * this Campaign's tag, whichever creative they arrived through.
+   *
+   * **Not the sum of its Ads' visitors, and not meant to be.** A visitor who
+   * clicked two of them is one person here and a visitor of both there.
+   * Revenue subdivides because an Order belongs to exactly one Ad; an audience
+   * overlaps because a person does not — which is also why `unassigned` carries
+   * no measured pair. A residue invites a subtraction, and there is none that
+   * holds.
+   */
+  measured: MeasuredTraffic | null;
 }
 
 export interface AttributedRevenueReport {
@@ -284,6 +315,7 @@ function adLinesFor(
   ads: readonly Ad[],
   tally: AdTally,
   spendByAd: ReadonlyMap<string, number>,
+  visitorsByAd: ReadonlyMap<string, number>,
 ): AdRevenueLine[] {
   return ads
     .map((ad) => ({
@@ -309,6 +341,11 @@ function adLinesFor(
       startsAt: ad.startsAt?.toISOString() ?? null,
       endsAt: ad.endsAt?.toISOString() ?? null,
       ...figuresFor(bucket, goods, spend),
+      // The measured pair, kept in its own object beside the order-derived
+      // figures rather than spread among them. `bucket.orders` is the
+      // numerator: the purchases this creative actually earned, counted in
+      // full, over only the visitors the tracker managed to see.
+      measured: measuredTrafficFor(visitorsByAd.get(ad.id), bucket.orders),
     }))
     .sort(
       (a, b) =>
@@ -359,6 +396,7 @@ export class AttributedRevenueService {
     private readonly ads: AdRepository,
     private readonly attribution: AttributionRepository,
     private readonly spend: CampaignSpendRepository,
+    private readonly traffic: TrafficRepository,
     private readonly stores: StoreService,
     config: ConfigService,
   ) {
@@ -385,36 +423,61 @@ export class AttributedRevenueService {
     if (!store) throw new NotFoundException('Store not found');
     const { from, to } = spendDayRange(start, end, store.timezone);
 
-    // Tenancy is enforced on all six reads. Both matchers are pure and will
+    // Tenancy is enforced on all seven reads. Both matchers are pure and will
     // faithfully match whatever rules they are handed, so a Store's rules never
     // meeting another Store's orders is a property of this method.
-    const [campaignRows, rules, adRows, adRules, orderRows, spendTotals] =
-      await Promise.all([
-        this.campaigns.findMany(orgId, storeId),
-        this.campaigns.findMatchableRules(orgId, storeId),
-        this.ads.findManyForStore(orgId, storeId),
-        this.ads.findMatchableAdRules(orgId, storeId),
-        this.attribution.findAttributableOrders(
-          orgId,
-          storeId,
-          touch,
-          start,
-          end,
-        ),
-        this.spend.sumByGrain(orgId, storeId, from, to),
-      ]);
+    const [
+      campaignRows,
+      rules,
+      adRows,
+      adRules,
+      orderRows,
+      spendTotals,
+      visitorRows,
+    ] = await Promise.all([
+      this.campaigns.findMany(orgId, storeId),
+      this.campaigns.findMatchableRules(orgId, storeId),
+      this.ads.findManyForStore(orgId, storeId),
+      this.ads.findMatchableAdRules(orgId, storeId),
+      this.attribution.findAttributableOrders(
+        orgId,
+        storeId,
+        touch,
+        start,
+        end,
+      ),
+      this.spend.sumByGrain(orgId, storeId, from, to),
+      // The measured half of the report, over the same `[start, end)` the
+      // Orders are read over — one period governs the page, so a visitor
+      // figure and the purchases beside it are never from two windows. It is
+      // read last and used least: nothing below depends on it, so a Store with
+      // no tracker embedded gets exactly the report it got before.
+      this.traffic.findTaggedVisitors(orgId, storeId, start, end),
+    ]);
 
     // Two matchers, two passes, one tally (ADR-0004). The Campaign matcher runs
     // exactly as it did before Ads existed and decides the Campaign alone; the
     // Ad matcher is then asked for a creative *within* that Campaign, and can
     // reach nothing outside it. Both resolve at read time, so an Ad created
     // today claims the Orders its links already produced.
+    const campaignMatcher = createCampaignMatcher(rules);
+    const adMatcher = createAdMatcher(adRules);
+
     const tally = tallyAttributedRevenue(
       orderRows,
-      createCampaignMatcher(rules),
-      createAdMatcher(adRules),
+      campaignMatcher,
+      adMatcher,
       this.lookbackDays,
     );
+
+    // The event stream through the *same* two matchers over the *same* rules.
+    // A second resolution built for traffic would be free to disagree with the
+    // one the money went through, and a creative whose revenue and whose
+    // visitors were resolved by different rules is worse than one with no
+    // visitors at all. The Lookback Window is not applied here and cannot be:
+    // it measures backwards from an Order, and a visit that never became one
+    // has nothing to measure from.
+    const visitors = tallyVisitors(visitorRows, campaignMatcher, adMatcher);
 
     // The Ads themselves, grouped so each Campaign line can name the creatives
     // its split is made of. Distinct from `tally.adsByCampaign`, which holds
@@ -455,10 +518,15 @@ export class AttributedRevenueService {
         // page has to name which is which rather than leave a merchant to
         // notice that ROAS and margin do not reconcile.
         ...figuresFor(bucket, goods, campaignSpend),
+        measured: measuredTrafficFor(
+          visitors.byCampaign.get(campaign.id),
+          bucket.orders,
+        ),
         ads: adLinesFor(
           adRowsByCampaign.get(campaign.id) ?? [],
           ads,
           spendTotals.byAd,
+          visitors.byAd,
         ),
         // The residue at both grains, from the same tally and the same spend
         // read: revenue this Campaign earned that no Ad of its claimed, and

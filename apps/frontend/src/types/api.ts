@@ -644,6 +644,38 @@ export type PerformanceFigures = RevenueBucket &
   };
 
 /**
+ * The two figures on this report that do not come from orders.
+ *
+ * Everything else a line carries — revenue, purchases, spend, ROAS, margin — is
+ * derived from money that changed hands. These come from the tracked event
+ * stream: a script an ad blocker can suppress, that an integrator may never
+ * have embedded, and that the retention purge deletes on a schedule. They are
+ * **not the same class of fact** and must never be drawn as though they were.
+ *
+ * The backend nests them in their own object precisely so this cannot happen by
+ * accident: there is no way to spread them into the list of order-derived
+ * figures without noticing. Render them demoted and labelled — the same
+ * convention already used for cost coverage beside contribution margin and the
+ * lookback window beside ROAS.
+ *
+ * Null means the stream held nothing for this line: **absent, not zero**. A
+ * zero would say nobody came, when the truth is that nobody was seen.
+ */
+export type MeasuredTraffic = {
+  /** Distinct visitors the stream saw on this line's tags. Never zero. */
+  visitors: number;
+  /**
+   * Purchases over visitors, as a percentage to one decimal.
+   *
+   * The most fragile figure on the report: the numerator is every order the
+   * line earned and the denominator only the visitors the tracker saw, so
+   * blocked traffic shrinks the bottom alone and inflates the result. It is
+   * also a period ratio and not a cohort one.
+   */
+  conversionRatePct: number;
+};
+
+/**
  * One creative's return, beneath the campaign that funds it.
  *
  * Its revenue is the orders whose `utm_content` resolved onto this ad, its
@@ -665,6 +697,8 @@ export type AdRevenueLine = PerformanceFigures & {
   /** When the creative ran. ISO timestamps; either may be set without the other. */
   startsAt: string | null;
   endsAt: string | null;
+  /** Who clicked it, as opposed to who bought. Measured — see the type. */
+  measured: MeasuredTraffic | null;
 };
 
 export type CampaignRevenueLine = PerformanceFigures & {
@@ -695,6 +729,16 @@ export type CampaignRevenueLine = PerformanceFigures & {
    * two are never shown as one thing.
    */
   unassigned: PerformanceFigures;
+  /**
+   * Who this campaign was seen by, whichever creative they arrived through.
+   *
+   * **Not the sum of its ads', and not meant to be.** A visitor who clicked two
+   * creatives is one person here and a visitor of both there. Revenue
+   * subdivides because an order belongs to exactly one ad; an audience overlaps
+   * because a person does not — which is also why `unassigned` has no measured
+   * pair at all. A residue invites a subtraction, and there is none that holds.
+   */
+  measured: MeasuredTraffic | null;
 };
 
 /** Every campaign line summed, and the figures taken of the sums. */

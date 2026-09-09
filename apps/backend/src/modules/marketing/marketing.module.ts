@@ -11,6 +11,7 @@ import { AdRepository } from './repositories/ad.repository';
 import { AttributionRepository } from './repositories/attribution.repository';
 import { CampaignRepository } from './repositories/campaign.repository';
 import { CampaignSpendRepository } from './repositories/campaign-spend.repository';
+import { TrafficRepository } from './repositories/traffic.repository';
 import { AdService } from './services/ad.service';
 import { AttributedRevenueService } from './services/attributed-revenue.service';
 import { CampaignService } from './services/campaign.service';
@@ -44,6 +45,7 @@ import { RulePreviewService } from './services/rule-preview.service';
     AdRepository,
     CampaignSpendRepository,
     AttributionRepository,
+    TrafficRepository,
     CampaignService,
     AdService,
     CampaignSpendService,

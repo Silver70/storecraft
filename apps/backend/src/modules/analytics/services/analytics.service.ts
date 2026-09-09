@@ -2,7 +2,7 @@ import { Injectable, Inject } from '@nestjs/common';
 import { sql, type SQL } from 'drizzle-orm';
 import { DRIZZLE_CLIENT } from '../../../shared/database/database.module';
 import type { DrizzleClient } from '../../../shared/database/database.module';
-import { pct } from '../../../shared/utils/percent.util';
+import { pct, pctOneDecimal } from '../../../shared/utils/percent.util';
 
 /**
  * Time window for analytics aggregation. Owned by this module so analytics
@@ -155,10 +155,7 @@ export class AnalyticsService {
     ]);
 
     const uniqueVisitors = funnel.visitors;
-    const trueConversionRatePct =
-      uniqueVisitors > 0
-        ? Math.round((orders / uniqueVisitors) * 1000) / 10
-        : 0;
+    const trueConversionRatePct = pctOneDecimal(orders, uniqueVisitors);
 
     return {
       period,
