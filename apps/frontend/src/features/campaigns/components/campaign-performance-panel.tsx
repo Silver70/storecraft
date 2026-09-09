@@ -18,24 +18,12 @@ import type {
   Period,
 } from "~/types/api";
 import { attributedRevenueQueryOptions } from "../queries";
+import { formatDay, formatRoas } from "../utils";
 import { AdBreakdown } from "./ad-breakdown";
 import {
   AttributionTouchTabs,
   attributionTouchHint,
 } from "./campaign-performance-controls";
-
-function formatRoas(roas: number | null): string {
-  return roas === null ? "—" : `${roas.toFixed(2)}×`;
-}
-
-/** A `YYYY-MM-DD` in the store's timezone, shown as a day rather than an instant. */
-function formatDay(day: string): string {
-  return new Date(`${day}T00:00:00Z`).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    timeZone: "UTC",
-  });
-}
 
 function Figure({
   label,

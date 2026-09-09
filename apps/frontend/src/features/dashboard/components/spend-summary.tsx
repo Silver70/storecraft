@@ -94,7 +94,7 @@ function ReportLink() {
       className="-mr-2 -mt-1 h-7 shrink-0 gap-1 text-xs text-muted-foreground"
       asChild
     >
-      <Link to="/admin/campaigns/revenue">
+      <Link to="/admin/campaigns">
         Full report
         <ArrowRightIcon className="h-3 w-3" />
       </Link>

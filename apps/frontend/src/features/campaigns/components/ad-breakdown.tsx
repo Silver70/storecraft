@@ -7,16 +7,7 @@ import type {
   CampaignRevenueLine,
   PerformanceFigures,
 } from "~/types/api";
-
-/**
- * ROAS as a ratio, which is what it is — `4.25×` means $4.25 back for every
- * dollar spent, so it never goes through the money formatter. A null is an em
- * dash and not a zero: nothing was spent, so there is no return on spend to
- * report, and `0.00×` would read as a creative that failed.
- */
-function formatRoas(roas: number | null): string {
-  return roas === null ? "—" : `${roas.toFixed(2)}×`;
-}
+import { formatRoas } from "../utils";
 
 /**
  * A margin, or the reason there is not one.

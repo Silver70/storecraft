@@ -30,6 +30,7 @@ import {
 } from '../src/shared/database/database.module';
 import { productVariants } from '../src/shared/database/schema';
 import { createTestApp } from './helpers/test-app';
+import type { FakeStorageService } from './helpers/fake-storage.service';
 import {
   createAdminUser,
   destroyAdminUsers,
@@ -158,11 +159,12 @@ interface Touch {
 
 describe('Revenue split by ad (e2e)', () => {
   let app: INestApplication<App>;
+  let storage: FakeStorageService;
   let fixture: StorefrontFixture;
   let admin: AdminUserFixture;
 
   beforeAll(async () => {
-    ({ app } = await createTestApp());
+    ({ app, storage } = await createTestApp());
   });
 
   afterAll(async () => {
@@ -743,5 +745,61 @@ describe('Revenue split by ad (e2e)', () => {
       revenue: ORDER_TOTAL,
     });
     expect(adLineFor(campaign, quiet.id)).toBeUndefined();
+  });
+
+  // ─── What a card is read by ─────────────────────────────────────────────────
+
+  /** The smallest valid PNG, so the upload has real bytes to validate. */
+  const PNG_PIXEL = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+
+  it('carries the creative and the flight dates beside the figures', async () => {
+    // A merchant recognises an ad by its picture, not by its slug, so the
+    // report has to answer with the identity as well as the money. It is one
+    // read rather than two: a card assembled from a second request for the ads
+    // would be free to disagree with the figures about which creatives exist,
+    // and nothing on screen could say which half to believe.
+    const summer = await createCampaign('Summer Sale');
+    const res = await admin.client
+      .post(`/campaigns/${summer.id}/ads`, {
+        name: 'Beach video',
+        startsAt: '2026-09-01',
+        endsAt: '2026-09-14',
+      })
+      .expect(201);
+    const beach = res.body as { id: string; tag: string };
+    const plain = await createAd(summer.id, 'Plain still');
+
+    await admin.client
+      .attach(`/campaigns/${summer.id}/ads/${beach.id}/creative`, 'file', PNG_PIXEL, {
+        filename: 'beach.png',
+        contentType: 'image/png',
+      })
+      .expect(201);
+
+    await placeOrder({
+      lastTouch: { utmCampaign: summer.tag, utmContent: beach.tag },
+    });
+
+    const campaign = lineFor(await readReport(), summer.id);
+    const beachLine = adLineFor(campaign, beach.id)!;
+
+    // The URL of the object the upload actually stored — not a shape the test
+    // reproduces, which would pass against a service that stored nothing.
+    const stored = storage.stored.at(-1)!;
+    expect(beachLine.creativeUrl).toBe(storage.getPublicUrl(stored.key));
+    expect(beachLine.startsAt).toMatch(/^2026-09-01/);
+    expect(beachLine.endsAt).toMatch(/^2026-09-14/);
+    expect(beachLine.revenue).toBe(ORDER_TOTAL);
+
+    // The majority state, and a designed one: an ad on a campaign that no sync
+    // will ever supply an image for reports a null, never a placeholder URL the
+    // admin would have to recognise as meaning "none".
+    const plainLine = adLineFor(campaign, plain.id)!;
+    expect(plainLine.creativeUrl).toBeNull();
+    expect(plainLine.startsAt).toBeNull();
+    expect(plainLine.endsAt).toBeNull();
   });
 });

@@ -656,6 +656,15 @@ export type AdRevenueLine = PerformanceFigures & {
   /** The ad's canonical `utm_content` value. Unique within its campaign. */
   tag: string;
   status: AdStatus;
+  /**
+   * The creative, so a card can show the picture a merchant recognises the ad
+   * by. Null is the majority state and a designed one — an ad under an email,
+   * SMS, affiliate or influencer campaign has no creative and never will.
+   */
+  creativeUrl: string | null;
+  /** When the creative ran. ISO timestamps; either may be set without the other. */
+  startsAt: string | null;
+  endsAt: string | null;
 };
 
 export type CampaignRevenueLine = PerformanceFigures & {

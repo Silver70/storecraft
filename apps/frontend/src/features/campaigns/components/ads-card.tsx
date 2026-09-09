@@ -16,6 +16,7 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import type { Ad } from "~/types/api";
 import { campaignAdsQueryOptions } from "../queries";
+import { formatFlight } from "../utils";
 import { AdCreative } from "./ad-creative";
 import { CopyButton } from "./copy-button";
 import {
@@ -224,15 +225,6 @@ function toDateInput(value: string | null): string {
   return value ? value.slice(0, 10) : "";
 }
 
-function formatFlight(ad: Ad): string | null {
-  const from = toDateInput(ad.startsAt);
-  const to = toDateInput(ad.endsAt);
-  if (from && to) return `${from} → ${to}`;
-  if (from) return `From ${from}`;
-  if (to) return `Until ${to}`;
-  return null;
-}
-
 function AdRow({
   campaignId,
   ad,
@@ -355,7 +347,7 @@ function AdRow({
     );
   }
 
-  const flight = formatFlight(ad);
+  const flight = formatFlight(ad.startsAt, ad.endsAt);
 
   return (
     <li className="space-y-1 px-3 py-2">

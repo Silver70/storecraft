@@ -93,6 +93,22 @@ export interface AdRevenueLine extends PerformanceFigures {
   /** The Ad's canonical `utm_content` value. Unique within its Campaign. */
   tag: string;
   status: AdStatus;
+  /**
+   * The creative, so the card grid can show the picture a merchant recognises
+   * the Ad by rather than making them decode its slug.
+   *
+   * Null is the majority state and a designed one, not a missing image: an Ad
+   * under a Campaign on `email`, `sms`, `affiliate`, `influencer` or `other`
+   * has no creative and never will.
+   */
+  creativeUrl: string | null;
+  /**
+   * When the creative ran, as ISO timestamps. Both optional and either may be
+   * set alone — they travel with the figures so a three-day test is not read
+   * naively against a month-long evergreen sitting next to it.
+   */
+  startsAt: string | null;
+  endsAt: string | null;
 }
 
 /**
@@ -285,6 +301,13 @@ function adLinesFor(
       name: ad.name,
       tag: ad.tag,
       status: ad.status,
+      // The identity a merchant reads the line by, carried alongside the
+      // figures rather than fetched a second time: the card grid shows the
+      // creative and the flight dates against the money, and a second read to
+      // assemble one card would be free to disagree about which Ads exist.
+      creativeUrl: ad.creativeUrl,
+      startsAt: ad.startsAt?.toISOString() ?? null,
+      endsAt: ad.endsAt?.toISOString() ?? null,
       ...figuresFor(bucket, goods, spend),
     }))
     .sort(
