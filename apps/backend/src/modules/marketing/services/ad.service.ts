@@ -4,8 +4,10 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import type { Ad, AdStatus } from '../../../shared/database/schema';
 import { isUniqueViolation } from '../../../shared/database/db-error.util';
+import { R2StorageService } from '../../../shared/storage/r2-storage.service';
 import { AdRepository } from '../repositories/ad.repository';
 import { CampaignRepository } from '../repositories/campaign.repository';
 import {
@@ -27,6 +29,17 @@ export interface UpdateAdInput {
   externalId?: string | null;
   startsAt?: string | Date | null;
   endsAt?: string | Date | null;
+}
+
+/**
+ * The parts of an uploaded file the creative actually needs. Named here rather
+ * than taking `Express.Multer.File` so the service owes nothing to the
+ * transport that carried the bytes in.
+ */
+export interface CreativeUpload {
+  buffer: Buffer;
+  mimetype: string;
+  originalname: string;
 }
 
 /** How many tags to try before giving up on finding a free one. */
@@ -76,6 +89,7 @@ export class AdService {
   constructor(
     private readonly ads: AdRepository,
     private readonly campaigns: CampaignRepository,
+    private readonly storage: R2StorageService,
   ) {}
 
   async list(
@@ -213,6 +227,61 @@ export class AdService {
     return updated;
   }
 
+  /**
+   * Stores a creative image and points the Ad at it.
+   *
+   * The Ad is resolved before a single byte is stored, which is the one place
+   * this deliberately differs from the product-media controller it otherwise
+   * copies: that one uploads first and looks the row up afterwards, so a request
+   * naming another tenant's id is refused only after its bytes are already in
+   * the bucket. Here the refusal comes first and nothing is written.
+   *
+   * Replacing simply writes a new URL. The object behind the old one is left
+   * where it is, as replacing product media leaves its predecessor: the column
+   * is the only thing anything reads, and a delete that failed would turn a
+   * successful upload into an error the merchant cannot act on.
+   */
+  async setCreative(
+    orgId: string,
+    storeId: string,
+    campaignId: string,
+    id: string,
+    file: CreativeUpload,
+  ): Promise<Ad> {
+    await this.get(orgId, storeId, campaignId, id);
+
+    const url = await this.storage.upload(
+      creativeKey(id, file.originalname),
+      file.buffer,
+      file.mimetype,
+    );
+
+    const updated = await this.ads.update(id, campaignId, orgId, storeId, {
+      creativeUrl: url,
+    });
+    if (!updated) throw new NotFoundException('Ad not found');
+    return updated;
+  }
+
+  /**
+   * Clears the creative, returning the Ad to the empty state it was born in —
+   * which is a designed state, not a failure, so there is nothing to repair
+   * afterwards.
+   */
+  async removeCreative(
+    orgId: string,
+    storeId: string,
+    campaignId: string,
+    id: string,
+  ): Promise<Ad> {
+    await this.get(orgId, storeId, campaignId, id);
+    const updated = await this.ads.update(id, campaignId, orgId, storeId, {
+      creativeUrl: null,
+    });
+    if (!updated) throw new NotFoundException('Ad not found');
+    return updated;
+  }
+
   async archive(
     orgId: string,
     storeId: string,
@@ -259,6 +328,17 @@ export class AdService {
     const campaign = await this.campaigns.findById(campaignId, orgId, storeId);
     if (!campaign) throw new NotFoundException('Campaign not found');
   }
+}
+
+/**
+ * Where one Ad's creatives live in the bucket. The random segment is what makes
+ * a replacement a new object rather than an overwrite of a URL a browser may
+ * still have cached, and the filename is stripped of anything that would open a
+ * second path segment.
+ */
+function creativeKey(adId: string, originalName: string): string {
+  const safeName = originalName.replace(/[^\w.-]+/g, '-').slice(-100);
+  return `ads/${adId}/${randomUUID()}-${safeName}`;
 }
 
 /**

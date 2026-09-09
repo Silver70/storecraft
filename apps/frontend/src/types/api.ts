@@ -391,6 +391,12 @@ export type Ad = {
    */
   tag: string;
   externalId: string | null;
+  /**
+   * The creative — the picture a merchant recognises the ad by. Null is a
+   * normal, designed state, not a missing image: most ads have none, and a
+   * campaign on email, SMS, affiliate or influencer never will.
+   */
+  creativeUrl: string | null;
   /** ISO timestamps. Both optional, and either may be set without the other. */
   startsAt: string | null;
   endsAt: string | null;

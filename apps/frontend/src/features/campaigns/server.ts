@@ -252,6 +252,60 @@ export const unarchiveCampaignAdServerFn = createServerFn({ method: "POST" })
     }
   });
 
+// ─── Creative ─────────────────────────────────────────────────────────────────
+
+// The bytes cross this boundary base64-encoded and are re-assembled into the
+// multipart body the admin API expects — the same shape product media already
+// uses, because a server function cannot forward a browser `File`.
+export const uploadAdCreativeServerFn = createServerFn({ method: "POST" })
+  .inputValidator(
+    z.object({
+      campaignId: z.string().min(1),
+      adId: z.string().min(1),
+      fileBase64: z.string().min(1),
+      mimeType: z.string().min(1),
+      fileName: z.string().min(1),
+    }),
+  )
+  .handler(async ({ data }): Promise<Ad> => {
+    const buffer = Buffer.from(data.fileBase64, "base64");
+    const formData = new FormData();
+    formData.append(
+      "file",
+      new Blob([buffer], { type: data.mimeType }),
+      data.fileName,
+    );
+
+    try {
+      const res = await apiClient.post<Ad>(
+        `/api/admin/campaigns/${data.campaignId}/ads/${data.adId}/creative`,
+        formData,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+// Removing a creative is not retiring an ad: it goes back to the state most ads
+// are in and keeps measuring exactly what it measured before.
+export const removeAdCreativeServerFn = createServerFn({ method: "POST" })
+  .inputValidator(
+    z.object({ campaignId: z.string().min(1), adId: z.string().min(1) }),
+  )
+  .handler(async ({ data }): Promise<Ad> => {
+    try {
+      const res = await apiClient.delete<Ad>(
+        `/api/admin/campaigns/${data.campaignId}/ads/${data.adId}/creative`,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
 // ─── Matching rules ───────────────────────────────────────────────────────────
 
 export const getCampaignRulesServerFn = createServerFn({ method: "GET" })

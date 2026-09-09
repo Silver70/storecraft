@@ -37,6 +37,22 @@ export class AdminClient {
     ).send(body ?? {});
   }
 
+  /**
+   * A multipart POST — what the dashboard sends when an admin picks a file.
+   * Separate from `post` because one supertest request cannot both `.send()` a
+   * JSON body and `.attach()` a file.
+   */
+  attach(
+    path: string,
+    field: string,
+    file: Buffer,
+    options: { filename: string; contentType: string },
+  ) {
+    return this.authed(
+      request(this.app.getHttpServer()).post(this.url(path)),
+    ).attach(field, file, options);
+  }
+
   delete(path: string) {
     return this.authed(
       request(this.app.getHttpServer()).delete(this.url(path)),

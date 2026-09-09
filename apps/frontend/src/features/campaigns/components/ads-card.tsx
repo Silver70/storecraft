@@ -16,6 +16,7 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import type { Ad } from "~/types/api";
 import { campaignAdsQueryOptions } from "../queries";
+import { AdCreative } from "./ad-creative";
 import { CopyButton } from "./copy-button";
 import {
   archiveCampaignAdServerFn,
@@ -105,6 +106,13 @@ export function AdsCard({ campaignId }: { campaignId: string }) {
           variants of the same push apart. Each one gets its own{" "}
           <code>utm_content</code> tag, unique within this campaign — every
           campaign is free to run a <code>video-a</code>.
+        </p>
+
+        {/* Optional, and said so plainly: most ads have none, and an email or
+            SMS campaign never will. */}
+        <p className="text-xs text-muted-foreground">
+          Upload a picture to an ad to recognise it at a glance instead of
+          reading its tag. An ad without one works exactly the same.
         </p>
 
         {isPending ? (
@@ -287,6 +295,12 @@ function AdRow({
     return (
       <li className="space-y-2 px-3 py-3">
         <div className="flex flex-wrap items-end gap-2">
+          <AdCreative
+            campaignId={campaignId}
+            ad={ad}
+            onChanged={onChanged}
+            onError={setError}
+          />
           <Input
             className="min-w-[180px] flex-1"
             value={name}
@@ -346,6 +360,13 @@ function AdRow({
   return (
     <li className="space-y-1 px-3 py-2">
       <div className="flex items-center gap-3 text-sm">
+        <AdCreative
+          campaignId={campaignId}
+          ad={ad}
+          onChanged={onChanged}
+          onError={setError}
+        />
+
         <span
           className={`min-w-0 truncate ${archived ? "text-muted-foreground" : ""}`}
         >

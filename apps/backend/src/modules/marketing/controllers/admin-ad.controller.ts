@@ -1,16 +1,25 @@
 import {
   Body,
   Controller,
+  Delete,
+  FileTypeValidator,
   Get,
+  MaxFileSizeValidator,
   Param,
+  ParseFilePipe,
   ParseUUIDPipe,
   Patch,
   Post,
   Query,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import {
   ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
   ApiOperation,
   ApiResponse,
   ApiTags,
@@ -122,6 +131,75 @@ export class AdminAdController {
   ): Promise<Ad> {
     const { organizationId, storeId } = requireStoreContext(tenant);
     return this.ads.update(organizationId, storeId, campaignId, adId, dto);
+  }
+
+  /**
+   * The same multipart shape, validators and size ceiling the admin product
+   * controller uses for product media, deliberately — a creative is an image an
+   * admin uploads, and there is no reason for a second way to store one.
+   */
+  @Post(':adId/creative')
+  @RequirePermission('campaigns.write')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: { file: { type: 'string', format: 'binary' } },
+      required: ['file'],
+    },
+  })
+  @ApiOperation({
+    summary: "Upload an ad's creative",
+    description:
+      'Replaces the current creative if there is one. An ad without one is a normal ad — this is never required.',
+  })
+  @ApiResponse({ status: 201 })
+  @ApiResponse({
+    status: 400,
+    description: 'Not an image, or larger than 10MB',
+  })
+  @ApiResponse({ status: 404 })
+  async uploadCreative(
+    @Param('campaignId', ParseUUIDPipe) campaignId: string,
+    @Param('adId', ParseUUIDPipe) adId: string,
+    @CurrentTenant() tenant: TenantContext,
+    @UploadedFile(
+      new ParseFilePipe({
+        validators: [
+          new MaxFileSizeValidator({ maxSize: 10 * 1024 * 1024 }),
+          new FileTypeValidator({ fileType: /^image\/(jpeg|png|webp|gif)$/ }),
+        ],
+      }),
+    )
+    file: Express.Multer.File,
+  ): Promise<Ad> {
+    const { organizationId, storeId } = requireStoreContext(tenant);
+    return this.ads.setCreative(
+      organizationId,
+      storeId,
+      campaignId,
+      adId,
+      file,
+    );
+  }
+
+  /**
+   * Removing a creative is not archiving an ad. The ad goes back to the state
+   * most ads are in and stays exactly as measurable as it was.
+   */
+  @Delete(':adId/creative')
+  @RequirePermission('campaigns.write')
+  @ApiOperation({ summary: "Remove an ad's creative" })
+  @ApiResponse({ status: 200 })
+  @ApiResponse({ status: 404 })
+  async removeCreative(
+    @Param('campaignId', ParseUUIDPipe) campaignId: string,
+    @Param('adId', ParseUUIDPipe) adId: string,
+    @CurrentTenant() tenant: TenantContext,
+  ): Promise<Ad> {
+    const { organizationId, storeId } = requireStoreContext(tenant);
+    return this.ads.removeCreative(organizationId, storeId, campaignId, adId);
   }
 
   @Post(':adId/archive')

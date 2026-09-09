@@ -32,6 +32,7 @@ import { CampaignService } from '../src/modules/marketing/services/campaign.serv
 import { isUniqueViolation } from '../src/shared/database/db-error.util';
 import type { AttributionTuple } from '../src/modules/marketing/utils/campaign-matching.util';
 import { createTestApp } from './helpers/test-app';
+import type { FakeStorageService } from './helpers/fake-storage.service';
 import {
   destroyAdmin,
   seedAdmin,
@@ -42,9 +43,10 @@ describe('Admin campaigns (e2e)', () => {
   let app: INestApplication<App>;
   let db: DrizzleClient;
   let fixture: AdminFixture;
+  let storage: FakeStorageService;
 
   beforeAll(async () => {
-    ({ app } = await createTestApp());
+    ({ app, storage } = await createTestApp());
     db = app.get<DrizzleClient>(DRIZZLE_CLIENT);
   });
 
@@ -922,6 +924,12 @@ describe('Admin campaigns (e2e)', () => {
    * which Campaign an Order belongs to.
    */
   describe('ads', () => {
+    /** A real 1x1 PNG — the smallest honest stand-in for a creative. */
+    const PNG_PIXEL = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    );
+
     async function createAd(
       campaignId: string,
       body: Record<string, unknown>,
@@ -1245,6 +1253,150 @@ describe('Admin campaigns (e2e)', () => {
       });
     });
 
+    /**
+     * The creative is the picture a merchant recognises an Ad by instead of
+     * decoding its slug. It is optional and expected to stay absent for most
+     * Ads — permanently for Campaigns on a platform nothing will ever supply an
+     * image for — so what is asserted here is that both states are ordinary:
+     * an Ad carries one when a merchant uploads one, and reads back as an Ad
+     * with none when they do not.
+     *
+     * Object storage is the in-memory fake, which is also what lets the tenancy
+     * case assert the interesting half: a refused upload leaves nothing behind.
+     */
+    describe('creative', () => {
+      function uploadCreative(
+        campaignId: string,
+        adId: string,
+        file: { bytes?: Buffer; filename?: string; contentType?: string } = {},
+      ) {
+        return fixture.admin.client.attach(
+          `/campaigns/${campaignId}/ads/${adId}/creative`,
+          'file',
+          file.bytes ?? PNG_PIXEL,
+          {
+            filename: file.filename ?? 'beach-video.png',
+            contentType: file.contentType ?? 'image/png',
+          },
+        );
+      }
+
+      /** The ad as persisted, not as an endpoint chose to answer. */
+      async function adRow(adId: string): Promise<Ad> {
+        const [row] = await db.select().from(ads).where(eq(ads.id, adId));
+        return row;
+      }
+
+      it('is absent on a new ad, which is a state and not a gap', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Video A' });
+
+        expect(ad.creativeUrl).toBeNull();
+        expect((await listAds(campaign.id))[0].creativeUrl).toBeNull();
+      });
+
+      it('stores an uploaded image and shows it against that ad', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Beach video A' });
+
+        const res = await uploadCreative(campaign.id, ad.id).expect(201);
+
+        const url = (res.body as Ad).creativeUrl;
+        expect(url).toEqual(expect.any(String));
+
+        // The bytes reached storage under this ad, with the type they arrived
+        // as — and the URL the merchant is shown is the one for that object.
+        const object = storage.stored.at(-1)!;
+        expect(object.key).toMatch(new RegExp(`^ads/${ad.id}/`));
+        expect(object).toMatchObject({
+          contentType: 'image/png',
+          bytes: PNG_PIXEL.byteLength,
+        });
+        expect(url).toBe(storage.getPublicUrl(object.key));
+
+        // And it is on the ad wherever the ad is read from.
+        const fetched = await fixture.admin.client
+          .get(`/campaigns/${campaign.id}/ads/${ad.id}`)
+          .expect(200);
+        expect((fetched.body as Ad).creativeUrl).toBe(url);
+        expect((await listAds(campaign.id))[0].creativeUrl).toBe(url);
+        expect((await adRow(ad.id)).creativeUrl).toBe(url);
+      });
+
+      it('replaces a creative without touching anything else about the ad', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Beach video A' });
+
+        const first = await uploadCreative(campaign.id, ad.id, {
+          filename: 'first.png',
+        }).expect(201);
+        const second = await uploadCreative(campaign.id, ad.id, {
+          filename: 'second.jpg',
+          contentType: 'image/jpeg',
+        }).expect(201);
+
+        const replaced = second.body as Ad;
+        expect(replaced.creativeUrl).not.toBe((first.body as Ad).creativeUrl);
+        expect(replaced).toMatchObject({
+          name: 'Beach video A',
+          tag: ad.tag,
+          status: 'active',
+        });
+        expect((await adRow(ad.id)).creativeUrl).toBe(replaced.creativeUrl);
+      });
+
+      it('removes a creative, returning the ad to the state most ads are in', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Beach video A' });
+        await uploadCreative(campaign.id, ad.id).expect(201);
+
+        const cleared = await fixture.admin.client
+          .delete(`/campaigns/${campaign.id}/ads/${ad.id}/creative`)
+          .expect(200);
+
+        // Removing a picture is not retiring a creative: the ad stays active
+        // and keeps the tag its live links match on.
+        expect(cleared.body).toMatchObject({
+          id: ad.id,
+          name: 'Beach video A',
+          tag: ad.tag,
+          status: 'active',
+          creativeUrl: null,
+        });
+        expect((await adRow(ad.id)).creativeUrl).toBeNull();
+      });
+
+      it('refuses a file that is not an image, and stores nothing', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Video A' });
+        const before = storage.stored.length;
+
+        await uploadCreative(campaign.id, ad.id, {
+          bytes: Buffer.from('not an image'),
+          filename: 'spend.csv',
+          contentType: 'text/csv',
+        }).expect(400);
+
+        expect(storage.stored.length).toBe(before);
+        expect((await adRow(ad.id)).creativeUrl).toBeNull();
+      });
+    });
+
     describe('archiving', () => {
       it('removes an archived ad from the active list but keeps it', async () => {
         const campaign = await createCampaign({
@@ -1423,6 +1575,38 @@ describe('Admin campaigns (e2e)', () => {
         }
       });
 
+      it('refuses a creative upload aimed at another organization, and stores nothing', async () => {
+        // The refusal has to come before the bytes are written, not after: an
+        // upload that is rejected must leave no object behind in the bucket.
+        const other = await seedAdmin(app);
+        try {
+          const campaign = await createCampaign({
+            name: 'Summer',
+            platform: 'meta',
+          });
+          const ad = await createAd(campaign.id, { name: 'Video A' });
+          const before = storage.stored.length;
+
+          await other.admin.client
+            .attach(
+              `/campaigns/${campaign.id}/ads/${ad.id}/creative`,
+              'file',
+              PNG_PIXEL,
+              { filename: 'stolen.png', contentType: 'image/png' },
+            )
+            .expect(404);
+          await other.admin.client
+            .delete(`/campaigns/${campaign.id}/ads/${ad.id}/creative`)
+            .expect(404);
+
+          expect(storage.stored.length).toBe(before);
+          const [row] = await db.select().from(ads).where(eq(ads.id, ad.id));
+          expect(row.creativeUrl).toBeNull();
+        } finally {
+          await destroyAdmin(app, other);
+        }
+      });
+
       it('never resolves an ad under a campaign that does not own it', async () => {
         const summer = await createCampaign({
           name: 'Summer',
@@ -1451,6 +1635,9 @@ describe('Admin campaigns (e2e)', () => {
         await second.client.get(`/campaigns/${campaign.id}/ads`).expect(404);
         await second.client
           .get(`/campaigns/${campaign.id}/ads/${ad.id}`)
+          .expect(404);
+        await second.client
+          .delete(`/campaigns/${campaign.id}/ads/${ad.id}/creative`)
           .expect(404);
       });
     });
@@ -1569,6 +1756,20 @@ describe('Admin campaigns (e2e)', () => {
           .patch(`/campaigns/${campaign.id}/ads/${adId}`, { name: 'Video A2' })
           .expect(200);
         await pm.client
+          .attach(
+            `/campaigns/${campaign.id}/ads/${adId}/creative`,
+            'file',
+            PNG_PIXEL,
+            {
+              filename: 'video-a.png',
+              contentType: 'image/png',
+            },
+          )
+          .expect(201);
+        await pm.client
+          .delete(`/campaigns/${campaign.id}/ads/${adId}/creative`)
+          .expect(200);
+        await pm.client
           .post(`/campaigns/${campaign.id}/ads/${adId}/archive`)
           .expect(201);
       });
@@ -1587,6 +1788,17 @@ describe('Admin campaigns (e2e)', () => {
           .expect(403);
         await support.client
           .patch(`/campaigns/${campaign.id}/ads/${ad.id}`, { name: 'Nope' })
+          .expect(403);
+        await support.client
+          .attach(
+            `/campaigns/${campaign.id}/ads/${ad.id}/creative`,
+            'file',
+            PNG_PIXEL,
+            {
+              filename: 'nope.png',
+              contentType: 'image/png',
+            },
+          )
           .expect(403);
         await support.client
           .post(`/campaigns/${campaign.id}/ads/${ad.id}/archive`)

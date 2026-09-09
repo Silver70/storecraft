@@ -55,6 +55,14 @@ Campaign can be told apart. A Campaign may have none: an Ad is a subdivision a
 merchant opts into, never a wrapper invented around a Campaign that has one.
 _Avoid_: Creative (that is the image, not the Ad), variant, ad unit, placement
 
+**Creative**:
+The picture an Ad is recognised by — one image, optional, held as a URL on the
+Ad itself rather than as a record of its own. A merchant uploads it, or a later
+platform sync fills the same field; nothing that reads it can tell which. Absent
+is a designed state and the usual one: a Campaign on `email`, `sms`,
+`affiliate`, `influencer` or `other` has no image and never will.
+_Avoid_: Ad image, thumbnail, asset, media (that is a Product's)
+
 **Matching Rule**:
 One statement by a merchant that a Campaign owns a value — a UTM field or a
 referrer host, compared with `equals` or `starts_with`. Both sides are compared

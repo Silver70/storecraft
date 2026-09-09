@@ -2,6 +2,7 @@ import {
   pgTable,
   uuid,
   varchar,
+  text,
   timestamp,
   index,
   unique,
@@ -68,6 +69,22 @@ export const ads = pgTable(
     tag: varchar('tag', { length: AD_LIMITS.tag }).notNull(),
     /** The Ad's id on the ad platform, for a later reconciliation. */
     externalId: varchar('external_id', { length: AD_LIMITS.externalId }),
+    /**
+     * The creative — the picture a merchant recognises the Ad by, since nobody
+     * recognises a slug.
+     *
+     * Nullable, and expected to stay null for a long time: a Campaign on
+     * `email`, `sms`, `affiliate`, `influencer` or `other` has no creative to
+     * show and never will, so the empty state is a designed state rather than
+     * an unfinished one.
+     *
+     * A URL rather than a storage key, and a single column rather than a
+     * reference to a media table, because the platform sync fills exactly this
+     * column with a URL it does not host for us. An upload writes the public URL
+     * of the object it just stored; a sync writes the platform's. Neither needs
+     * to know which wrote it last.
+     */
+    creativeUrl: text('creative_url'),
     /**
      * When the creative ran. Both are optional and either may be set alone — a
      * merchant often knows when a test started and not when it will stop.

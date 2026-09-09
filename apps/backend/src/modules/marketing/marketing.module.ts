@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { R2StorageService } from '../../shared/storage/r2-storage.service';
 import { TenantModule } from '../tenant/tenant.module';
 import { AdminAdController } from './controllers/admin-ad.controller';
 import { AdminAdSpendController } from './controllers/admin-ad-spend.controller';
@@ -38,6 +39,7 @@ import { RulePreviewService } from './services/rule-preview.service';
     AdminAttributionController,
   ],
   providers: [
+    R2StorageService,
     CampaignRepository,
     AdRepository,
     CampaignSpendRepository,

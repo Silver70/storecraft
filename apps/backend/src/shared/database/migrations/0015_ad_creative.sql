@@ -1,0 +1,11 @@
+-- An Ad can now carry the picture a merchant recognises it by.
+--
+-- Nullable and not backfilled, because there is nothing to backfill from and
+-- nothing to invent: an Ad with no creative is a normal Ad, permanently so for
+-- Campaigns on email, SMS, affiliate, influencer and other, which no sync will
+-- ever supply an image for.
+--
+-- A URL rather than a storage key, so that the platform sync of a later stage
+-- fills this same column with a URL it does not host for us, and an upload and
+-- a sync stay indistinguishable to everything that reads it.
+ALTER TABLE "ads" ADD COLUMN "creative_url" text;
