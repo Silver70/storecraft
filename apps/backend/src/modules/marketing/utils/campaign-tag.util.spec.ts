@@ -1,4 +1,5 @@
 import {
+  AD_TAG_FALLBACK,
   CAMPAIGN_TAG_FALLBACK,
   campaignTagCandidate,
   deriveCampaignTag,
@@ -35,6 +36,21 @@ describe('deriveCampaignTag', () => {
   it('falls back to a usable tag when a name slugifies to nothing', () => {
     expect(deriveCampaignTag('🎉🎉🎉')).toBe(CAMPAIGN_TAG_FALLBACK);
     expect(deriveCampaignTag('   ')).toBe(CAMPAIGN_TAG_FALLBACK);
+  });
+
+  it('derives an ad tag by the same rules, under its own fallback word', () => {
+    // The derivation is shared on purpose: a Campaign Tag and an Ad Tag are
+    // compared against values normalized the same way, so the same input has to
+    // land in the same canonical form on both sides. Only the word used when a
+    // name slugifies to nothing differs, so an emoji-named creative is not
+    // tagged `campaign`.
+    for (const name of ['Beach Video A', 'Video_A', 'Été Promo', '  a - b  ']) {
+      expect(deriveCampaignTag(name, AD_TAG_FALLBACK)).toBe(
+        deriveCampaignTag(name),
+      );
+    }
+
+    expect(deriveCampaignTag('🎉🎉🎉', AD_TAG_FALLBACK)).toBe(AD_TAG_FALLBACK);
   });
 
   it('truncates a long name to the column width instead of failing the write', () => {

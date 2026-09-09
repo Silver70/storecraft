@@ -13,6 +13,8 @@ import type {
   CampaignRuleOperator,
   CampaignStatus,
 } from '../../../shared/database/schema';
+import { isUniqueViolation } from '../../../shared/database/db-error.util';
+import { AdRepository } from '../repositories/ad.repository';
 import { CampaignRepository } from '../repositories/campaign.repository';
 import {
   campaignTagCandidate,
@@ -82,13 +84,6 @@ const LINK_PROBLEM_MESSAGES: Record<TaggedLinkProblem, string> = {
 
 /** How many tags to try before giving up on finding a free one. */
 const MAX_TAG_ATTEMPTS = 25;
-
-const UNIQUE_VIOLATION = '23505';
-
-function isUniqueViolation(error: unknown): boolean {
-  const code = (error as { code?: unknown } | null)?.code;
-  return code === UNIQUE_VIOLATION;
-}
 
 /**
  * What to store for a rule the merchant typed, and what it will be compared as.
@@ -164,6 +159,7 @@ export function matchesExistingRule(
 export class CampaignService {
   constructor(
     private readonly campaigns: CampaignRepository,
+    private readonly ads: AdRepository,
     private readonly config: ConfigService,
   ) {}
 
@@ -266,15 +262,35 @@ export class CampaignService {
     return updated;
   }
 
+  /**
+   * Retires a Campaign and every Ad running under it.
+   *
+   * The cascade is here rather than left to the merchant because an Ad has no
+   * meaning outside its Campaign: leaving four creatives active under a push
+   * that is over would be a list of things that are not running. Ads already
+   * archived keep the date they were actually retired on.
+   */
   async archive(orgId: string, storeId: string, id: string): Promise<Campaign> {
+    const archivedAt = new Date();
     const updated = await this.campaigns.update(id, orgId, storeId, {
       status: 'archived',
-      archivedAt: new Date(),
+      archivedAt,
     });
     if (!updated) throw new NotFoundException('Campaign not found');
+
+    await this.ads.archiveForCampaign(id, orgId, storeId, archivedAt);
+
     return updated;
   }
 
+  /**
+   * Returns a Campaign to the active list, and deliberately **not** its Ads.
+   *
+   * Archiving cascades and restoring does not, because the two are not
+   * symmetric: a merchant retires a push once, but retires individual creatives
+   * as each one finishes. Resurrecting all of them would undo those decisions
+   * silently. Ads are re-activated one at a time, on purpose.
+   */
   async unarchive(
     orgId: string,
     storeId: string,

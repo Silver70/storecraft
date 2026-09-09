@@ -97,6 +97,12 @@ export interface AttributionTuple {
   utmSource?: string | null;
   utmMedium?: string | null;
   referrer?: string | null;
+  /**
+   * Which creative was clicked. Carried here because an Ad is resolved from the
+   * same Touch, and deliberately ignored by the Campaign matcher below — see
+   * `CAMPAIGN_MATCH_FIELDS`.
+   */
+  utmContent?: string | null;
 }
 
 /** A matching rule, reduced to what deciding a match actually needs. */
@@ -123,13 +129,35 @@ export type CampaignMatcher = (tuple: AttributionTuple) => CampaignMatch | null;
  * intent; source and medium are broader and rank together; a referrer host is
  * the weakest, since it describes where a link was posted rather than what was
  * being run.
+ *
+ * `utm_content` is absent, and its absence is the point (ADR-0004). It is a
+ * field in the rule vocabulary — an Ad's canonical rule is on it — but this
+ * matcher is first-match-wins over one flat order, so ranking it here would let
+ * an Ad rule claim a tuple whose `utm_campaign` names a different Campaign and
+ * move revenue between Campaigns with nothing thrown. The keys of this object
+ * are therefore the whole definition of what Campaign resolution reads, and
+ * every rule on any other field is dropped before matching begins.
  */
-const FIELD_RANK: Record<CampaignRuleField, number> = {
+const FIELD_RANK = {
   utm_campaign: 0,
   utm_source: 1,
   utm_medium: 1,
   referrer_host: 2,
-};
+} as const satisfies Partial<Record<CampaignRuleField, number>>;
+
+/** The rule fields Campaign resolution ranks and compares. Nothing else. */
+export const CAMPAIGN_MATCH_FIELDS = Object.keys(
+  FIELD_RANK,
+) as CampaignMatchField[];
+
+export type CampaignMatchField = keyof typeof FIELD_RANK;
+
+/** Whether Campaign resolution reads this field at all. */
+function isCampaignMatchField(
+  field: CampaignRuleField,
+): field is CampaignMatchField {
+  return field in FIELD_RANK;
+}
 
 /** An exact statement beats a prefix that merely happens to cover it. */
 const OPERATOR_RANK: Record<CampaignRuleOperator, number> = {
@@ -139,7 +167,7 @@ const OPERATOR_RANK: Record<CampaignRuleOperator, number> = {
 
 /** A rule with its comparison value already normalized. */
 interface PreparedRule {
-  rule: MatchableRule;
+  rule: MatchableRule & { field: CampaignMatchField };
   value: string;
 }
 
@@ -149,7 +177,10 @@ interface PreparedRule {
  * created in the same millisecond still resolve the same way on every read —
  * the ids and values themselves.
  */
-function compareRules(a: MatchableRule, b: MatchableRule): number {
+function compareRules(
+  a: MatchableRule & { field: CampaignMatchField },
+  b: MatchableRule & { field: CampaignMatchField },
+): number {
   return (
     FIELD_RANK[a.field] - FIELD_RANK[b.field] ||
     OPERATOR_RANK[a.operator] - OPERATOR_RANK[b.operator] ||
@@ -159,9 +190,13 @@ function compareRules(a: MatchableRule, b: MatchableRule): number {
   );
 }
 
+/**
+ * The tuple reduced to the fields Campaign resolution reads. `utmContent` is
+ * not among them and is never read here.
+ */
 function normalizeTuple(
   tuple: AttributionTuple,
-): Record<CampaignRuleField, string | null> {
+): Record<CampaignMatchField, string | null> {
   return {
     utm_campaign: normalizeMatchValue(tuple.utmCampaign),
     utm_source: normalizeMatchValue(tuple.utmSource),
@@ -178,14 +213,25 @@ function normalizeTuple(
  * normalizes to nothing is dropped here: it could never match, and keeping it
  * would only give it a chance to shadow a rule that can.
  *
+ * A rule on a field Campaign resolution does not rank — `utm_content`, which is
+ * an Ad's — is dropped here too, before anything is ordered. That is the
+ * guarantee ADR-0004 asks for said in code: it does not matter what a caller
+ * hands this function, an Ad rule can never decide which Campaign an Order
+ * belongs to.
+ *
  * The caller owns tenancy. Hand this only rules loaded for one Organization and
  * Store — it will faithfully match whatever it is given.
  */
 export function createCampaignMatcher(
   rules: readonly MatchableRule[],
 ): CampaignMatcher {
+  const campaignRules = rules.filter(
+    (rule): rule is MatchableRule & { field: CampaignMatchField } =>
+      isCampaignMatchField(rule.field),
+  );
+
   const prepared: PreparedRule[] = [];
-  for (const rule of [...rules].sort(compareRules)) {
+  for (const rule of campaignRules.sort(compareRules)) {
     const value = normalizeMatchValue(rule.value);
     if (value !== null) prepared.push({ rule, value });
   }

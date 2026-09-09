@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import type { DrizzleClient } from '../../../shared/database/database.module';
 import { DRIZZLE_CLIENT } from '../../../shared/database/database.module';
 import type {
@@ -123,6 +123,7 @@ export class CampaignRepository {
     return row;
   }
 
+  /** The Campaign's own rules. An Ad's rules are its own, and not among them. */
   async findRulesForCampaign(
     campaignId: string,
     orgId: string,
@@ -137,6 +138,7 @@ export class CampaignRepository {
             eq(campaignMatchingRules.campaignId, campaignId),
             eq(campaignMatchingRules.organizationId, orgId),
             eq(campaignMatchingRules.storeId, storeId),
+            isNull(campaignMatchingRules.adId),
           ),
         )
         // The canonical rule first — it is the campaign's own tag, and the one the
@@ -163,6 +165,7 @@ export class CampaignRepository {
           eq(campaignMatchingRules.campaignId, campaignId),
           eq(campaignMatchingRules.organizationId, orgId),
           eq(campaignMatchingRules.storeId, storeId),
+          isNull(campaignMatchingRules.adId),
         ),
       )
       .limit(1);
@@ -183,6 +186,8 @@ export class CampaignRepository {
           eq(campaignMatchingRules.campaignId, campaignId),
           eq(campaignMatchingRules.organizationId, orgId),
           eq(campaignMatchingRules.storeId, storeId),
+          // An Ad's rule is not the Campaign's to remove, whatever id is passed.
+          isNull(campaignMatchingRules.adId),
         ),
       )
       .returning({ id: campaignMatchingRules.id });
@@ -197,6 +202,11 @@ export class CampaignRepository {
    * from the active list, it does not disown the Orders it already explains.
    * Leaving them out would move that revenue into Unattributed the moment a
    * merchant tidied up.
+   *
+   * Ad rules are excluded, and the exclusion is the whole of ADR-0004 at this
+   * layer: an Ad is resolved in a second pass over the winning Campaign's own
+   * Ads, never in the contest that chooses the Campaign. The matcher drops them
+   * too, so this is a defence and not the only one.
    */
   async findMatchableRules(
     orgId: string,
@@ -216,6 +226,7 @@ export class CampaignRepository {
         and(
           eq(campaignMatchingRules.organizationId, orgId),
           eq(campaignMatchingRules.storeId, storeId),
+          isNull(campaignMatchingRules.adId),
         ),
       );
   }

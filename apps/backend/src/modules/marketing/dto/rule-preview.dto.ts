@@ -8,20 +8,20 @@ import {
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   CAMPAIGN_RULE_VALUE_LIMIT,
-  campaignRuleFieldEnum,
   campaignRuleOperatorEnum,
 } from '../../../shared/database/schema';
-import type {
-  CampaignRuleField,
-  CampaignRuleOperator,
-} from '../../../shared/database/schema';
+import type { CampaignRuleOperator } from '../../../shared/database/schema';
+import {
+  CAMPAIGN_MATCH_FIELDS,
+  type CampaignMatchField,
+} from '../utils/campaign-matching.util';
 import type { AttributionTouch } from '../services/attributed-revenue.service';
 import {
   ATTRIBUTION_PERIODS,
   type AttributionPeriod,
 } from '../utils/attribution-period.util';
 
-const RULE_FIELDS = campaignRuleFieldEnum.enumValues;
+const RULE_FIELDS = CAMPAIGN_MATCH_FIELDS;
 const RULE_OPERATORS = campaignRuleOperatorEnum.enumValues;
 const TOUCHES = ['first', 'last'] as const;
 
@@ -34,7 +34,7 @@ const TOUCHES = ['first', 'last'] as const;
 export class PreviewCampaignRuleQueryDto {
   @ApiProperty({ enum: RULE_FIELDS })
   @IsEnum(RULE_FIELDS)
-  declare field: CampaignRuleField;
+  declare field: CampaignMatchField;
 
   @ApiProperty({ enum: RULE_OPERATORS })
   @IsEnum(RULE_OPERATORS)

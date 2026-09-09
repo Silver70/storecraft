@@ -366,10 +366,48 @@ export type Campaign = {
   updatedAt: string;
 };
 
+// ─── Ads ──────────────────────────────────────────────────────────────────────
+
+/** An ad shares the campaign's status vocabulary, and its lack of a deleted one. */
+export type AdStatus = CampaignStatus;
+
+/**
+ * One creative running under a campaign — the thing a visitor actually sees.
+ *
+ * A campaign may have none; an ad is a subdivision a merchant opts into, and a
+ * campaign without one is not incomplete. There is no `platform`: an ad inherits
+ * its campaign's, because funding is per ad account.
+ */
+export type Ad = {
+  id: string;
+  organizationId: string;
+  storeId: string;
+  campaignId: string;
+  name: string;
+  /**
+   * The canonical `utm_content` value. Assigned at creation, unique within the
+   * **campaign** rather than the store — so every campaign is free to run a
+   * `video-a` — and unchanged by a rename so links already live keep matching.
+   */
+  tag: string;
+  externalId: string | null;
+  /** ISO timestamps. Both optional, and either may be set without the other. */
+  startsAt: string | null;
+  endsAt: string | null;
+  status: AdStatus;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 /**
  * The attribution field a matching rule compares against. Order matters: when
  * more than one rule could claim a visit, a `utm_campaign` rule wins over
  * `utm_source` or `utm_medium`, which win over `referrer_host`.
+ *
+ * `utm_content` is deliberately absent. It is a rule field in the backend, but
+ * it belongs to an ad and campaign resolution never reads it (ADR-0004) — a
+ * campaign rule on it could never match, so it is not offered here.
  */
 export const CAMPAIGN_RULE_FIELDS = [
   "utm_campaign",
@@ -391,6 +429,8 @@ export type CampaignMatchingRule = {
   organizationId: string;
   storeId: string;
   campaignId: string;
+  /** Set when the rule belongs to an ad rather than to the campaign itself. */
+  adId: string | null;
   field: CampaignRuleField;
   operator: CampaignRuleOperator;
   /**

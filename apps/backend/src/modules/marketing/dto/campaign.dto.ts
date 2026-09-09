@@ -11,20 +11,27 @@ import {
   CAMPAIGN_LIMITS,
   CAMPAIGN_RULE_VALUE_LIMIT,
   campaignPlatformEnum,
-  campaignRuleFieldEnum,
   campaignRuleOperatorEnum,
   campaignStatusEnum,
 } from '../../../shared/database/schema';
 import type {
   CampaignPlatform,
-  CampaignRuleField,
   CampaignRuleOperator,
   CampaignStatus,
 } from '../../../shared/database/schema';
+import {
+  CAMPAIGN_MATCH_FIELDS,
+  type CampaignMatchField,
+} from '../utils/campaign-matching.util';
 
 const PLATFORMS = campaignPlatformEnum.enumValues;
 const STATUSES = campaignStatusEnum.enumValues;
-const RULE_FIELDS = campaignRuleFieldEnum.enumValues;
+/**
+ * Not the whole rule-field enum: `utm_content` is in the vocabulary but belongs
+ * to an Ad, and Campaign resolution never reads it (ADR-0004). Offering it here
+ * would let a merchant author a Campaign rule that could never match anything.
+ */
+const RULE_FIELDS = CAMPAIGN_MATCH_FIELDS;
 const RULE_OPERATORS = campaignRuleOperatorEnum.enumValues;
 
 export class CreateCampaignDto {
@@ -86,7 +93,7 @@ export class CreateCampaignRuleDto {
       'The attribution field to compare. utm_campaign wins over utm_source and utm_medium, which win over referrer_host, when more than one rule could match.',
   })
   @IsEnum(RULE_FIELDS)
-  declare field: CampaignRuleField;
+  declare field: CampaignMatchField;
 
   @ApiProperty({
     enum: RULE_OPERATORS,

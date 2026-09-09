@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import {
+  campaignAdsQueryOptions,
   campaignQueryOptions,
   campaignRulesQueryOptions,
 } from "~/features/campaigns/queries";
@@ -7,7 +8,7 @@ import { CampaignDetailPage } from "~/features/campaigns/pages/campaign-detail-p
 
 export const Route = createFileRoute("/admin/campaigns_/$campaignId")({
   loader: async ({ context, params }) => {
-    // The rules load alongside the campaign so the matching card arrives with
+    // The rules and ads load alongside the campaign so their cards arrive with
     // the page rather than flashing empty after it.
     const [campaign] = await Promise.all([
       context.queryClient.ensureQueryData(
@@ -15,6 +16,9 @@ export const Route = createFileRoute("/admin/campaigns_/$campaignId")({
       ),
       context.queryClient.ensureQueryData(
         campaignRulesQueryOptions(params.campaignId),
+      ),
+      context.queryClient.ensureQueryData(
+        campaignAdsQueryOptions(params.campaignId),
       ),
     ]);
     return campaign;

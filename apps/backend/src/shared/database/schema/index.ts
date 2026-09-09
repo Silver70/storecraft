@@ -39,6 +39,7 @@ export * from './audit-logs.schema';
 export * from './analytics-events.schema';
 export * from './analytics-daily-metrics.schema';
 export * from './campaigns.schema';
+export * from './ads.schema';
 export * from './campaign-matching-rules.schema';
 export * from './campaign-spend.schema';
 export * from './content-slots.schema';

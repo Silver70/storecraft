@@ -6,6 +6,7 @@
  * than inferred from the far end of a checkout. No database, no framework.
  */
 import {
+  CAMPAIGN_MATCH_FIELDS,
   createCampaignMatcher,
   normalizeMatchValue,
   referrerHost,
@@ -277,6 +278,89 @@ describe('createCampaignMatcher', () => {
           rule(SUMMER, 'referrer_host', 'equals', 'instagram.com'),
         ]),
       ).toBeNull();
+    });
+  });
+
+  /**
+   * ADR-0004: an Ad is matched on `utm_content` and resolved in a second pass
+   * over the winning Campaign's own Ads. This matcher is first-match-wins over
+   * one flat order, so if it read `utm_content` at all an Ad rule could claim a
+   * tuple whose `utm_campaign` names a different Campaign — revenue moving
+   * between Campaigns with nothing thrown. These assert that it cannot, whatever
+   * it is handed.
+   */
+  describe('ad rules (utm_content)', () => {
+    it('does not rank utm_content among the fields campaign resolution reads', () => {
+      expect(CAMPAIGN_MATCH_FIELDS).toEqual([
+        'utm_campaign',
+        'utm_source',
+        'utm_medium',
+        'referrer_host',
+      ]);
+      expect(CAMPAIGN_MATCH_FIELDS).not.toContain('utm_content');
+    });
+
+    it('never lets a utm_content rule decide a campaign', () => {
+      // Spring's ad rule matches the content exactly; Summer's campaign rule is
+      // the only thing entitled to claim the tuple.
+      expect(
+        match({ utmCampaign: 'summer-sale', utmContent: 'video-a' }, [
+          rule(SPRING, 'utm_content', 'equals', 'video-a'),
+          rule(SUMMER, 'utm_campaign', 'equals', 'summer-sale'),
+        ]),
+      ).toBe(SUMMER);
+    });
+
+    it('leaves a tuple only an ad rule could claim Unattributed', () => {
+      // Not Spring, and not an error: with no campaign rule matching, the tuple
+      // has no campaign, and an ad cannot supply one.
+      expect(
+        match({ utmCampaign: 'winter-sale', utmContent: 'video-a' }, [
+          rule(SPRING, 'utm_content', 'equals', 'video-a'),
+        ]),
+      ).toBeNull();
+    });
+
+    it('ignores utm_content on the tuple entirely', () => {
+      const rules = [rule(SUMMER, 'utm_campaign', 'equals', 'summer-sale')];
+      expect(match({ utmCampaign: 'summer-sale' }, rules)).toBe(
+        match({ utmCampaign: 'summer-sale', utmContent: 'video-a' }, rules),
+      );
+    });
+
+    it('does not let an ad rule shadow a campaign rule it sorts ahead of', () => {
+      // An unranked field would sort as NaN, which compares false against
+      // everything and leaves the order to chance. Dropping the rule outright is
+      // what makes this deterministic rather than merely usually right.
+      expect(
+        match({ utmCampaign: 'summer-sale', utmContent: 'summer-sale' }, [
+          rule(SPRING, 'utm_content', 'starts_with', 'summer'),
+          rule(SPRING, 'utm_content', 'equals', 'summer-sale'),
+          rule(SUMMER, 'utm_campaign', 'equals', 'summer-sale'),
+        ]),
+      ).toBe(SUMMER);
+    });
+
+    it('resolves the same campaign whether or not ad rules are present', () => {
+      const campaignRules = [
+        rule(SUMMER, 'utm_campaign', 'equals', 'summer-sale'),
+        rule(SPRING, 'utm_source', 'equals', 'instagram'),
+      ];
+      const withAds = [
+        ...campaignRules,
+        // Two campaigns each owning an ad tagged `video-a`, which is legal:
+        // ad tags are unique within a campaign, not within a store.
+        rule(SUMMER, 'utm_content', 'equals', 'video-a'),
+        rule(SPRING, 'utm_content', 'equals', 'video-a'),
+      ];
+
+      for (const tuple of [
+        { utmCampaign: 'summer-sale', utmContent: 'video-a' },
+        { utmSource: 'instagram', utmContent: 'video-a' },
+        { utmContent: 'video-a' },
+      ]) {
+        expect(match(tuple, withAds)).toBe(match(tuple, campaignRules));
+      }
     });
   });
 

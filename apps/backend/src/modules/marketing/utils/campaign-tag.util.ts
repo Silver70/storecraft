@@ -3,6 +3,9 @@ import { CAMPAIGN_LIMITS } from '../../../shared/database/schema';
 /** Used when a name slugifies to nothing — "🎉", "!!!", "   ". */
 export const CAMPAIGN_TAG_FALLBACK = 'campaign';
 
+/** The same, for an Ad — so an emoji-named creative is not tagged `campaign`. */
+export const AD_TAG_FALLBACK = 'ad';
+
 /**
  * Derives a Campaign's canonical `utm_campaign` tag from its name.
  *
@@ -16,8 +19,16 @@ export const CAMPAIGN_TAG_FALLBACK = 'campaign';
  * Accents fold to their base letter so "Été" and "Ete" are one tag rather than
  * two, and the result is truncated to the column width rather than failing the
  * write of a campaign whose name is merely long.
+ *
+ * An Ad Tag is derived by this same function, with its own fallback word. The
+ * derivation is deliberately shared rather than reimplemented: a Campaign Tag
+ * and an Ad Tag are compared against values normalized the same way, so the two
+ * must land in the same canonical form for the same input.
  */
-export function deriveCampaignTag(name: string): string {
+export function deriveCampaignTag(
+  name: string,
+  fallback: string = CAMPAIGN_TAG_FALLBACK,
+): string {
   const slug = name
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '') // combining marks left by NFKD
@@ -27,7 +38,7 @@ export function deriveCampaignTag(name: string): string {
     .slice(0, CAMPAIGN_LIMITS.tag)
     .replace(/-+$/, ''); // the slice may have landed mid-separator
 
-  return slug || CAMPAIGN_TAG_FALLBACK;
+  return slug || fallback;
 }
 
 /**

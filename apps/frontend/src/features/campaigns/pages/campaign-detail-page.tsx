@@ -8,6 +8,7 @@ import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Label } from "~/components/ui/label";
 import { CAMPAIGN_PLATFORMS, type Campaign, type CampaignPlatform } from "~/types/api";
+import { AdsCard } from "../components/ads-card";
 import { ArchiveCampaignButton } from "../components/archive-campaign-button";
 import { CampaignFields } from "../components/campaign-fields";
 import { CampaignSpendCard } from "../components/campaign-spend-card";
@@ -164,6 +165,9 @@ export function CampaignDetailPage() {
                 {/* ── Matching rules ────────────────────────────────────────────────── */}
                 <MatchingRulesCard campaignId={campaignId} />
 
+                {/* ── Ads ───────────────────────────────────────────────────────────── */}
+                <AdsCard campaignId={campaignId} />
+
                 {/* ── Spend ─────────────────────────────────────────────────────────── */}
                 <CampaignSpendCard campaignId={campaignId} />
 
@@ -171,8 +175,8 @@ export function CampaignDetailPage() {
                 <div className="flex items-center justify-between gap-4 rounded-lg border border-dashed px-4 py-3">
                     <p className="text-xs text-muted-foreground">
                         {campaign.status === "archived"
-                            ? "Archived campaigns stay out of the active list and keep explaining the orders they drove."
-                            : "Finished with this campaign? Archiving hides it without losing its history."}
+                            ? "Archived campaigns stay out of the active list and keep explaining the orders they drove. Restoring one leaves its ads archived — re-activate those you still want."
+                            : "Finished with this campaign? Archiving hides it, and its ads, without losing their history."}
                     </p>
                     <ArchiveCampaignButton campaign={campaign} />
                 </div>

@@ -19,14 +19,17 @@ import {
   type DrizzleClient,
 } from '../src/shared/database/database.module';
 import {
+  ads,
   campaignMatchingRules,
   campaigns,
 } from '../src/shared/database/schema';
 import type {
+  Ad,
   Campaign,
   CampaignMatchingRule,
 } from '../src/shared/database/schema';
 import { CampaignService } from '../src/modules/marketing/services/campaign.service';
+import { isUniqueViolation } from '../src/shared/database/db-error.util';
 import type { AttributionTuple } from '../src/modules/marketing/utils/campaign-matching.util';
 import { createTestApp } from './helpers/test-app';
 import {
@@ -904,6 +907,702 @@ describe('Admin campaigns (e2e)', () => {
       } finally {
         await destroyAdmin(app, other);
       }
+    });
+  });
+
+  /**
+   * Ads — the creatives running under one Campaign.
+   *
+   * The properties asserted here are the ones that would silently corrupt a
+   * per-creative report if they broke: that an Ad is born carrying the tag its
+   * Orders will later find it by, that the tag is unique inside its Campaign and
+   * deliberately *not* inside the Store, that it survives a rename, that
+   * archiving cascades one way and not the other, and that none of it — nor the
+   * new `utm_content` rule field it introduces — can reach the decision about
+   * which Campaign an Order belongs to.
+   */
+  describe('ads', () => {
+    async function createAd(
+      campaignId: string,
+      body: Record<string, unknown>,
+    ): Promise<Ad> {
+      const res = await fixture.admin.client
+        .post(`/campaigns/${campaignId}/ads`, body)
+        .expect(201);
+      return res.body as Ad;
+    }
+
+    async function listAds(campaignId: string, query = ''): Promise<Ad[]> {
+      const res = await fixture.admin.client
+        .get(`/campaigns/${campaignId}/ads${query}`)
+        .expect(200);
+      return res.body as Ad[];
+    }
+
+    /** The rules persisted for one ad, read from the table rather than an API. */
+    async function adRules(adId: string): Promise<CampaignMatchingRule[]> {
+      return db
+        .select()
+        .from(campaignMatchingRules)
+        .where(eq(campaignMatchingRules.adId, adId));
+    }
+
+    describe('creating', () => {
+      it('creates an ad under a campaign and lists it there', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer Sale',
+          platform: 'meta',
+        });
+
+        const ad = await createAd(campaign.id, { name: 'Beach video A' });
+
+        expect(ad).toMatchObject({
+          name: 'Beach video A',
+          campaignId: campaign.id,
+          status: 'active',
+          organizationId: fixture.organizationId,
+          storeId: fixture.storeId,
+          startsAt: null,
+          endsAt: null,
+        });
+
+        expect(await listAds(campaign.id)).toEqual([
+          expect.objectContaining({ id: ad.id }),
+        ]);
+      });
+
+      it('takes a start date and an end date, and either one alone', async () => {
+        // A merchant often knows when a test started and not when it will stop.
+        const campaign = await createCampaign({
+          name: 'Flights',
+          platform: 'meta',
+        });
+
+        const both = await createAd(campaign.id, {
+          name: 'Both',
+          startsAt: '2026-06-01T00:00:00.000Z',
+          endsAt: '2026-06-08T00:00:00.000Z',
+        });
+        expect(new Date(both.startsAt!).toISOString()).toBe(
+          '2026-06-01T00:00:00.000Z',
+        );
+        expect(new Date(both.endsAt!).toISOString()).toBe(
+          '2026-06-08T00:00:00.000Z',
+        );
+
+        const startOnly = await createAd(campaign.id, {
+          name: 'Start only',
+          startsAt: '2026-06-01T00:00:00.000Z',
+        });
+        expect(startOnly.startsAt).not.toBeNull();
+        expect(startOnly.endsAt).toBeNull();
+
+        const endOnly = await createAd(campaign.id, {
+          name: 'End only',
+          endsAt: '2026-06-08T00:00:00.000Z',
+        });
+        expect(endOnly.startsAt).toBeNull();
+        expect(endOnly.endsAt).not.toBeNull();
+      });
+
+      it('refuses a flight that ends before it starts', async () => {
+        const campaign = await createCampaign({
+          name: 'Backwards',
+          platform: 'meta',
+        });
+
+        await fixture.admin.client
+          .post(`/campaigns/${campaign.id}/ads`, {
+            name: 'Impossible',
+            startsAt: '2026-06-08T00:00:00.000Z',
+            endsAt: '2026-06-01T00:00:00.000Z',
+          })
+          .expect(400);
+      });
+
+      it('assigns an ad tag by the same derivation the campaign tag uses', async () => {
+        // Both sides of a later comparison have to normalize identically, so the
+        // same name has to produce the same slug whichever it is naming.
+        const campaign = await createCampaign({
+          name: 'Beach Video A',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Beach Video A' });
+
+        expect(ad.tag).toBe('beach-video-a');
+        expect(ad.tag).toBe(campaign.tag);
+      });
+
+      it('matches its own ad tag on utm_content with no rule authored by hand', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer Sale',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Beach video A' });
+
+        expect(await adRules(ad.id)).toEqual([
+          expect.objectContaining({
+            organizationId: fixture.organizationId,
+            storeId: fixture.storeId,
+            campaignId: campaign.id,
+            adId: ad.id,
+            field: 'utm_content',
+            operator: 'equals',
+            value: ad.tag,
+            isCanonical: true,
+          }),
+        ]);
+      });
+
+      it('keeps an ad tag unique within its campaign', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer Sale',
+          platform: 'meta',
+        });
+
+        const first = await createAd(campaign.id, { name: 'Video A' });
+        const second = await createAd(campaign.id, { name: 'Video A' });
+
+        expect(first.tag).toBe('video-a');
+        expect(second.tag).toBe('video-a-2');
+      });
+
+      it('lets two campaigns each own an ad tagged video-a', async () => {
+        // The thing merchants actually do, and the reason ad tags are scoped to
+        // the campaign rather than the store. It is only safe because an ad is
+        // resolved among its own campaign's ads (ADR-0004).
+        const summer = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const spring = await createCampaign({
+          name: 'Spring',
+          platform: 'google',
+        });
+
+        const mine = await createAd(summer.id, { name: 'Video A' });
+        const theirs = await createAd(spring.id, { name: 'Video A' });
+
+        expect(mine.tag).toBe('video-a');
+        expect(theirs.tag).toBe('video-a');
+        expect(theirs.id).not.toBe(mine.id);
+      });
+
+      it('leaves the database as the authority on that uniqueness', async () => {
+        // Two admins naming an ad the same thing at the same moment must not
+        // both win, and the read that precedes the insert cannot promise that —
+        // the unique index on (campaign_id, tag) is what does.
+        const campaign = await createCampaign({
+          name: 'Race',
+          platform: 'meta',
+        });
+        const [ad] = await db
+          .select()
+          .from(ads)
+          .where(eq(ads.campaignId, campaign.id))
+          .limit(1);
+        expect(ad).toBeUndefined();
+
+        const first = await createAd(campaign.id, { name: 'Video A' });
+
+        // Straight at the table, past the service that picks a free tag: the
+        // index is what refuses this, and nothing else could.
+        const duplicate = await db
+          .insert(ads)
+          .values({
+            organizationId: fixture.organizationId,
+            storeId: fixture.storeId,
+            campaignId: campaign.id,
+            name: 'Video A again',
+            tag: first.tag,
+          })
+          .then(
+            () => null,
+            (error: unknown) => error,
+          );
+
+        expect(duplicate).not.toBeNull();
+        expect(isUniqueViolation(duplicate)).toBe(true);
+      });
+
+      it('refuses an ad under another organization’s campaign', async () => {
+        const other = await seedAdmin(app);
+        try {
+          const mine = await createCampaign({
+            name: 'Mine',
+            platform: 'meta',
+          });
+
+          await other.admin.client
+            .post(`/campaigns/${mine.id}/ads`, { name: 'Stolen' })
+            .expect(404);
+
+          expect(
+            await db.select().from(ads).where(eq(ads.campaignId, mine.id)),
+          ).toEqual([]);
+        } finally {
+          await destroyAdmin(app, other);
+        }
+      });
+    });
+
+    describe('editing', () => {
+      it('updates the name, flight dates and ad-platform id', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Video A' });
+
+        const res = await fixture.admin.client
+          .patch(`/campaigns/${campaign.id}/ads/${ad.id}`, {
+            name: 'Beach video A',
+            externalId: '9876543210',
+            startsAt: '2026-06-01T00:00:00.000Z',
+            endsAt: '2026-06-08T00:00:00.000Z',
+          })
+          .expect(200);
+
+        expect(res.body).toMatchObject({
+          name: 'Beach video A',
+          externalId: '9876543210',
+        });
+
+        const [row] = await db.select().from(ads).where(eq(ads.id, ad.id));
+        expect(row).toMatchObject({
+          name: 'Beach video A',
+          externalId: '9876543210',
+        });
+        expect(row.startsAt).not.toBeNull();
+        expect(row.endsAt).not.toBeNull();
+      });
+
+      it('clears a flight date when it is sent as null', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, {
+          name: 'Video A',
+          startsAt: '2026-06-01T00:00:00.000Z',
+        });
+
+        const res = await fixture.admin.client
+          .patch(`/campaigns/${campaign.id}/ads/${ad.id}`, { startsAt: null })
+          .expect(200);
+
+        expect((res.body as Ad).startsAt).toBeNull();
+      });
+
+      it('refuses an edit that would end a flight before it starts', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, {
+          name: 'Video A',
+          startsAt: '2026-06-08T00:00:00.000Z',
+        });
+
+        await fixture.admin.client
+          .patch(`/campaigns/${campaign.id}/ads/${ad.id}`, {
+            endsAt: '2026-06-01T00:00:00.000Z',
+          })
+          .expect(400);
+      });
+
+      it('keeps the ad tag across a rename', async () => {
+        // A link already running in an ad platform cannot be recalled, so
+        // re-deriving the tag from the new name would orphan it.
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Video A' });
+
+        const res = await fixture.admin.client
+          .patch(`/campaigns/${campaign.id}/ads/${ad.id}`, {
+            name: 'Beach video, second cut',
+          })
+          .expect(200);
+
+        expect((res.body as Ad).tag).toBe(ad.tag);
+        expect((await adRules(ad.id))[0].value).toBe(ad.tag);
+      });
+
+      it('refuses to take a tag in an update at all', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Video A' });
+
+        await fixture.admin.client
+          .patch(`/campaigns/${campaign.id}/ads/${ad.id}`, {
+            tag: 'something-else',
+          })
+          .expect(400);
+      });
+    });
+
+    describe('archiving', () => {
+      it('removes an archived ad from the active list but keeps it', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Video A' });
+
+        const archived = await fixture.admin.client
+          .post(`/campaigns/${campaign.id}/ads/${ad.id}/archive`)
+          .expect(201);
+        expect(archived.body).toMatchObject({ status: 'archived' });
+        expect((archived.body as Ad).archivedAt).not.toBeNull();
+
+        expect(await listAds(campaign.id)).toEqual([]);
+
+        await fixture.admin.client
+          .get(`/campaigns/${campaign.id}/ads/${ad.id}`)
+          .expect(200);
+        expect(await listAds(campaign.id, '?status=archived')).toEqual([
+          expect.objectContaining({ id: ad.id }),
+        ]);
+        expect(await listAds(campaign.id, '?status=all')).toHaveLength(1);
+      });
+
+      it('returns an archived ad to the active list', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Video A' });
+        await fixture.admin.client
+          .post(`/campaigns/${campaign.id}/ads/${ad.id}/archive`)
+          .expect(201);
+
+        const restored = await fixture.admin.client
+          .post(`/campaigns/${campaign.id}/ads/${ad.id}/unarchive`)
+          .expect(201);
+        expect(restored.body).toMatchObject({
+          status: 'active',
+          archivedAt: null,
+        });
+        expect(await listAds(campaign.id)).toHaveLength(1);
+      });
+
+      it('archives a campaign’s ads along with the campaign', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const first = await createAd(campaign.id, { name: 'Video A' });
+        const second = await createAd(campaign.id, { name: 'Video B' });
+
+        await fixture.admin.client
+          .post(`/campaigns/${campaign.id}/archive`)
+          .expect(201);
+
+        expect(await listAds(campaign.id)).toEqual([]);
+        const rows = await db
+          .select()
+          .from(ads)
+          .where(eq(ads.campaignId, campaign.id));
+        expect(rows).toHaveLength(2);
+        for (const row of rows) {
+          expect(row.status).toBe('archived');
+          expect(row.archivedAt).not.toBeNull();
+        }
+        expect(rows.map((r) => r.id).sort()).toEqual(
+          [first.id, second.id].sort(),
+        );
+      });
+
+      it('leaves an ad’s own archive date alone when the campaign is archived', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Video A' });
+        const archived = await fixture.admin.client
+          .post(`/campaigns/${campaign.id}/ads/${ad.id}/archive`)
+          .expect(201);
+        const retiredAt = (archived.body as Ad).archivedAt;
+
+        await fixture.admin.client
+          .post(`/campaigns/${campaign.id}/archive`)
+          .expect(201);
+
+        const [row] = await db.select().from(ads).where(eq(ads.id, ad.id));
+        expect(row.archivedAt!.toISOString()).toBe(
+          new Date(retiredAt!).toISOString(),
+        );
+      });
+
+      it('does not restore a campaign’s ads when the campaign is restored', async () => {
+        // Archiving cascades and restoring does not: a merchant retires a push
+        // once, but retires creatives one at a time as each finishes.
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Video A' });
+
+        await fixture.admin.client
+          .post(`/campaigns/${campaign.id}/archive`)
+          .expect(201);
+        await fixture.admin.client
+          .post(`/campaigns/${campaign.id}/unarchive`)
+          .expect(201);
+
+        expect(await listAds(campaign.id)).toEqual([]);
+        const [row] = await db.select().from(ads).where(eq(ads.id, ad.id));
+        expect(row.status).toBe('archived');
+      });
+
+      it('offers no way to delete an ad', async () => {
+        // Revenue already reported against an ad would be silently re-bucketed.
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Video A' });
+
+        await fixture.admin.client
+          .delete(`/campaigns/${campaign.id}/ads/${ad.id}`)
+          .expect(404);
+
+        const [row] = await db.select().from(ads).where(eq(ads.id, ad.id));
+        expect(row).toBeDefined();
+      });
+
+      it('does not let a merchant delete an ad’s canonical rule', async () => {
+        // Same reason the campaign's own tag rule cannot be removed: every link
+        // already running under the ad carries that tag.
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Video A' });
+        const [rule] = await adRules(ad.id);
+
+        await fixture.admin.client
+          .delete(`/campaigns/${campaign.id}/rules/${rule.id}`)
+          .expect(404);
+
+        expect(await adRules(ad.id)).toHaveLength(1);
+      });
+    });
+
+    describe('tenancy', () => {
+      it('never resolves an ad id belonging to another organization', async () => {
+        const other = await seedAdmin(app);
+        try {
+          const campaign = await createCampaign({
+            name: 'Summer',
+            platform: 'meta',
+          });
+          const ad = await createAd(campaign.id, { name: 'Video A' });
+
+          await other.admin.client
+            .get(`/campaigns/${campaign.id}/ads/${ad.id}`)
+            .expect(404);
+          await other.admin.client
+            .patch(`/campaigns/${campaign.id}/ads/${ad.id}`, { name: 'Stolen' })
+            .expect(404);
+          await other.admin.client
+            .post(`/campaigns/${campaign.id}/ads/${ad.id}/archive`)
+            .expect(404);
+          await other.admin.client
+            .get(`/campaigns/${campaign.id}/ads`)
+            .expect(404);
+
+          const [row] = await db.select().from(ads).where(eq(ads.id, ad.id));
+          expect(row).toMatchObject({ name: 'Video A', status: 'active' });
+        } finally {
+          await destroyAdmin(app, other);
+        }
+      });
+
+      it('never resolves an ad under a campaign that does not own it', async () => {
+        const summer = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const spring = await createCampaign({
+          name: 'Spring',
+          platform: 'meta',
+        });
+        const ad = await createAd(summer.id, { name: 'Video A' });
+
+        await fixture.admin.client
+          .get(`/campaigns/${spring.id}/ads/${ad.id}`)
+          .expect(404);
+        expect(await listAds(spring.id)).toEqual([]);
+      });
+
+      it('scopes an ad to the store its campaign was created in', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Video A' });
+        const second = await fixture.addStore();
+
+        await second.client.get(`/campaigns/${campaign.id}/ads`).expect(404);
+        await second.client
+          .get(`/campaigns/${campaign.id}/ads/${ad.id}`)
+          .expect(404);
+      });
+    });
+
+    /**
+     * ADR-0004, asserted where a merchant would feel it break. The Campaign
+     * matcher fails silently — a mis-match makes a Campaign look unprofitable
+     * forever — so the property that an Ad rule can never decide a Campaign is
+     * asserted here as well as in the pure matcher spec.
+     */
+    describe('campaign resolution is unchanged', () => {
+      async function resolveCampaign(
+        tuple: AttributionTuple,
+      ): Promise<string | null> {
+        const matcher = await app
+          .get(CampaignService)
+          .buildMatcher(fixture.organizationId, fixture.storeId);
+        return matcher(tuple)?.campaignId ?? null;
+      }
+
+      it('never lets an ad rule claim a tuple for its campaign', async () => {
+        const summer = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const spring = await createCampaign({
+          name: 'Spring',
+          platform: 'meta',
+        });
+        await createAd(spring.id, { name: 'Video A' });
+
+        // Summer's campaign tag, Spring's ad tag. Summer wins, and it is not
+        // close: the ad rule is not in the contest at all.
+        expect(
+          await resolveCampaign({
+            utmCampaign: summer.tag,
+            utmContent: 'video-a',
+          }),
+        ).toBe(summer.id);
+      });
+
+      it('leaves a tuple only an ad tag could claim unattributed', async () => {
+        const spring = await createCampaign({
+          name: 'Spring',
+          platform: 'meta',
+        });
+        await createAd(spring.id, { name: 'Video A' });
+
+        expect(await resolveCampaign({ utmContent: 'video-a' })).toBeNull();
+      });
+
+      it('resolves a campaign the same way before and after it gains ads', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const before = await resolveCampaign({ utmCampaign: campaign.tag });
+
+        await createAd(campaign.id, { name: 'Video A' });
+        await createAd(campaign.id, { name: 'Video B' });
+
+        expect(await resolveCampaign({ utmCampaign: campaign.tag })).toBe(
+          before,
+        );
+        expect(before).toBe(campaign.id);
+      });
+
+      it('keeps an ad’s rule out of the campaign’s own rule list', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        await createAd(campaign.id, { name: 'Video A' });
+
+        const res = await fixture.admin.client
+          .get(`/campaigns/${campaign.id}/rules`)
+          .expect(200);
+        expect(res.body).toEqual([
+          expect.objectContaining({ field: 'utm_campaign', adId: null }),
+        ]);
+      });
+
+      it('refuses a campaign rule authored on utm_content', async () => {
+        // The field is in the vocabulary but belongs to an ad. A campaign rule
+        // on it could never match, so offering it would only mislead.
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+
+        await fixture.admin.client
+          .post(`/campaigns/${campaign.id}/rules`, {
+            field: 'utm_content',
+            operator: 'equals',
+            value: 'video-a',
+          })
+          .expect(400);
+      });
+    });
+
+    describe('permissions', () => {
+      it('lets a product manager manage ads', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const pm = await fixture.addUser('product_manager');
+
+        const created = await pm.client
+          .post(`/campaigns/${campaign.id}/ads`, { name: 'Video A' })
+          .expect(201);
+        const adId = (created.body as Ad).id;
+
+        await pm.client.get(`/campaigns/${campaign.id}/ads`).expect(200);
+        await pm.client
+          .patch(`/campaigns/${campaign.id}/ads/${adId}`, { name: 'Video A2' })
+          .expect(200);
+        await pm.client
+          .post(`/campaigns/${campaign.id}/ads/${adId}/archive`)
+          .expect(201);
+      });
+
+      it('refuses a support agent, who has no marketing permission', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+        const ad = await createAd(campaign.id, { name: 'Video A' });
+        const support = await fixture.addUser('support_agent');
+
+        await support.client.get(`/campaigns/${campaign.id}/ads`).expect(403);
+        await support.client
+          .post(`/campaigns/${campaign.id}/ads`, { name: 'Nope' })
+          .expect(403);
+        await support.client
+          .patch(`/campaigns/${campaign.id}/ads/${ad.id}`, { name: 'Nope' })
+          .expect(403);
+        await support.client
+          .post(`/campaigns/${campaign.id}/ads/${ad.id}/archive`)
+          .expect(403);
+      });
+
+      it('rejects a request carrying no admin token', async () => {
+        const campaign = await createCampaign({
+          name: 'Summer',
+          platform: 'meta',
+        });
+
+        await request(app.getHttpServer())
+          .get(`/api/admin/campaigns/${campaign.id}/ads`)
+          .expect(401);
+      });
     });
   });
 

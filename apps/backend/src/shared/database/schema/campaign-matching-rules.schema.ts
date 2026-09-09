@@ -11,13 +11,23 @@ import {
 import { organizations } from './organizations.schema';
 import { stores } from './stores.schema';
 import { campaigns } from './campaigns.schema';
+import { ads } from './ads.schema';
 
-/** The attribution field a rule compares against. */
+/**
+ * The attribution field a rule compares against.
+ *
+ * `utm_content` is in this vocabulary but is **not** a field Campaign
+ * resolution ranks or compares: it belongs to Ad rules, which are resolved in a
+ * second pass over one Campaign's own Ads (ADR-0004). The campaign matcher
+ * drops any rule on a field it does not rank, so a `utm_content` rule is
+ * structurally incapable of deciding which Campaign an Order belongs to.
+ */
 export const campaignRuleFieldEnum = pgEnum('campaign_rule_field', [
   'utm_campaign',
   'utm_source',
   'utm_medium',
   'referrer_host',
+  'utm_content',
 ]);
 
 export type CampaignRuleField =
@@ -54,14 +64,22 @@ export const campaignMatchingRules = pgTable(
     campaignId: uuid('campaign_id')
       .notNull()
       .references(() => campaigns.id, { onDelete: 'cascade' }),
+    /**
+     * Set when the rule belongs to an Ad rather than to the Campaign itself.
+     * The Campaign is still named, because an Ad rule is only ever considered
+     * among the Ads of the Campaign that already won — the two are never in one
+     * contest, and the Campaign matcher loads only the rules where this is null.
+     */
+    adId: uuid('ad_id').references(() => ads.id, { onDelete: 'cascade' }),
     field: campaignRuleFieldEnum('field').notNull(),
     operator: campaignRuleOperatorEnum('operator').notNull(),
     value: varchar('value', { length: CAMPAIGN_RULE_VALUE_LIMIT }).notNull(),
     /**
-     * True for the exact-match rule on the Campaign's own canonical tag, created
-     * with the Campaign so a generated link matches without the merchant
-     * authoring anything. It is not merchant-authored, so it is not
-     * merchant-deletable — removing it would break every link already live.
+     * True for the exact-match rule on the owner's own canonical tag — the
+     * Campaign Tag for a Campaign rule, the Ad Tag for an Ad rule — created
+     * with the row so a generated link matches without the merchant authoring
+     * anything. It is not merchant-authored, so it is not merchant-deletable —
+     * removing it would break every link already live.
      */
     isCanonical: boolean('is_canonical').notNull().default(false),
     createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -79,6 +97,7 @@ export const campaignMatchingRules = pgTable(
       t.storeId,
     ),
     index('campaign_matching_rules_campaign_idx').on(t.campaignId),
+    index('campaign_matching_rules_ad_idx').on(t.adId),
   ],
 );
 
