@@ -37,47 +37,49 @@ import {
 } from '../dto/campaign-spend.dto';
 
 /**
- * What a campaign cost, recorded by hand.
+ * What one creative cost, rather than what the whole push cost.
  *
- * Its own controller rather than more routes on `admin/campaigns`: spend is a
- * collection under one campaign with its own lifecycle, and giving it a base
- * path of its own keeps `:id` from acquiring a fourth sub-resource whose route
- * order has to be reasoned about (the rules controller already carries that
- * caveat).
+ * The same collection as `AdminCampaignSpendController` at a finer grain, and
+ * deliberately the same shapes: the same DTOs, the same service, the same
+ * refusals, the same correcting upsert. An ad's spend is not a different kind
+ * of fact from a campaign's, and giving it its own vocabulary would invite the
+ * two to drift apart on the one thing they must agree about — what the push
+ * cost.
  *
- * Reads take `campaigns.read` and writes take `campaigns.write`, which is what
- * keeps cost data out of a support agent's hands: they can read an order and
- * they cannot change what an ad was worth.
+ * Addressed beneath the ad, which is itself addressed beneath its campaign, so
+ * the path states the whole scope. Both ids are checked: an ad belonging to a
+ * sibling campaign is a 404, never a row whose ad and campaign point at
+ * different pushes.
  *
- * This is the campaign grain: a figure recorded here names no ad, meaning the
- * cost is known and its split is not. The per-ad grain lives one level down, on
- * `AdminAdSpendController`. Reads here span both, because what a push cost is
- * one number.
+ * A campaign-level figure and an ad-level figure for the same day are two
+ * different facts and coexist — the campaign's is the part whose split is not
+ * known, not a total of the ads beneath it. Sending either twice corrects it.
  */
 @ApiTags('Campaigns')
 @ApiBearerAuth()
 @UseGuards(AdminAuthGuard, RbacGuard)
-@Controller('admin/campaigns/:campaignId/spend')
-export class AdminCampaignSpendController {
+@Controller('admin/campaigns/:campaignId/ads/:adId/spend')
+export class AdminAdSpendController {
   constructor(private readonly spend: CampaignSpendService) {}
 
   @Get()
   @RequirePermission('campaigns.read')
   @ApiOperation({
-    summary: "List a campaign's spend for a period",
+    summary: "List one ad's spend for a period",
     description:
-      "Everything the push cost: the campaign's own rows and its ads'. Each row carries the adId it was recorded against, null meaning the cost is known and its split is not, and the response splits the same total into unsplitTotal and a per-ad breakdown so the parts always reconcile against it. Oldest day first, campaign-level row before its ads' on the same day, in the smallest currency unit and never formatted. The period's timestamp range is converted to calendar days in the store's timezone, using the same period helper the attributed-revenue read uses, so spend and revenue always describe the same window. The response also carries the store's currency and today's date where the store is — the two facts an entry form needs to be correct, and neither of which the browser can be trusted for.",
+      "This creative's rows alone, oldest day first, in the smallest currency unit and never formatted. For the whole push — this ad, its siblings and the campaign-level rows whose split is not known — read the campaign's spend instead, which spans both grains.",
   })
   @ApiResponse({ status: 200 })
   @ApiResponse({ status: 404 })
   async list(
     @Param('campaignId', ParseUUIDPipe) campaignId: string,
+    @Param('adId', ParseUUIDPipe) adId: string,
     @Query() query: ListCampaignSpendQueryDto,
     @CurrentTenant() tenant: TenantContext,
   ): Promise<CampaignSpendReport> {
     const { organizationId, storeId } = requireStoreContext(tenant);
     return this.spend.list(
-      { organizationId, storeId, campaignId, adId: null },
+      { organizationId, storeId, campaignId, adId },
       query.period ?? '30d',
     );
   }
@@ -85,24 +87,28 @@ export class AdminCampaignSpendController {
   @Post()
   @RequirePermission('campaigns.write')
   @ApiOperation({
-    summary: "Record a day's spend",
+    summary: "Record a day's spend against an ad",
     description:
-      "A correction, not an addition: a day that already has a figure is replaced, so the same request sent twice leaves one row holding the last amount. Refused if the amount is negative, if the day is in the future where the store is, or if the currency is not the store's — there is no conversion anywhere in this feature. An archived campaign accepts spend: closing out a finished campaign's real cost is normal. Recorded against the campaign as a whole — post to the ad's own spend route to name a creative, and the two coexist for the same day.",
+      "A correction, not an addition: this ad's figure for that day is replaced, so the same request sent twice leaves one row holding the last amount. It does not touch the campaign-level figure for the same day, nor a sibling ad's — the three coexist and are all counted. The same refusals as campaign-level entry: no negative amount, no future day, the store's currency only. An archived ad accepts spend, so a finished creative's real cost can be closed out.",
   })
   @ApiResponse({ status: 201 })
   @ApiResponse({
     status: 400,
     description: 'Negative amount, future or malformed day, or wrong currency',
   })
-  @ApiResponse({ status: 404 })
+  @ApiResponse({
+    status: 404,
+    description: 'Unknown campaign, or an ad that is not under it',
+  })
   async record(
     @Param('campaignId', ParseUUIDPipe) campaignId: string,
+    @Param('adId', ParseUUIDPipe) adId: string,
     @Body() dto: RecordCampaignSpendDto,
     @CurrentTenant() tenant: TenantContext,
   ): Promise<CampaignSpend> {
     const { organizationId, storeId } = requireStoreContext(tenant);
     return this.spend.record(
-      { organizationId, storeId, campaignId, adId: null },
+      { organizationId, storeId, campaignId, adId },
       dto,
     );
   }
@@ -110,9 +116,9 @@ export class AdminCampaignSpendController {
   @Post('range')
   @RequirePermission('campaigns.write')
   @ApiOperation({
-    summary: 'Record one total across a range of days',
+    summary: 'Record one total across a range of days against an ad',
     description:
-      "For a merchant who knows what a week cost but not what each day cost. Writes one row per day in the range, dividing the total in minor units and adding the remainder to the first day, so the rows sum to exactly the total submitted. Every day in the range is overwritten rather than added to, exactly as single-day entry corrects the day it names — so re-running an overlapping range repairs those days instead of doubling them. The same refusals apply: no negative total, no future day, the store's currency only. A range that ends before it starts, or that covers more days than one entry may cover, is refused.",
+      'Exactly as the campaign-level range works, one grain down: one row per day for this ad, the total divided in minor units with the remainder on the first day so the rows sum to exactly what was submitted, and every day in the range corrected rather than added to.',
   })
   @ApiResponse({ status: 201, description: 'The rows written, oldest first' })
   @ApiResponse({
@@ -123,12 +129,13 @@ export class AdminCampaignSpendController {
   @ApiResponse({ status: 404 })
   async recordRange(
     @Param('campaignId', ParseUUIDPipe) campaignId: string,
+    @Param('adId', ParseUUIDPipe) adId: string,
     @Body() dto: RecordCampaignSpendRangeDto,
     @CurrentTenant() tenant: TenantContext,
   ): Promise<CampaignSpend[]> {
     const { organizationId, storeId } = requireStoreContext(tenant);
     return this.spend.recordRange(
-      { organizationId, storeId, campaignId, adId: null },
+      { organizationId, storeId, campaignId, adId },
       dto,
     );
   }
@@ -136,22 +143,23 @@ export class AdminCampaignSpendController {
   @Patch(':spendId')
   @RequirePermission('campaigns.write')
   @ApiOperation({
-    summary: 'Correct a spend row',
+    summary: "Correct one of this ad's spend rows",
     description:
-      "The amount and the note. The day is not editable — moving a figure is recording it on the day it belongs to, which corrects that day, and deleting the row entered by mistake. Nor is the currency, which is the store's and frozen on the row.",
+      'The amount and the note, as at the campaign level. The ad in the path is a boundary rather than a decoration: a row recorded against the campaign as a whole, or against a sibling ad, is not reachable here.',
   })
   @ApiResponse({ status: 200 })
   @ApiResponse({ status: 400, description: 'Negative amount' })
   @ApiResponse({ status: 404 })
   async update(
     @Param('campaignId', ParseUUIDPipe) campaignId: string,
+    @Param('adId', ParseUUIDPipe) adId: string,
     @Param('spendId', ParseUUIDPipe) spendId: string,
     @Body() dto: UpdateCampaignSpendDto,
     @CurrentTenant() tenant: TenantContext,
   ): Promise<CampaignSpend> {
     const { organizationId, storeId } = requireStoreContext(tenant);
     return this.spend.update(
-      { organizationId, storeId, campaignId, adId: null },
+      { organizationId, storeId, campaignId, adId },
       spendId,
       dto,
     );
@@ -161,20 +169,21 @@ export class AdminCampaignSpendController {
   @RequirePermission('campaigns.write')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
-    summary: 'Remove a spend row',
+    summary: "Remove one of this ad's spend rows",
     description:
-      'Deletable, unlike a campaign: a figure entered against the wrong campaign should be removed rather than zeroed, because a zero claims the campaign ran that day and cost nothing.',
+      'Deletable, unlike the ad itself: a figure entered against the wrong creative should be removed rather than zeroed, because a zero claims the creative ran that day and cost nothing.',
   })
   @ApiResponse({ status: 204 })
   @ApiResponse({ status: 404 })
   async remove(
     @Param('campaignId', ParseUUIDPipe) campaignId: string,
+    @Param('adId', ParseUUIDPipe) adId: string,
     @Param('spendId', ParseUUIDPipe) spendId: string,
     @CurrentTenant() tenant: TenantContext,
   ): Promise<void> {
     const { organizationId, storeId } = requireStoreContext(tenant);
     await this.spend.remove(
-      { organizationId, storeId, campaignId, adId: null },
+      { organizationId, storeId, campaignId, adId },
       spendId,
     );
   }

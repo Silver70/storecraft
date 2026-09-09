@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, between, eq, sql } from 'drizzle-orm';
+import { and, asc, between, eq, isNull, sql } from 'drizzle-orm';
 import type { DrizzleClient } from '../../../shared/database/database.module';
 import { DRIZZLE_CLIENT } from '../../../shared/database/database.module';
 import type {
@@ -14,6 +14,11 @@ export interface RecordSpendRow {
   organizationId: string;
   storeId: string;
   campaignId: string;
+  /**
+   * The Ad the cost was for, or null for a figure recorded against the
+   * Campaign as a whole — the cost is known and its split is not.
+   */
+  adId: string | null;
   day: SpendDay;
   amount: number;
   currency: string;
@@ -36,8 +41,20 @@ export class CampaignSpendRepository {
   /**
    * One Campaign's Spend for an inclusive range of calendar days, oldest first.
    *
+   * Both grains, always: the Campaign's own rows and its Ads'. What a push cost
+   * is one figure, and returning only half of it here would let a Campaign and
+   * its Ads disagree about it. `adId` on each row is what tells them apart.
+   *
+   * Pass `adId` to narrow to one creative. Null is not a filter value — it is a
+   * grain, and `findForCampaign(campaignId)` already includes it.
+   *
    * `between` is inclusive on both ends, which is what a day range means: `to`
    * is the day the period ends in, not an exclusive instant.
+   *
+   * Within a day the Campaign-level row sorts first. Postgres orders nulls last
+   * on an ascending sort, which would put the whole-Campaign figure underneath
+   * the creatives it is not a total of — a reading order that invites the wrong
+   * sum.
    */
   async findForCampaign(
     campaignId: string,
@@ -45,6 +62,7 @@ export class CampaignSpendRepository {
     storeId: string,
     from: SpendDay,
     to: SpendDay,
+    adId?: string,
   ): Promise<CampaignSpend[]> {
     return this.db
       .select()
@@ -55,14 +73,22 @@ export class CampaignSpendRepository {
           eq(campaignSpend.organizationId, orgId),
           eq(campaignSpend.storeId, storeId),
           between(campaignSpend.day, from, to),
+          ...(adId ? [eq(campaignSpend.adId, adId)] : []),
         ),
       )
-      .orderBy(asc(campaignSpend.day));
+      .orderBy(
+        asc(campaignSpend.day),
+        sql`${campaignSpend.adId} asc nulls first`,
+      );
   }
 
   /**
    * Total Spend per Campaign for an inclusive range of calendar days, for the
    * whole Store.
+   *
+   * Both grains roll up into the Campaign, because `ad_id` is not in the
+   * grouping: a Campaign's cost is its own rows plus its Ads', and a report
+   * that counted only one of them would understate what the push cost.
    *
    * Summed in SQL rather than by loading every row: the report needs one figure
    * per Campaign, and a period of 90 days across a Store's Campaigns is a page
@@ -127,11 +153,21 @@ export class CampaignSpendRepository {
     return row !== undefined;
   }
 
+  /**
+   * One row, scoped to its Campaign — and, when the caller addressed it beneath
+   * an Ad, to that Ad as well.
+   *
+   * `adId: null` is a real filter here rather than "any": a caller working at
+   * the Campaign grain must not reach an Ad's row by id, or the Ad-level
+   * routes would be a suggestion rather than a boundary. `undefined` is the
+   * "any grain" case, which is what the Campaign-level routes ask for.
+   */
   async findById(
     id: string,
     campaignId: string,
     orgId: string,
     storeId: string,
+    adId?: string | null,
   ): Promise<CampaignSpend | null> {
     const [row] = await this.db
       .select()
@@ -142,6 +178,7 @@ export class CampaignSpendRepository {
           eq(campaignSpend.campaignId, campaignId),
           eq(campaignSpend.organizationId, orgId),
           eq(campaignSpend.storeId, storeId),
+          ...adGrain(adId),
         ),
       )
       .limit(1);
@@ -151,10 +188,17 @@ export class CampaignSpendRepository {
   /**
    * Records a day's Spend, correcting the day if it already has a figure.
    *
-   * An upsert against `campaign_spend_campaign_day_unique`, not a read followed
-   * by an insert or an update. The database is what guarantees one row per day:
-   * a read-then-write would let two submits of the same figure both insert, and
-   * a doubled day halves a Campaign's ROAS silently and permanently.
+   * An upsert against `campaign_spend_campaign_ad_day_unique`, not a read
+   * followed by an insert or an update. The database is what guarantees one row
+   * per day: a read-then-write would let two submits of the same figure both
+   * insert, and a doubled day halves a Campaign's ROAS silently and
+   * permanently.
+   *
+   * The conflict target names `ad_id`, and the constraint it infers is declared
+   * `NULLS NOT DISTINCT`. Without that declaration a Campaign-level row would
+   * conflict with nothing — Postgres would see two different nulls — and this
+   * upsert would quietly become an insert for exactly the grain the merchant
+   * uses most.
    *
    * `setWhere` restates the tenant filter on the update branch. A conflicting
    * row is by construction the same Campaign's, and so the same Organization's,
@@ -168,7 +212,11 @@ export class CampaignSpendRepository {
       .insert(campaignSpend)
       .values(values)
       .onConflictDoUpdate({
-        target: [campaignSpend.campaignId, campaignSpend.day],
+        target: [
+          campaignSpend.campaignId,
+          campaignSpend.adId,
+          campaignSpend.day,
+        ],
         set: {
           amount: row.amount,
           currency: row.currency,
@@ -211,7 +259,11 @@ export class CampaignSpendRepository {
       .insert(campaignSpend)
       .values(values)
       .onConflictDoUpdate({
-        target: [campaignSpend.campaignId, campaignSpend.day],
+        target: [
+          campaignSpend.campaignId,
+          campaignSpend.adId,
+          campaignSpend.day,
+        ],
         set: {
           amount: sql`excluded.amount`,
           currency: sql`excluded.currency`,
@@ -229,12 +281,14 @@ export class CampaignSpendRepository {
       .returning();
   }
 
+  /** Scoped as `findById` is, and for the same reason. */
   async update(
     id: string,
     campaignId: string,
     orgId: string,
     storeId: string,
     data: Partial<Pick<NewCampaignSpend, 'amount' | 'note'>>,
+    adId?: string | null,
   ): Promise<CampaignSpend | null> {
     const [row] = await this.db
       .update(campaignSpend)
@@ -245,17 +299,20 @@ export class CampaignSpendRepository {
           eq(campaignSpend.campaignId, campaignId),
           eq(campaignSpend.organizationId, orgId),
           eq(campaignSpend.storeId, storeId),
+          ...adGrain(adId),
         ),
       )
       .returning();
     return row ?? null;
   }
 
+  /** Scoped as `findById` is, and for the same reason. */
   async remove(
     id: string,
     campaignId: string,
     orgId: string,
     storeId: string,
+    adId?: string | null,
   ): Promise<boolean> {
     const deleted = await this.db
       .delete(campaignSpend)
@@ -265,9 +322,26 @@ export class CampaignSpendRepository {
           eq(campaignSpend.campaignId, campaignId),
           eq(campaignSpend.organizationId, orgId),
           eq(campaignSpend.storeId, storeId),
+          ...adGrain(adId),
         ),
       )
       .returning({ id: campaignSpend.id });
     return deleted.length > 0;
   }
+}
+
+/**
+ * The `ad_id` clause for a grain, if the caller named one.
+ *
+ * Three states, and the difference between the last two is the point:
+ * `undefined` means any grain, `null` means the Campaign's own rows and not its
+ * Ads', and an id means that Ad. Written once because `eq(column, null)` is
+ * silently never true in SQL, and a filter that quietly matches nothing on a
+ * table holding cost data is the wrong kind of mistake to make twice.
+ */
+function adGrain(adId: string | null | undefined) {
+  if (adId === undefined) return [];
+  return [
+    adId === null ? isNull(campaignSpend.adId) : eq(campaignSpend.adId, adId),
+  ];
 }

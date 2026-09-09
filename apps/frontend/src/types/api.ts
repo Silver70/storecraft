@@ -472,11 +472,11 @@ export type CampaignTaggedLink = {
 // ─── Campaign spend ───────────────────────────────────────────────────────────
 
 /**
- * What a merchant paid for a campaign on one day.
+ * What a merchant paid for a campaign — or for one ad under it — on one day.
  *
- * One row per campaign per day: recording a day that already has a figure
- * corrects it rather than adding to it, so a double-submit cannot double a
- * day's cost. The `day` is a calendar date in the store's timezone, never an
+ * One row per grain per day: recording a day that already has a figure at that
+ * grain corrects it rather than adding to it, so a double-submit cannot double
+ * a day's cost. The `day` is a calendar date in the store's timezone, never an
  * instant — ad platforms report daily totals and nothing here is more precise
  * than that.
  */
@@ -485,6 +485,15 @@ export type CampaignSpend = {
   organizationId: string;
   storeId: string;
   campaignId: string;
+  /**
+   * The creative this cost was for, or null for a figure recorded against the
+   * campaign as a whole.
+   *
+   * Null means the cost is known and its split is not — never that the cost
+   * belongs to no ad. A campaign-level row is not a total of the ads beneath
+   * it, so it is counted alongside them rather than instead of them.
+   */
+  adId: string | null;
   /** `YYYY-MM-DD` in the store's timezone. */
   day: string;
   /** Smallest currency unit. Formatted only for display, never on the wire. */
@@ -508,6 +517,8 @@ export type CampaignSpend = {
  */
 export type CampaignSpendReport = {
   campaignId: string;
+  /** The ad the report is scoped to, or null when it covers the whole campaign. */
+  adId: string | null;
   period: Period;
   currency: string;
   timezone: string;
@@ -516,8 +527,22 @@ export type CampaignSpendReport = {
   /** The inclusive calendar day range the rows cover. */
   from: string;
   to: string;
+  /** Both grains when the report is a campaign's: its own rows and its ads'. */
   rows: CampaignSpend[];
-  /** The period's spend in the smallest currency unit. */
+  /**
+   * What the push cost over the period, in the smallest currency unit: the
+   * campaign's own rows plus its ads'. One cost, read at two grains.
+   */
+  total: number;
+  /** The part of `total` recorded without naming an ad — cost known, split not. */
+  unsplitTotal: number;
+  /** Per-ad totals for the period, for the ads with any spend in it. */
+  byAd: AdSpendTotal[];
+};
+
+export type AdSpendTotal = {
+  adId: string;
+  /** In the smallest currency unit. */
   total: number;
 };
 

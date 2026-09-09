@@ -772,6 +772,41 @@ describe('Attributed revenue by campaign (e2e)', () => {
     expect(lineFor(report, finished.id)).toBeUndefined();
   });
 
+  it("counts an ad's spend as the campaign's own", async () => {
+    // The two grains are one cost read at two resolutions. A report that
+    // counted only the campaign-level rows would understate what the push cost
+    // and inflate its ROAS by exactly the share a merchant had bothered to
+    // split — the more carefully they record, the more wrong the number.
+    const summer = await createCampaign('Summer Sale');
+    const adRes = await admin.client
+      .post(`/campaigns/${summer.id}/ads`, { name: 'Beach video' })
+      .expect(201);
+    const beachVideo = adRes.body as { id: string };
+
+    await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
+    await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
+
+    // $10 whose split is unknown, $5 against the one creative that was split
+    // out. $15 spent against $60 earned, worked out by hand.
+    await recordSpend(summer.id, 1000);
+    await admin.client
+      .post(`/campaigns/${summer.id}/ads/${beachVideo.id}/spend`, {
+        day: dayAgo(0),
+        amount: 500,
+        currency: 'USD',
+      })
+      .expect(201);
+
+    const report = await readReport();
+
+    expect(lineFor(report, summer.id)).toMatchObject({
+      revenue: ORDER_TOTAL * 2,
+      spend: 1500,
+      roas: 4,
+    });
+    expect(report.blended).toMatchObject({ spend: 1500, roas: 4 });
+  });
+
   it('counts only the spend recorded inside the period', async () => {
     const summer = await createCampaign('Summer Sale');
 

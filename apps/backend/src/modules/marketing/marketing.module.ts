@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { TenantModule } from '../tenant/tenant.module';
 import { AdminAdController } from './controllers/admin-ad.controller';
+import { AdminAdSpendController } from './controllers/admin-ad-spend.controller';
 import { AdminAttributionController } from './controllers/admin-attribution.controller';
 import { AdminCampaignController } from './controllers/admin-campaign.controller';
 import { AdminCampaignSpendController } from './controllers/admin-campaign-spend.controller';
@@ -33,6 +34,7 @@ import { RulePreviewService } from './services/rule-preview.service';
     AdminCampaignController,
     AdminAdController,
     AdminCampaignSpendController,
+    AdminAdSpendController,
     AdminAttributionController,
   ],
   providers: [

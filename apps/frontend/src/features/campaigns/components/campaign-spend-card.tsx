@@ -6,16 +6,18 @@ import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "~/components/ui/select";
 import { Separator } from "~/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import { formatMoney, toCents } from "~/lib/money";
 import type {
+    Ad,
     AttributionTouch,
     CampaignSpend,
     CampaignSpendReport,
     Period,
 } from "~/types/api";
-import { campaignSpendQueryOptions } from "../queries";
+import { campaignAdsQueryOptions, campaignSpendQueryOptions } from "../queries";
 import { CampaignPerformancePanel } from "./campaign-performance-panel";
 import { PerformancePeriodTabs } from "./campaign-performance-controls";
 import {
@@ -103,10 +105,139 @@ function useInvalidateSpend(campaignId: string) {
 /** Which of the two entry forms is showing. */
 type EntryMode = "day" | "range";
 
+/**
+ * The grain selector's value for "not split by creative".
+ *
+ * A sentinel rather than an empty string, because a select with an empty value
+ * renders as unset and this is a deliberate answer: the cost is known and its
+ * split is not.
+ */
+const WHOLE_CAMPAIGN = "campaign";
+
+/** The `adId` a server function wants: the sentinel means "send none". */
+function toAdId(value: string): string | undefined {
+    return value === WHOLE_CAMPAIGN ? undefined : value;
+}
+
 interface EntryProps {
     campaignId: string;
     /** Absent while loading or failed: entry stays disabled without it. */
     report: CampaignSpendReport | undefined;
+    /** Every ad under this campaign, archived included, for naming rows. */
+    ads: Ad[];
+}
+
+/**
+ * Picks what a figure is being recorded against.
+ *
+ * Absent entirely until the campaign has an ad, so a campaign a merchant has not
+ * subdivided keeps exactly the form it had before ads existed — an ad is a
+ * subdivision a merchant opts into, and nothing here should nag them into one.
+ *
+ * Only active ads are offered. A finished creative's cost can still be closed
+ * out by un-archiving it, but the common case is recording against what is
+ * running, and a list that grows forever with retired creatives makes the wrong
+ * one easy to pick.
+ *
+ * "Whole campaign" is first and is the default, because it is what this form did
+ * before ads existed and what a merchant holding one invoice still wants.
+ */
+function AdSelect({
+    id,
+    ads,
+    value,
+    onValueChange,
+}: {
+    id: string;
+    ads: Ad[];
+    value: string;
+    onValueChange: (value: string) => void;
+}) {
+    const active = ads.filter(ad => ad.status === "active");
+    if (active.length === 0) return null;
+
+    return (
+        <div className="space-y-1.5">
+            <Label htmlFor={id} className="text-xs text-muted-foreground">
+                For
+            </Label>
+            <Select value={value} onValueChange={onValueChange}>
+                <SelectTrigger id={id} className="w-44">
+                    <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                    <SelectItem value={WHOLE_CAMPAIGN}>Whole campaign</SelectItem>
+                    {active.map(ad => (
+                        <SelectItem key={ad.id} value={ad.id}>
+                            {ad.name}
+                        </SelectItem>
+                    ))}
+                </SelectContent>
+            </Select>
+        </div>
+    );
+}
+
+/**
+ * What a row was recorded against, as a merchant reads it.
+ *
+ * A campaign-level row says so rather than showing nothing. Blank would read as
+ * a row that failed to load its ad, and the distinction is the one the whole
+ * grain rests on: this is cost whose split nobody has typed in, not cost with no
+ * creative.
+ */
+function GrainBadge({ adId, ads }: { adId: string | null; ads: Ad[] }) {
+    if (adId === null) {
+        return <span className="shrink-0 text-xs text-muted-foreground/70">Whole campaign</span>;
+    }
+    const ad = ads.find(a => a.id === adId);
+    return (
+        <span className="shrink-0 truncate rounded bg-muted px-1.5 py-0.5 text-xs font-medium">
+            {ad?.name ?? "Unknown ad"}
+        </span>
+    );
+}
+
+/**
+ * How the period's cost divides across the creatives it was split into.
+ *
+ * Absent until something has been split, so an unsubdivided campaign shows
+ * exactly the footer it always did.
+ *
+ * The figures come from the backend rather than being summed here. The parts
+ * reconcile against the total by construction there; adding them up again in the
+ * browser would be a second arithmetic, free to disagree with the total printed
+ * directly above it.
+ *
+ * "Not split by ad" rather than "no ad": the campaign-level figure is not a total
+ * of the ads beneath it and it is not spend on nothing — it is the share of the
+ * cost whose split has not been recorded, and it is counted alongside them.
+ */
+function SpendBreakdown({ report, ads }: { report: CampaignSpendReport; ads: Ad[] }) {
+    if (report.byAd.length === 0) return null;
+
+    return (
+        <div className="space-y-1 border-t bg-muted/10 px-3 py-2">
+            {report.unsplitTotal > 0 && (
+                <div className="flex items-center justify-between gap-3 text-xs">
+                    <span className="text-muted-foreground">Not split by ad</span>
+                    <span className="shrink-0 tabular-nums text-muted-foreground">
+                        {formatMoney(report.unsplitTotal, report.currency)}
+                    </span>
+                </div>
+            )}
+            {report.byAd.map(line => (
+                <div key={line.adId} className="flex items-center justify-between gap-3 text-xs">
+                    <span className="min-w-0 truncate text-muted-foreground">
+                        {ads.find(ad => ad.id === line.adId)?.name ?? "Unknown ad"}
+                    </span>
+                    <span className="shrink-0 tabular-nums text-muted-foreground">
+                        {formatMoney(line.total, report.currency)}
+                    </span>
+                </div>
+            ))}
+        </div>
+    );
 }
 
 /**
@@ -127,6 +258,12 @@ interface EntryProps {
  * Entry comes in two shapes because merchants know their costs in two shapes:
  * a day at a time, and a week's total from an invoice. Both write the same
  * per-day rows.
+ *
+ * A figure can name one creative or none. Naming none is the default and means
+ * the cost is known and its split is not — it is not a total of the ads beneath
+ * it, so the two are counted together and the footer shows how the period's cost
+ * divides. The "For" selector appears only once a campaign has an ad: a campaign
+ * a merchant has not split should look exactly as it did before ads existed.
  */
 export function CampaignSpendCard({ campaignId }: { campaignId: string }) {
     const [period, setPeriod] = React.useState<Period>("30d");
@@ -139,6 +276,11 @@ export function CampaignSpendCard({ campaignId }: { campaignId: string }) {
         error: loadError,
         refetch,
     } = useQuery(campaignSpendQueryOptions(campaignId, period));
+
+    // Archived included: a retired creative's rows still have to say whose they
+    // are, and "Unknown ad" over money a merchant recorded last month is worse
+    // than showing no split at all.
+    const { data: ads = [] } = useQuery(campaignAdsQueryOptions(campaignId, "all"));
 
     return (
         <Card>
@@ -193,7 +335,7 @@ export function CampaignSpendCard({ campaignId }: { campaignId: string }) {
                     <div className="overflow-hidden rounded-md border">
                         <ul className="divide-y">
                             {report.rows.map(row => (
-                                <SpendRow key={row.id} row={row} campaignId={campaignId} />
+                                <SpendRow key={row.id} row={row} campaignId={campaignId} ads={ads} />
                             ))}
                         </ul>
                         <div className="flex items-center justify-between border-t bg-muted/30 px-3 py-2 text-sm">
@@ -202,6 +344,7 @@ export function CampaignSpendCard({ campaignId }: { campaignId: string }) {
                                 {formatMoney(report.total, report.currency)}
                             </span>
                         </div>
+                        <SpendBreakdown report={report} ads={ads} />
                     </div>
                 )}
 
@@ -225,9 +368,9 @@ export function CampaignSpendCard({ campaignId }: { campaignId: string }) {
                     </div>
 
                     {mode === "day" ? (
-                        <SingleDayEntry campaignId={campaignId} report={report} />
+                        <SingleDayEntry campaignId={campaignId} report={report} ads={ads} />
                     ) : (
-                        <RangeEntry campaignId={campaignId} report={report} />
+                        <RangeEntry campaignId={campaignId} report={report} ads={ads} />
                     )}
 
                     <p className="text-xs text-muted-foreground">
@@ -247,9 +390,10 @@ export function CampaignSpendCard({ campaignId }: { campaignId: string }) {
  * `null` for untouched is what lets that default apply without overwriting a
  * day the merchant has since chosen, or refilling one they cleared.
  */
-function SingleDayEntry({ campaignId, report }: EntryProps) {
+function SingleDayEntry({ campaignId, report, ads }: EntryProps) {
     const invalidate = useInvalidateSpend(campaignId);
     const [chosenDay, setChosenDay] = React.useState<string | null>(null);
+    const [grain, setGrain] = React.useState(WHOLE_CAMPAIGN);
     const [amount, setAmount] = React.useState("");
     const [note, setNote] = React.useState("");
     const [error, setError] = React.useState<string | null>(null);
@@ -265,6 +409,7 @@ function SingleDayEntry({ campaignId, report }: EntryProps) {
             return recordCampaignSpendServerFn({
                 data: {
                     campaignId,
+                    adId: toAdId(grain),
                     day,
                     amount: minorUnits,
                     currency: report!.currency,
@@ -305,6 +450,8 @@ function SingleDayEntry({ campaignId, report }: EntryProps) {
                         onChange={e => setChosenDay(e.target.value)}
                     />
                 </div>
+
+                <AdSelect id="spend-grain" ads={ads} value={grain} onValueChange={setGrain} />
 
                 <div className="space-y-1.5">
                     <Label htmlFor="spend-amount" className="text-xs text-muted-foreground">
@@ -365,10 +512,11 @@ function SingleDayEntry({ campaignId, report }: EntryProps) {
  * them. The range defaults to the last seven days ending today where the store
  * is, which is the entry this form exists for.
  */
-function RangeEntry({ campaignId, report }: EntryProps) {
+function RangeEntry({ campaignId, report, ads }: EntryProps) {
     const invalidate = useInvalidateSpend(campaignId);
     const [chosenStart, setChosenStart] = React.useState<string | null>(null);
     const [chosenEnd, setChosenEnd] = React.useState<string | null>(null);
+    const [grain, setGrain] = React.useState(WHOLE_CAMPAIGN);
     const [total, setTotal] = React.useState("");
     const [note, setNote] = React.useState("");
     const [error, setError] = React.useState<string | null>(null);
@@ -388,6 +536,7 @@ function RangeEntry({ campaignId, report }: EntryProps) {
             return recordCampaignSpendRangeServerFn({
                 data: {
                     campaignId,
+                    adId: toAdId(grain),
                     startDay,
                     endDay,
                     total: minorUnits,
@@ -441,6 +590,8 @@ function RangeEntry({ campaignId, report }: EntryProps) {
                     />
                 </div>
 
+                <AdSelect id="spend-range-grain" ads={ads} value={grain} onValueChange={setGrain} />
+
                 <div className="space-y-1.5">
                     {/* "Total", not "Amount": this figure covers the whole range,
                         and a merchant reading it as a daily rate would enter
@@ -489,7 +640,9 @@ function RangeEntry({ campaignId, report }: EntryProps) {
                 dayCount > 0 && (
                     <p className="text-xs text-muted-foreground">
                         Writes {dayCount} {dayCount === 1 ? "row" : "rows"}, one per day, adding up to exactly the total
-                        you enter. Any days already recorded in this range are corrected, not added to.
+                        you enter. Any days already recorded in this range{" "}
+                        {grain === WHOLE_CAMPAIGN ? "for the whole campaign" : "for this ad"} are corrected, not added
+                        to — figures recorded at the other level are left alone.
                     </p>
                 )
             )}
@@ -505,10 +658,14 @@ function RangeEntry({ campaignId, report }: EntryProps) {
  * Only the amount and the note can be changed. Moving a figure to another day
  * is recording it on that day — which corrects whatever is there — and deleting
  * this one, which is why there is a delete at all: a figure entered against the
- * wrong campaign should be removed rather than zeroed, since a zero claims the
- * campaign ran that day and cost nothing.
+ * wrong campaign, or against the wrong creative, should be removed rather than
+ * zeroed, since a zero claims it ran that day and cost nothing.
+ *
+ * The grain is shown and is not editable, for the reason the day is not: moving
+ * a figure onto a creative is recording it there — which corrects whatever that
+ * creative already holds for the day — and deleting this row.
  */
-function SpendRow({ row, campaignId }: { row: CampaignSpend; campaignId: string }) {
+function SpendRow({ row, campaignId, ads }: { row: CampaignSpend; campaignId: string; ads: Ad[] }) {
     const invalidate = useInvalidateSpend(campaignId);
     const [editing, setEditing] = React.useState(false);
     const [amount, setAmount] = React.useState(toInput(row.amount));
@@ -556,6 +713,7 @@ function SpendRow({ row, campaignId }: { row: CampaignSpend; campaignId: string 
             <li className="space-y-2 px-3 py-2">
                 <div className="flex flex-wrap items-center gap-2">
                     <span className="w-28 shrink-0 text-sm text-muted-foreground">{formatDay(row.day)}</span>
+                    <GrainBadge adId={row.adId} ads={ads} />
                     <Input
                         className="w-28 tabular-nums"
                         inputMode="decimal"
@@ -614,6 +772,7 @@ function SpendRow({ row, campaignId }: { row: CampaignSpend; campaignId: string 
             <div className="flex items-center gap-3 text-sm">
                 <span className="w-28 shrink-0 text-muted-foreground">{formatDay(row.day)}</span>
                 <span className="w-24 shrink-0 font-medium tabular-nums">{formatMoney(row.amount, row.currency)}</span>
+                <GrainBadge adId={row.adId} ads={ads} />
                 <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{row.note}</span>
                 <Button
                     type="button"

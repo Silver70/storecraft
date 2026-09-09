@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import type { CampaignSpend } from '../../../shared/database/schema';
 import { StoreService } from '../../tenant/services/store.service';
+import { AdRepository } from '../repositories/ad.repository';
 import { CampaignRepository } from '../repositories/campaign.repository';
 import { CampaignSpendRepository } from '../repositories/campaign-spend.repository';
 import {
@@ -23,6 +24,27 @@ import {
   splitAcrossDays,
   MAX_SPEND_RANGE_DAYS,
 } from '../utils/spend-range.util';
+
+/**
+ * What a figure is being recorded against.
+ *
+ * `adId` is the grain, and null is a real answer rather than a missing one: the
+ * Campaign cost this much and the split across its creatives is unknown. It is
+ * never "this cost belongs to no Ad", and nothing here invents an Ad to carry
+ * it — a synthetic "default Ad" would sit in the card grid forever claiming to
+ * be a creative that never ran.
+ *
+ * Grouped into an object rather than trailing the ids it sits among. A fourth
+ * positional uuid next to three others is a call site where a transposition
+ * type-checks, and the two it would swap are the Campaign and the creative
+ * whose cost is being recorded.
+ */
+export interface SpendTarget {
+  organizationId: string;
+  storeId: string;
+  campaignId: string;
+  adId: string | null;
+}
 
 export interface RecordCampaignSpendInput {
   day: string;
@@ -66,6 +88,11 @@ export interface UpdateCampaignSpendInput {
  */
 export interface CampaignSpendReport {
   campaignId: string;
+  /**
+   * The Ad the report is scoped to, or null when it covers the whole Campaign
+   * — its own rows and its Ads'.
+   */
+  adId: string | null;
   period: AttributionPeriod;
   /** The Store's currency. Spend is recorded in it and never converted. */
   currency: string;
@@ -77,18 +104,46 @@ export interface CampaignSpendReport {
   from: SpendDay;
   to: SpendDay;
   rows: CampaignSpend[];
-  /** The period's Spend in the smallest currency unit. Never formatted here. */
+  /**
+   * What the push cost over the period, in the smallest currency unit and
+   * never formatted here: the Campaign's own rows plus its Ads'. There is one
+   * cost, read at two grains, and this is it.
+   */
+  total: number;
+  /**
+   * The part of `total` recorded without naming an Ad — cost known, split not.
+   *
+   * Its own figure rather than something the caller subtracts, because the
+   * subtraction is the place a reader would go wrong: this is not "spend on no
+   * ad", it is the share of the push whose split nobody has typed in yet.
+   */
+  unsplitTotal: number;
+  /** Per-Ad totals for the period, for the Ads with any Spend in it. */
+  byAd: AdSpendTotal[];
+}
+
+export interface AdSpendTotal {
+  adId: string;
+  /** In the smallest currency unit. Never formatted here. */
   total: number;
 }
 
 /**
- * Recording what a Campaign cost.
+ * Recording what a Campaign — or one creative under it — cost.
  *
  * The behaviour that matters most is that recording is a *correction*, not an
  * addition: submitting a day that already has a figure replaces it. Insert
  * semantics would let a double-submit double a day's cost and halve the
  * Campaign's ROAS forever, without ever throwing. The guarantee lives on the
- * unique constraint in the database rather than in a read performed here.
+ * unique constraint in the database rather than in a read performed here, and
+ * it now holds at both grains: one Campaign-level row per day, and one row per
+ * Ad per day.
+ *
+ * Every write names a `SpendTarget`, whose `adId` is the grain. Both grains go
+ * through the same path — the same refusals, the same upsert, the same range
+ * split — because they are the same act recorded at different resolutions, and
+ * a second implementation for the finer one would be free to drift from the one
+ * that has been holding the money correct.
  *
  * Everything else is refusal. Spend is money, so it is an integer in minor
  * units and never negative. A day is a calendar date in the Store's timezone
@@ -101,17 +156,30 @@ export interface CampaignSpendReport {
 export class CampaignSpendService {
   constructor(
     private readonly campaigns: CampaignRepository,
+    private readonly ads: AdRepository,
     private readonly spend: CampaignSpendRepository,
     private readonly stores: StoreService,
   ) {}
 
+  /**
+   * A period's Spend for a target.
+   *
+   * At the Campaign grain (`adId: null`) this is the whole push: the Campaign's
+   * own rows and every one of its Ads'. Anything narrower would let the two
+   * levels disagree about what a Campaign cost, which is the one thing this
+   * feature cannot do. `unsplitTotal` and `byAd` divide that same figure up
+   * rather than adding to it, so the parts always reconcile against the total
+   * by construction.
+   *
+   * At an Ad grain it is that creative's rows alone, and `unsplitTotal` is
+   * zero: an Ad's own cost has nothing left to split.
+   */
   async list(
-    orgId: string,
-    storeId: string,
-    campaignId: string,
+    target: SpendTarget,
     period: AttributionPeriod,
   ): Promise<CampaignSpendReport> {
-    await this.requireCampaign(orgId, storeId, campaignId);
+    const { organizationId: orgId, storeId, campaignId, adId } = target;
+    await this.requireTarget(target);
     const store = await this.requireStore(orgId, storeId);
 
     // The same `[start, end)` helper every marketing read shares, converted to
@@ -126,10 +194,25 @@ export class CampaignSpendService {
       storeId,
       from,
       to,
+      adId ?? undefined,
     );
+
+    // Totalled from the rows already loaded rather than from a second query.
+    // A separate sum could answer differently from the rows on screen — after a
+    // write between the two reads, say — and a merchant reading a total that
+    // does not add up loses trust in every figure beside it.
+    const byAd = new Map<string, number>();
+    let total = 0;
+    let unsplitTotal = 0;
+    for (const row of rows) {
+      total += row.amount;
+      if (row.adId === null) unsplitTotal += row.amount;
+      else byAd.set(row.adId, (byAd.get(row.adId) ?? 0) + row.amount);
+    }
 
     return {
       campaignId,
+      adId,
       period,
       currency: store.currency,
       timezone: store.timezone,
@@ -137,24 +220,31 @@ export class CampaignSpendService {
       from,
       to,
       rows,
-      total: rows.reduce((sum, row) => sum + row.amount, 0),
+      total,
+      unsplitTotal,
+      byAd: [...byAd].map(([id, amount]) => ({ adId: id, total: amount })),
     };
   }
 
   /**
-   * Records one day's Spend, correcting that day if it already has a figure.
+   * Records one day's Spend for the target, correcting that day if it already
+   * has a figure.
    *
-   * The Campaign may be archived. Closing out a finished Campaign's real cost
-   * is a normal thing to want, and refusing it would leave the account
-   * permanently understating what it spent.
+   * The correction is per grain. A Campaign-level figure and an Ad-level figure
+   * for the same day are two different facts and coexist; two submits of either
+   * one replace it. That is the whole of the day-uniqueness guarantee, and it
+   * is the database that holds it.
+   *
+   * The Campaign — or the Ad — may be archived. Closing out a finished
+   * creative's real cost is a normal thing to want, and refusing it would leave
+   * the account permanently understating what it spent.
    */
   async record(
-    orgId: string,
-    storeId: string,
-    campaignId: string,
+    target: SpendTarget,
     input: RecordCampaignSpendInput,
   ): Promise<CampaignSpend> {
-    await this.requireCampaign(orgId, storeId, campaignId);
+    const { organizationId: orgId, storeId, campaignId, adId } = target;
+    await this.requireTarget(target);
     const store = await this.requireStore(orgId, storeId);
 
     const day = this.assertDay(input.day, store.timezone);
@@ -165,6 +255,7 @@ export class CampaignSpendService {
       organizationId: orgId,
       storeId,
       campaignId,
+      adId,
       day,
       amount,
       // The Store's own casing, not the caller's: the row is a record of what
@@ -190,12 +281,11 @@ export class CampaignSpendService {
    * unique constraint gives `record`, applied to a stretch of days at once.
    */
   async recordRange(
-    orgId: string,
-    storeId: string,
-    campaignId: string,
+    target: SpendTarget,
     input: RecordCampaignSpendRangeInput,
   ): Promise<CampaignSpend[]> {
-    await this.requireCampaign(orgId, storeId, campaignId);
+    const { organizationId: orgId, storeId, campaignId, adId } = target;
+    await this.requireTarget(target);
     const store = await this.requireStore(orgId, storeId);
 
     const startDay = this.assertDay(input.startDay, store.timezone);
@@ -210,6 +300,7 @@ export class CampaignSpendService {
         organizationId: orgId,
         storeId,
         campaignId,
+        adId,
         day: row.day,
         amount: row.amount,
         // The Store's own casing, as in `record` — the row records what this
@@ -238,13 +329,13 @@ export class CampaignSpendService {
    * Nor is the currency: it is the Store's, frozen on the row.
    */
   async update(
-    orgId: string,
-    storeId: string,
-    campaignId: string,
+    target: SpendTarget,
     spendId: string,
     input: UpdateCampaignSpendInput,
   ): Promise<CampaignSpend> {
-    await this.requireCampaign(orgId, storeId, campaignId);
+    const { organizationId: orgId, storeId, campaignId } = target;
+    await this.requireTarget(target);
+    const grain = this.editGrain(target);
 
     const patch: { amount?: number; note?: string | null } = {};
     if (input.amount !== undefined)
@@ -257,6 +348,7 @@ export class CampaignSpendService {
         campaignId,
         orgId,
         storeId,
+        grain,
       );
       if (!existing) throw new NotFoundException('Spend row not found');
       return existing;
@@ -268,6 +360,7 @@ export class CampaignSpendService {
       orgId,
       storeId,
       patch,
+      grain,
     );
     if (!updated) throw new NotFoundException('Spend row not found');
     return updated;
@@ -281,19 +374,16 @@ export class CampaignSpendService {
    * against the wrong Campaign should be removable rather than zeroed, because
    * a zero is itself a claim — that this Campaign ran that day and cost nothing.
    */
-  async remove(
-    orgId: string,
-    storeId: string,
-    campaignId: string,
-    spendId: string,
-  ): Promise<void> {
-    await this.requireCampaign(orgId, storeId, campaignId);
+  async remove(target: SpendTarget, spendId: string): Promise<void> {
+    const { organizationId: orgId, storeId, campaignId } = target;
+    await this.requireTarget(target);
 
     const removed = await this.spend.remove(
       spendId,
       campaignId,
       orgId,
       storeId,
+      this.editGrain(target),
     );
     if (!removed) throw new NotFoundException('Spend row not found');
   }
@@ -301,16 +391,38 @@ export class CampaignSpendService {
   // ─── Refusals ───────────────────────────────────────────────────────────────
 
   /**
-   * The Campaign, in this Organization and Store. Archived is allowed on
-   * purpose — see `record`.
+   * The target exists, in this Organization and Store, and the Ad — if one was
+   * named — hangs from the Campaign named alongside it.
+   *
+   * Both checks, not one. The Ad lookup names the Campaign as well, so an Ad id
+   * belonging to a sibling Campaign is a 404 rather than a row whose `ad_id`
+   * points across a boundary its `campaign_id` denies. Cost recorded against
+   * such a row would be summed into one Campaign and split under another.
+   *
+   * Archived is allowed at both levels on purpose — see `record`.
    */
-  private async requireCampaign(
-    orgId: string,
-    storeId: string,
-    campaignId: string,
-  ): Promise<void> {
+  private async requireTarget(target: SpendTarget): Promise<void> {
+    const { organizationId: orgId, storeId, campaignId, adId } = target;
+
     const campaign = await this.campaigns.findById(campaignId, orgId, storeId);
     if (!campaign) throw new NotFoundException('Campaign not found');
+
+    if (adId === null) return;
+    const ad = await this.ads.findById(adId, campaignId, orgId, storeId);
+    if (!ad) throw new NotFoundException('Ad not found');
+  }
+
+  /**
+   * Which rows an edit or a delete may reach, given how the caller addressed
+   * the row.
+   *
+   * Under an Ad, only that Ad's rows: the Ad in the path is a boundary, not a
+   * decoration. Under the Campaign, any of its rows at either grain — that is
+   * the address a merchant reaches a mistyped figure from, whichever grain it
+   * was typed at, and the Campaign scope is already the tenancy check.
+   */
+  private editGrain(target: SpendTarget): string | undefined {
+    return target.adId ?? undefined;
   }
 
   private async requireStore(orgId: string, storeId: string) {

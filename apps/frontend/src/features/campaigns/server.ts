@@ -444,8 +444,26 @@ export const getMarketingSummaryServerFn = createServerFn({ method: "GET" })
 // ─── Campaign spend ───────────────────────────────────────────────────────────
 
 /**
+ * Where a figure is written: the campaign as a whole, or one creative under it.
+ *
+ * The two grains are the same collection at different resolutions, so they take
+ * the same body and differ only in the path. Composed here rather than at each
+ * call site so a route cannot be assembled two ways.
+ */
+function spendPath(campaignId: string, adId?: string): string {
+  return adId
+    ? `/api/admin/campaigns/${campaignId}/ads/${adId}/spend`
+    : `/api/admin/campaigns/${campaignId}/spend`;
+}
+
+/**
  * What a campaign cost over a period, plus the store's currency and today's
  * date where the store is.
+ *
+ * The whole push, both grains: the campaign's own rows and its ads'. One read
+ * rather than one per creative — the rows carry the `adId` they were recorded
+ * against, and the response splits the same total into `unsplitTotal` and a
+ * per-ad breakdown, so the page never has to add up money itself.
  *
  * Those last two are read from the backend rather than derived here on purpose:
  * a date picker capped by the browser's clock would refuse a legitimate figure
@@ -462,7 +480,7 @@ export const getCampaignSpendServerFn = createServerFn({ method: "GET" })
   .handler(async ({ data }): Promise<CampaignSpendReport> => {
     try {
       const res = await apiClient.get<CampaignSpendReport>(
-        `/api/admin/campaigns/${data.campaignId}/spend?period=${data.period}`,
+        `${spendPath(data.campaignId)}?period=${data.period}`,
         { headers: await storeHeaders() },
       );
       return res.data;
@@ -472,17 +490,23 @@ export const getCampaignSpendServerFn = createServerFn({ method: "GET" })
   });
 
 /**
- * Records one day's spend.
+ * Records one day's spend, against the campaign or against one of its ads.
  *
- * A correction, not an addition: the backend upserts on `(campaign, day)`, so
- * submitting the same day twice leaves one row holding the last amount. That is
- * what makes a double-click harmless — an insert would double the day's cost
- * and halve the campaign's ROAS without anything failing.
+ * A correction, not an addition: the backend upserts per grain, so submitting
+ * the same day twice at the same grain leaves one row holding the last amount.
+ * That is what makes a double-click harmless — an insert would double the day's
+ * cost and halve the campaign's ROAS without anything failing.
+ *
+ * Omitting `adId` records against the campaign as a whole, which means the cost
+ * is known and its split is not. A campaign-level figure and an ad-level figure
+ * for the same day are different facts and both stand.
  */
 export const recordCampaignSpendServerFn = createServerFn({ method: "POST" })
   .inputValidator(
     z.object({
       campaignId: z.string().min(1),
+      /** Absent records against the campaign as a whole. */
+      adId: z.string().min(1).optional(),
       day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Pick a date"),
       amount: z.number().int().min(0),
       currency: z.string().length(3),
@@ -491,9 +515,9 @@ export const recordCampaignSpendServerFn = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }): Promise<CampaignSpend> => {
     try {
-      const { campaignId, ...body } = data;
+      const { campaignId, adId, ...body } = data;
       const res = await apiClient.post<CampaignSpend>(
-        `/api/admin/campaigns/${campaignId}/spend`,
+        spendPath(campaignId, adId),
         body,
         { headers: await storeHeaders() },
       );
@@ -514,7 +538,8 @@ export const recordCampaignSpendServerFn = createServerFn({ method: "POST" })
  *
  * A correction like single-day entry — every day in the range is overwritten
  * rather than added to, so re-running an overlapping range repairs those days
- * instead of doubling them.
+ * instead of doubling them. Works at either grain, and only touches the one it
+ * was sent to.
  */
 export const recordCampaignSpendRangeServerFn = createServerFn({
   method: "POST",
@@ -522,6 +547,8 @@ export const recordCampaignSpendRangeServerFn = createServerFn({
   .inputValidator(
     z.object({
       campaignId: z.string().min(1),
+      /** Absent records against the campaign as a whole. */
+      adId: z.string().min(1).optional(),
       startDay: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Pick a start date"),
       endDay: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Pick an end date"),
       total: z.number().int().min(0),
@@ -531,9 +558,9 @@ export const recordCampaignSpendRangeServerFn = createServerFn({
   )
   .handler(async ({ data }): Promise<CampaignSpend[]> => {
     try {
-      const { campaignId, ...body } = data;
+      const { campaignId, adId, ...body } = data;
       const res = await apiClient.post<CampaignSpend[]>(
-        `/api/admin/campaigns/${campaignId}/spend/range`,
+        `${spendPath(campaignId, adId)}/range`,
         body,
         { headers: await storeHeaders() },
       );
@@ -543,6 +570,10 @@ export const recordCampaignSpendRangeServerFn = createServerFn({
     }
   });
 
+// Addressed under the campaign whichever grain the row was typed at: the id
+// already names one row and the campaign scope is already the tenancy check, so
+// a second address for the same act would only be a second thing to keep right.
+//
 // The day is deliberately absent: moving a figure to another day is recording
 // it there — which corrects that day — and deleting the row entered by mistake.
 // The currency is the store's and frozen on the row.
@@ -559,7 +590,7 @@ export const updateCampaignSpendServerFn = createServerFn({ method: "POST" })
     try {
       const { campaignId, spendId, ...body } = data;
       const res = await apiClient.patch<CampaignSpend>(
-        `/api/admin/campaigns/${campaignId}/spend/${spendId}`,
+        `${spendPath(campaignId)}/${spendId}`,
         body,
         { headers: await storeHeaders() },
       );
@@ -578,10 +609,9 @@ export const deleteCampaignSpendServerFn = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }): Promise<void> => {
     try {
-      await apiClient.delete(
-        `/api/admin/campaigns/${data.campaignId}/spend/${data.spendId}`,
-        { headers: await storeHeaders() },
-      );
+      await apiClient.delete(`${spendPath(data.campaignId)}/${data.spendId}`, {
+        headers: await storeHeaders(),
+      });
     } catch (err) {
       throw new Error(getErrorMessage(err));
     }
