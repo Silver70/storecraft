@@ -13,6 +13,15 @@ export function fmt(cents: number): string {
         })}`;
 }
 
+/** Full currency from integer cents, no k/M compaction: $1,234.56. */
+export function fmtCurrency(cents: number): string {
+  const n = cents / 100;
+  return `$${n.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
 /** Compact count: 1.2M / 3.4k / 999. */
 export function fmtCount(n: number): string {
   return n >= 1_000_000

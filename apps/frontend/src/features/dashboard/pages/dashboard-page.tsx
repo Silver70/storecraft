@@ -1,12 +1,6 @@
 import * as React from "react";
 import { useSuspenseQuery } from "@tanstack/react-query";
-import {
-  DollarSignIcon,
-  PercentIcon,
-  RepeatIcon,
-  ShoppingCartIcon,
-  TagIcon,
-} from "lucide-react";
+import { BarChart3Icon, PercentIcon, ShoppingCartIcon } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import type { DashboardStats, Period } from "~/types/api";
 import { dashboardStatsQueryOptions } from "../queries";
@@ -54,41 +48,35 @@ export function DashboardPage() {
       </div>
 
       {/* KPI Row */}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        {/* compareValue is a static mockup for now — not wired to real
+            prior-period data yet, see KpiCard. */}
         <KpiCard
           label="Revenue"
+          subLabel="Total sales revenue"
           value={stats.revenue.current}
           delta={stats.revenue.delta}
-          icon={DollarSignIcon}
+          icon={BarChart3Icon}
           format="currency"
+          compareValue="+$1,324"
         />
         <KpiCard
           label="Orders"
+          subLabel="Total orders placed"
           value={stats.orders.current}
           delta={stats.orders.delta}
           icon={ShoppingCartIcon}
           format="number"
+          compareValue="+38"
         />
         <KpiCard
           label="Conversion"
+          subLabel="Checkout conversion rate"
           value={stats.conversion.current}
           delta={stats.conversion.delta}
           icon={PercentIcon}
           format="percent"
-        />
-        <KpiCard
-          label="Avg Order Value"
-          value={stats.aov.current}
-          delta={stats.aov.delta}
-          icon={TagIcon}
-          format="currency"
-        />
-        <KpiCard
-          label="Returning"
-          value={stats.returning.current}
-          delta={stats.returning.delta}
-          icon={RepeatIcon}
-          format="percent"
+          compareValue="+0.4%"
         />
       </div>
 
