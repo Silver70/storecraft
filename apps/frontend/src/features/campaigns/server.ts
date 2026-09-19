@@ -16,6 +16,9 @@ import {
   type CampaignTaggedLink,
   type MarketingSummary,
   type RulePreviewReport,
+  type UnlinkedAd,
+  type UnlinkedAdClaimResult,
+  type UnlinkedAdCounts,
 } from "~/types/api";
 
 async function storeHeaders() {
@@ -666,6 +669,113 @@ export const deleteCampaignSpendServerFn = createServerFn({ method: "POST" })
       await apiClient.delete(`${spendPath(data.campaignId)}/${data.spendId}`, {
         headers: await storeHeaders(),
       });
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+// ─── Unlinked ads ─────────────────────────────────────────────────────────────
+// The ads a platform is spending on that nothing in this store claims. They
+// live under the ad-platform API because a sync is what found them, and they
+// are read from here because claiming one is a campaign decision: it creates an
+// ad under a campaign, or points one that already exists at the creative
+// running over there.
+
+const unlinkedAdId = z.object({ unlinkedAdId: z.string().min(1) });
+
+export const getUnlinkedAdsServerFn = createServerFn({ method: "GET" })
+  .inputValidator(
+    z.object({
+      state: z.enum(["pending", "claimed", "dismissed", "all"]).optional(),
+    }),
+  )
+  .handler(async ({ data }): Promise<UnlinkedAd[]> => {
+    const params = new URLSearchParams();
+    if (data.state) params.set("state", data.state);
+    const query = params.toString();
+    try {
+      const res = await apiClient.get<UnlinkedAd[]>(
+        `/api/admin/ad-platforms/unlinked-ads${query ? `?${query}` : ""}`,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+/**
+ * How many are waiting.
+ *
+ * Its own read, and a cheap one, because the number has to be on a page the
+ * merchant already opens rather than on the page it describes. Nobody goes
+ * looking for a review list they do not know has anything in it, and what is in
+ * this one is money leaving their account that nothing here is counting.
+ */
+export const getUnlinkedAdCountsServerFn = createServerFn({
+  method: "GET",
+}).handler(async (): Promise<UnlinkedAdCounts> => {
+  try {
+    const res = await apiClient.get<UnlinkedAdCounts>(
+      "/api/admin/ad-platforms/unlinked-ads/count",
+      { headers: await storeHeaders() },
+    );
+    return res.data;
+  } catch (err) {
+    throw new Error(getErrorMessage(err));
+  }
+});
+
+/**
+ * Claims one onto a campaign as a new ad, or onto an ad that already exists
+ * here.
+ *
+ * The response carries the ad's tagged link, which is the point: the claim
+ * answered which campaign the ad belongs to, and the link is the only thing
+ * that will ever say what it sold.
+ */
+export const claimUnlinkedAdServerFn = createServerFn({ method: "POST" })
+  .inputValidator(
+    unlinkedAdId.extend({
+      campaignId: z.string().min(1),
+      adId: z.string().min(1).optional(),
+      name: z.string().min(1).optional(),
+    }),
+  )
+  .handler(async ({ data }): Promise<UnlinkedAdClaimResult> => {
+    const { unlinkedAdId: id, ...body } = data;
+    try {
+      const res = await apiClient.post<UnlinkedAdClaimResult>(
+        `/api/admin/ad-platforms/unlinked-ads/${id}/claim`,
+        body,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+/**
+ * Dismiss, restore and unlink — the other three transitions, which take no body
+ * and differ only in the verb.
+ *
+ * One server function rather than three, because the difference between them is
+ * a path segment and the server is the authority on whether the move is legal.
+ * An illegal one comes back as a sentence the merchant reads.
+ */
+export const moveUnlinkedAdServerFn = createServerFn({ method: "POST" })
+  .inputValidator(
+    unlinkedAdId.extend({ action: z.enum(["dismiss", "restore", "unlink"]) }),
+  )
+  .handler(async ({ data }): Promise<UnlinkedAd> => {
+    try {
+      const res = await apiClient.post<UnlinkedAd>(
+        `/api/admin/ad-platforms/unlinked-ads/${data.unlinkedAdId}/${data.action}`,
+        {},
+        { headers: await storeHeaders() },
+      );
+      return res.data;
     } catch (err) {
       throw new Error(getErrorMessage(err));
     }

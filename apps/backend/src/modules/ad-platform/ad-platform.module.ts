@@ -1,16 +1,20 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { MarketingModule } from '../marketing/marketing.module';
 import { TenantModule } from '../tenant/tenant.module';
 import { AD_PLATFORM_PROVIDER } from './interfaces/ad-platform-provider.interface';
 import { AyrshareAdapter } from './services/ayrshare.adapter';
 import { AdminAdPlatformController } from './controllers/admin-ad-platform.controller';
+import { AdminUnlinkedAdController } from './controllers/admin-unlinked-ad.controller';
 import { AdPlatformCallbackController } from './controllers/ad-platform-callback.controller';
 import { AdPlatformConnectionRepository } from './repositories/ad-platform-connection.repository';
 import { AdPlatformCredentialRepository } from './repositories/ad-platform-credential.repository';
 import { AdReportedFigureRepository } from './repositories/ad-reported-figure.repository';
+import { UnlinkedAdRepository } from './repositories/unlinked-ad.repository';
 import { AdPlatformConnectionService } from './services/ad-platform-connection.service';
 import { AdPlatformSyncService } from './services/ad-platform-sync.service';
 import { ReportedFigureService } from './services/reported-figure.service';
+import { UnlinkedAdService } from './services/unlinked-ad.service';
 import { CredentialVault } from './services/credential-vault.service';
 
 /**
@@ -27,14 +31,29 @@ import { CredentialVault } from './services/credential-vault.service';
  * day, which is the day their Spend is recorded against and the day the
  * platform is reporting.
  *
- * The sync writes `ad_reported_figures` and nothing else. **`campaign_spend` is
- * not reachable from this module**, and that is ADR-0005 made structural: the
- * merchant's book of record and the platform's are separate tables behind
- * separate repositories, with no code path from one into the other.
+ * `MarketingModule` is imported for one reason: claiming an Unlinked Ad creates
+ * an Ad under a Campaign, and it does so through `AdService` rather than
+ * through an insert of its own, so the Ad Tag derivation, the per-Campaign
+ * uniqueness and the canonical `utm_content` rule are the same ones a
+ * hand-created Ad gets. A second implementation of that would drift, and the
+ * thing it would drift away from is the only reason a claimed ad can ever earn
+ * revenue.
+ *
+ * **Nothing in this module injects `CampaignSpendRepository` or
+ * `CampaignSpendService`, and nothing here may.** The sync writes
+ * `ad_reported_figures` and the connection's own state; a Reported Figure is
+ * never written into `campaign_spend`, which is the merchant's book of record
+ * and the platform's is not (ADR-0005). Read the sync service's constructor:
+ * spend is not among its dependencies, and that is the check to make on any
+ * change here.
  */
 @Module({
-  imports: [AuthModule, TenantModule],
-  controllers: [AdminAdPlatformController, AdPlatformCallbackController],
+  imports: [AuthModule, TenantModule, MarketingModule],
+  controllers: [
+    AdminAdPlatformController,
+    AdminUnlinkedAdController,
+    AdPlatformCallbackController,
+  ],
   providers: [
     {
       provide: AD_PLATFORM_PROVIDER,
@@ -44,9 +63,11 @@ import { CredentialVault } from './services/credential-vault.service';
     AdPlatformConnectionRepository,
     AdPlatformCredentialRepository,
     AdReportedFigureRepository,
+    UnlinkedAdRepository,
     AdPlatformConnectionService,
     AdPlatformSyncService,
     ReportedFigureService,
+    UnlinkedAdService,
   ],
   exports: [
     AD_PLATFORM_PROVIDER,
@@ -56,6 +77,8 @@ import { CredentialVault } from './services/credential-vault.service';
     AdPlatformConnectionService,
     AdPlatformSyncService,
     ReportedFigureService,
+    UnlinkedAdRepository,
+    UnlinkedAdService,
     CredentialVault,
   ],
 })

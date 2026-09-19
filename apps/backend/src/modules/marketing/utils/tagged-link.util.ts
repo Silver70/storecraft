@@ -17,9 +17,41 @@
  * generated link cannot drift from the rule that claims it.
  */
 import { normalizeMatchValue } from './campaign-matching.util';
+import type { CampaignPlatform } from '../../../shared/database/schema';
 
 /** Base for a store whose storefront URL is not configured. */
 export const DEFAULT_STOREFRONT_URL = 'http://localhost:3000';
+
+/**
+ * The `utm_source` and `utm_medium` a link starts from, per platform.
+ *
+ * Defaults and not rules: a merchant is free to send whatever pair they like,
+ * and the Campaign is recognised by its tag regardless of either. They exist so
+ * that a link composed *for* the merchant — at the moment they claim an ad, for
+ * instance — is complete rather than a form with two blanks in it, and so that
+ * two people tagging the same platform spell it the same way.
+ *
+ * `other` is deliberately empty: there is no honest default for a platform the
+ * merchant declined to name, and guessing one would file traffic under a source
+ * nobody chose.
+ */
+export const PLATFORM_LINK_DEFAULTS: Readonly<
+  Record<CampaignPlatform, { source: string; medium: string }>
+> = {
+  meta: { source: 'facebook', medium: 'paid-social' },
+  google: { source: 'google', medium: 'cpc' },
+  tiktok: { source: 'tiktok', medium: 'paid-social' },
+  instagram: { source: 'instagram', medium: 'paid-social' },
+  youtube: { source: 'youtube', medium: 'video' },
+  x: { source: 'x', medium: 'paid-social' },
+  linkedin: { source: 'linkedin', medium: 'paid-social' },
+  pinterest: { source: 'pinterest', medium: 'paid-social' },
+  email: { source: 'newsletter', medium: 'email' },
+  sms: { source: 'sms', medium: 'sms' },
+  affiliate: { source: 'partner', medium: 'affiliate' },
+  influencer: { source: 'creator', medium: 'influencer' },
+  other: { source: '', medium: '' },
+};
 
 export interface TaggedLinkInput {
   /** The storefront a path destination is resolved against. */

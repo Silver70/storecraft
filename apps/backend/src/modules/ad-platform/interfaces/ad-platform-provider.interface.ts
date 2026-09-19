@@ -138,11 +138,27 @@ export interface ReportedAdDay {
   readonly reportedRoasBp: number | null;
 }
 
-/** One ad at the platform, with every day of the requested range it reported. */
+/**
+ * One ad at the platform, with every day of the requested range it reported.
+ *
+ * The descriptive fields are here for one reason: an ad nothing in the Store
+ * claims is held as an Unlinked Ad, and a merchant asked "is this yours?" needs
+ * to recognise it. A platform ad id recognises nothing. The name, the creative
+ * and the flight are what turn a row in a review list into an ad the merchant
+ * remembers building.
+ */
 export interface ReportedAd {
   /** The ad's id at the platform. The key everything about it is held under. */
   readonly externalAdId: string;
   readonly name: string | null;
+  /** The creative, as a URL the platform hosts. Null where it offers none. */
+  readonly creativeUrl: string | null;
+  /**
+   * When the platform says the ad ran. Either may be absent — platforms
+   * routinely report a start and no end for anything still delivering.
+   */
+  readonly startsAt: Date | null;
+  readonly endsAt: Date | null;
   readonly days: readonly ReportedAdDay[];
 }
 

@@ -185,6 +185,16 @@ An ad a platform is spending on that no Ad in the Store claims yet. Held for the
 merchant to claim onto a Campaign or dismiss, never created automatically — an
 Ad invented from a sync carries cost with no way to earn revenue, and would read
 as the worst performer in the account.
+
+It is in one of three states, and moves between them only through the one
+transition engine: **pending** (a sync found it, nobody has decided), **claimed**
+(resolved onto an Ad, which now carries its platform id), **dismissed** (the
+merchant does not want it tracked, durably across syncs). Claim and dismiss
+leave pending; restore returns a dismissed one; unlink undoes a claim, keeping
+the Ad and taking only the platform id off it. Dismissing a claimed ad is not a
+move — unlink first. **No transition ever touches a Reported Figure**: what a
+claim changes is whether an Ad carries the platform's ad id, which is the join
+the figures are already keyed for.
 _Avoid_: Orphan, unmatched, imported ad, pending ad
 
 **Ad Platform Connection**:

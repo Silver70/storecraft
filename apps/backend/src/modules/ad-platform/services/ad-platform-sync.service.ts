@@ -17,6 +17,8 @@ import {
   type ReportedFigureRow,
 } from '../repositories/ad-reported-figure.repository';
 import { CredentialVault } from './credential-vault.service';
+import { UnlinkedAdService } from './unlinked-ad.service';
+import type { PlatformAdSighting } from '../utils/unlinked-ad-plan.util';
 import {
   DEFAULT_BACKFILL_DAYS,
   backoffUntil,
@@ -34,6 +36,15 @@ export interface SyncOutcome {
   backfill: boolean;
   /** How many platform ad-days were written or corrected. */
   figuresWritten: number;
+  /**
+   * How many of the platform's ads nothing in this Store claims, and are
+   * therefore being held for the merchant to decide about.
+   *
+   * **Not a count of Ads created.** No sync creates one: an Ad invented from a
+   * platform's tree carries real cost and has no Ad Tag rule, so it would show
+   * spend against zero revenue and read as the worst performer in the account.
+   */
+  unlinkedHeld: number;
   /**
    * Why it failed, in words a merchant can act on, or null on success. Never a
    * stack trace, and never a sentence that blames their own account.
@@ -93,6 +104,7 @@ export class AdPlatformSyncService {
     private readonly connections: AdPlatformConnectionRepository,
     private readonly credentials: AdPlatformCredentialRepository,
     private readonly figures: AdReportedFigureRepository,
+    private readonly unlinked: UnlinkedAdService,
     private readonly vault: CredentialVault,
   ) {}
 
@@ -226,6 +238,21 @@ export class AdPlatformSyncService {
 
       const rows = this.rowsFrom(tree, target, window.from, window.to);
       const written = await this.figures.upsertMany(rows, now);
+
+      // After the figures and never instead of them. Holding an ad is the
+      // merchant's prompt; the figures are the money, and the money is recorded
+      // whether or not anyone ever answers the prompt.
+      const { held } = await this.unlinked.recordSighting(
+        {
+          orgId: connection.organizationId,
+          storeId: connection.storeId,
+          connectionId: connection.id,
+          platform: connection.platform,
+        },
+        sightingsFrom(tree),
+        now,
+      );
+
       await this.connections.recordSyncSuccess(connection.id, now);
 
       this.logger.log(
@@ -241,6 +268,7 @@ export class AdPlatformSyncService {
         to: window.to,
         backfill: window.backfill,
         figuresWritten: written,
+        unlinkedHeld: held,
         message: null,
       };
     } catch (error) {
@@ -265,6 +293,7 @@ export class AdPlatformSyncService {
         to: window.to,
         backfill: window.backfill,
         figuresWritten: 0,
+        unlinkedHeld: 0,
         message,
       };
     }
@@ -340,6 +369,24 @@ export class AdPlatformSyncService {
 
     return rows;
   }
+}
+
+/**
+ * The tree as descriptions of ads, with no figures on them.
+ *
+ * What an Unlinked Ad is held with: the name, the creative and the flight are
+ * how a merchant recognises which of their ads this is, and a platform ad id
+ * recognises nothing. The money stays in `ad_reported_figures`, where it is
+ * summed on read — one place holds a figure, and it is the platform's book.
+ */
+function sightingsFrom(tree: AdTree): PlatformAdSighting[] {
+  return tree.ads.map((ad) => ({
+    externalAdId: ad.externalAdId,
+    name: ad.name,
+    creativeUrl: ad.creativeUrl,
+    startsAt: ad.startsAt,
+    endsAt: ad.endsAt,
+  }));
 }
 
 /**

@@ -80,6 +80,33 @@ export class AdRepository {
     return row ?? null;
   }
 
+  /**
+   * One Ad by id, scoped to the Store rather than to a Campaign.
+   *
+   * The exception to the rule above it, and it is a narrow one: undoing a claim
+   * knows which Ad it wrote a platform id onto and does not know — and must not
+   * have to trust — which Campaign that Ad is under now. Everything a merchant
+   * addresses by hand still goes through `findById`, which names the Campaign.
+   */
+  async findByIdInStore(
+    id: string,
+    orgId: string,
+    storeId: string,
+  ): Promise<Ad | null> {
+    const [row] = await this.db
+      .select()
+      .from(ads)
+      .where(
+        and(
+          eq(ads.id, id),
+          eq(ads.organizationId, orgId),
+          eq(ads.storeId, storeId),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
   /** Whether this Campaign already owns the tag. Sibling Campaigns are free to. */
   async tagExists(
     tag: string,

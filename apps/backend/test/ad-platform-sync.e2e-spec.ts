@@ -34,6 +34,7 @@ import type { AdPlatformConnectionView } from '../src/modules/ad-platform/servic
 import type { ReportedFigureView } from '../src/modules/ad-platform/services/reported-figure.service';
 import type {
   AdTree,
+  ReportedAd,
   ReportedAdDay,
 } from '../src/modules/ad-platform/interfaces/ad-platform-provider.interface';
 import { AdPlatformSyncService } from '../src/modules/ad-platform/services/ad-platform-sync.service';
@@ -51,6 +52,15 @@ import {
   seedAdmin,
   type AdminFixture,
 } from './helpers/admin-fixture';
+
+/** A tree written with only the fields a case cares about. */
+interface TestAdTree {
+  currency: string;
+  ads: Array<
+    Omit<ReportedAd, 'creativeUrl' | 'startsAt' | 'endsAt'> &
+      Partial<Pick<ReportedAd, 'creativeUrl' | 'startsAt' | 'endsAt'>>
+  >;
+}
 
 /** The store's timezone is UTC in the fixture, so its today is this one. */
 const today = (): string => new Date().toISOString().slice(0, 10);
@@ -126,13 +136,27 @@ describe('Ad platform sync (e2e)', () => {
     return { providerRef, accountId: approved.externalAccountId };
   }
 
-  /** What the platform will say is running on this account. */
+  /**
+   * What the platform will say is running on this account.
+   *
+   * An ad may be written with only the fields the case is about. The creative
+   * and the flight default to absent, which is what most platform ads report
+   * and what most of these cases are indifferent to.
+   */
   function platformReports(
     providerRef: string,
-    tree: AdTree,
+    tree: TestAdTree,
     platform: AdPlatform = 'meta',
   ): void {
-    provider.setAdTree(providerRef, platform, tree);
+    provider.setAdTree(providerRef, platform, {
+      currency: tree.currency,
+      ads: tree.ads.map((ad) => ({
+        creativeUrl: null,
+        startsAt: null,
+        endsAt: null,
+        ...ad,
+      })),
+    } satisfies AdTree);
   }
 
   const syncNow = async (

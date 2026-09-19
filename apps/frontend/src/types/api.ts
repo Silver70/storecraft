@@ -86,7 +86,89 @@ export type AdPlatformSyncOutcome = {
   to: string;
   backfill: boolean;
   figuresWritten: number;
+  /**
+   * How many of the platform's ads nothing in this store claims, held for the
+   * merchant to decide about. **Never a count of ads created** — a sync creates
+   * none, because an ad invented from a platform's tree carries real cost and
+   * has no tag rule, so it would show spend against zero revenue.
+   */
+  unlinkedHeld: number;
   message: string | null;
+};
+
+// ─── Unlinked ads ─────────────────────────────────────────────────────────────
+
+/**
+ * Where a platform ad stands with the merchant.
+ *
+ * `pending` is where a sync leaves it and the only state a sync may write.
+ * Claim, dismiss, restore and unlink move it, through one transition engine on
+ * the server — an illegal move is refused with a sentence rather than quietly
+ * doing nothing.
+ */
+export type UnlinkedAdState = "pending" | "claimed" | "dismissed";
+
+/**
+ * An ad the platform is spending money on that nothing in this store claims.
+ *
+ * Held rather than turned into an ad: one invented from a sync would carry real
+ * cost and have no way to earn revenue, and would read as the worst performer
+ * in the account. Everything on it is here to answer one question — what is
+ * this, and is it worth claiming.
+ */
+export type UnlinkedAd = {
+  id: string;
+  platform: AdPlatform;
+  /** The ad's id at the platform — the key its figures are already held under. */
+  externalAdId: string;
+  name: string | null;
+  creativeUrl: string | null;
+  /** ISO timestamps. Either may be absent. */
+  startsAt: string | null;
+  endsAt: string | null;
+  state: UnlinkedAdState;
+  /**
+   * What the platform says it has spent over every day ever pulled, in minor
+   * units of `currency` — the ad account's, which may not be the store's and is
+   * never converted into it.
+   */
+  spendToDate: number;
+  currency: string | null;
+  /** How many days of figures are held, and what they span. */
+  days: number;
+  firstDay: string | null;
+  lastDay: string | null;
+  claimedAdId: string | null;
+  claimedAdName: string | null;
+  claimedCampaignId: string | null;
+  claimedAt: string | null;
+  dismissedAt: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+};
+
+export type UnlinkedAdCounts = {
+  /** What is waiting on the merchant — the number surfaced beside the grid. */
+  pending: number;
+  claimed: number;
+  dismissed: number;
+};
+
+/**
+ * What a claim answers with.
+ *
+ * The tagged link is on the response and not a page away, because pasting it
+ * into the platform is the merchant's actual next action and the only thing
+ * that will ever tell us what the ad sold.
+ */
+export type UnlinkedAdClaimResult = {
+  unlinkedAd: UnlinkedAd;
+  ad: Ad;
+  taggedLink: CampaignTaggedLink | null;
+  /** Why no link could be composed. A claim is never failed by this. */
+  taggedLinkProblem: string | null;
+  /** The history that came with it. Claiming never starts spend from zero. */
+  attached: { days: number; spend: number; currency: string | null };
 };
 
 // ─── Organizations ────────────────────────────────────────────────────────────

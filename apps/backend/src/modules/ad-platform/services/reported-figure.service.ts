@@ -20,8 +20,12 @@ import { AdReportedFigureRepository } from '../repositories/ad-reported-figure.r
  * in this module, and labelled with the platform that stated it — a Reported
  * Figure must never be mistakable for one of ours (ADR-0005).
  *
- * There is no `adId` here and no name, because nothing is linked to an Ad yet:
- * a figure is held under the platform's own ad id until a merchant claims it.
+ * `adId` and `adName` are the claim made visible. A figure is held under the
+ * platform's own ad id and stays there for ever; what a claim changes is
+ * whether an Ad in this Store carries that id, which is resolved on the read.
+ * Both are null for an ad nobody has claimed — including one the merchant
+ * dismissed, whose money stays on the page because declining to attribute it
+ * is not declining to know about it.
  */
 export interface ReportedFigureView {
   /** The source. Every figure here was stated by this platform, not by us. */
@@ -44,6 +48,11 @@ export interface ReportedFigureView {
   currency: string;
   /** When a sync last confirmed this figure. */
   syncedAt: Date;
+  /** The Ad claiming this platform ad, or null while nothing does. */
+  adId: string | null;
+  adName: string | null;
+  /** The Campaign that Ad hangs from, for a link straight to its card. */
+  campaignId: string | null;
 }
 
 /** The window a read covers when the merchant did not name one. */
@@ -113,18 +122,21 @@ export class ReportedFigureService {
       query.platform,
     );
 
-    return rows.map((row) => ({
-      platform: row.platform,
-      externalAdId: row.externalAdId,
-      day: row.day,
-      spend: row.spend,
-      impressions: row.impressions,
-      clicks: row.clicks,
-      conversions: row.conversions,
-      reportedRevenue: row.reportedRevenue,
-      reportedRoasBp: row.reportedRoasBp,
-      currency: row.currency,
-      syncedAt: row.syncedAt,
+    return rows.map(({ figure, adId, adName, campaignId }) => ({
+      platform: figure.platform,
+      externalAdId: figure.externalAdId,
+      day: figure.day,
+      spend: figure.spend,
+      impressions: figure.impressions,
+      clicks: figure.clicks,
+      conversions: figure.conversions,
+      reportedRevenue: figure.reportedRevenue,
+      reportedRoasBp: figure.reportedRoasBp,
+      currency: figure.currency,
+      syncedAt: figure.syncedAt,
+      adId,
+      adName,
+      campaignId,
     }));
   }
 }

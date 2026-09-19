@@ -46,3 +46,4 @@ export * from './content-slots.schema';
 export * from './ad-platform-credentials.schema';
 export * from './ad-platform-connections.schema';
 export * from './ad-reported-figures.schema';
+export * from './unlinked-ads.schema';

@@ -1,8 +1,19 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, between, eq, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  between,
+  count,
+  eq,
+  inArray,
+  max,
+  min,
+  sum,
+  sql,
+} from 'drizzle-orm';
 import { DRIZZLE_CLIENT } from '../../../shared/database/database.module';
 import type { DrizzleClient } from '../../../shared/database/database.module';
-import { adReportedFigures } from '../../../shared/database/schema';
+import { adReportedFigures, ads } from '../../../shared/database/schema';
 import type {
   AdPlatform,
   AdReportedFigure,
@@ -25,6 +36,42 @@ export interface ReportedFigureRow {
   reportedRevenue: number;
   reportedRoasBp: number | null;
   currency: string;
+}
+
+/**
+ * One platform ad's figures for one day, with the Ad that claims it if one
+ * does.
+ *
+ * The Ad is resolved by the join the figures table was keyed for —
+ * `ads.external_id` against `external_ad_id` — rather than by a foreign key,
+ * and that is the point: a figure pulled months before anything claimed the ad
+ * it describes picks up its Ad the moment a claim is made, backfill included,
+ * with no row rewritten and no second pass.
+ */
+export interface ReportedFigureWithAd {
+  figure: AdReportedFigure;
+  adId: string | null;
+  adName: string | null;
+  campaignId: string | null;
+}
+
+/**
+ * Everything one platform ad has spent since the first day ever pulled for it.
+ *
+ * Summed rather than stored, because `ad_reported_figures` is already the
+ * platform's book and a second copy on the Unlinked Ad would be a second thing
+ * to keep correct — and the one a restated day would silently leave wrong.
+ */
+export interface ReportedSpendToDate {
+  externalAdId: string;
+  /** The ad account's currency, never converted into the Store's (ADR-0005). */
+  currency: string;
+  /** Minor units of `currency`. */
+  spend: number;
+  /** How many days the platform has reported for this ad. */
+  days: number;
+  firstDay: string;
+  lastDay: string;
 }
 
 /**
@@ -101,11 +148,14 @@ export class AdReportedFigureRepository {
   }
 
   /**
-   * A Store's Reported Figures for an inclusive range of calendar days.
+   * A Store's Reported Figures for an inclusive range of calendar days, each
+   * with the Ad that claims it where one does.
    *
-   * Oldest first, and by platform ad rather than by Ad: nothing is linked to an
-   * Ad at this stage, and the platform's ad id is the key a later claim will
-   * match on.
+   * Oldest first, and keyed by the platform's ad id rather than by an Ad: most
+   * rows here belong to no Ad at all, either because nothing has claimed them
+   * yet or because the merchant dismissed the ad and still wants the money
+   * visible. The left join is what makes a claim's effect readable — the same
+   * rows, suddenly carrying a name.
    *
    * `between` is inclusive on both ends, which is what a day range means — `to`
    * is the day the period ends in, not an exclusive instant.
@@ -116,10 +166,22 @@ export class AdReportedFigureRepository {
     from: string,
     to: string,
     platform?: AdPlatform,
-  ): Promise<AdReportedFigure[]> {
-    return this.db
-      .select()
+  ): Promise<ReportedFigureWithAd[]> {
+    const rows = await this.db
+      .select({
+        figure: adReportedFigures,
+        adId: ads.id,
+        adName: ads.name,
+        campaignId: ads.campaignId,
+      })
       .from(adReportedFigures)
+      .leftJoin(
+        ads,
+        and(
+          eq(ads.storeId, adReportedFigures.storeId),
+          eq(ads.externalId, adReportedFigures.externalAdId),
+        ),
+      )
       .where(
         and(
           eq(adReportedFigures.organizationId, orgId),
@@ -129,5 +191,55 @@ export class AdReportedFigureRepository {
         ),
       )
       .orderBy(asc(adReportedFigures.day), asc(adReportedFigures.externalAdId));
+
+    return rows;
+  }
+
+  /**
+   * What each of these platform ads has spent in total, over every day ever
+   * pulled for it.
+   *
+   * The figure an Unlinked Ad is judged by: a merchant deciding whether an ad
+   * is worth claiming is asking how much it has cost them, not what it cost
+   * last Tuesday. Grouped by currency as well as by ad so that no total is ever
+   * summed across two of them — ADR-0005 forbids the rate that would take to
+   * do honestly.
+   */
+  async spendToDate(
+    orgId: string,
+    storeId: string,
+    externalAdIds: string[],
+  ): Promise<ReportedSpendToDate[]> {
+    if (externalAdIds.length === 0) return [];
+
+    const rows = await this.db
+      .select({
+        externalAdId: adReportedFigures.externalAdId,
+        currency: adReportedFigures.currency,
+        spend: sum(adReportedFigures.spend),
+        days: count(),
+        firstDay: min(adReportedFigures.day),
+        lastDay: max(adReportedFigures.day),
+      })
+      .from(adReportedFigures)
+      .where(
+        and(
+          eq(adReportedFigures.organizationId, orgId),
+          eq(adReportedFigures.storeId, storeId),
+          inArray(adReportedFigures.externalAdId, externalAdIds),
+        ),
+      )
+      .groupBy(adReportedFigures.externalAdId, adReportedFigures.currency);
+
+    return rows.map((row) => ({
+      externalAdId: row.externalAdId,
+      currency: row.currency,
+      // `sum` comes back as a numeric string from the driver; every value that
+      // went into it was an integer in minor units, so the total is one too.
+      spend: Number(row.spend ?? 0),
+      days: Number(row.days ?? 0),
+      firstDay: row.firstDay ?? '',
+      lastDay: row.lastDay ?? '',
+    }));
   }
 }

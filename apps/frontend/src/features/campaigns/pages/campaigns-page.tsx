@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
-import { useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { MegaphoneIcon, PlusIcon } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
@@ -14,6 +14,7 @@ import type {
 import {
   attributedRevenueQueryOptions,
   campaignsQueryOptions,
+  unlinkedAdCountsQueryOptions,
 } from "../queries";
 import {
   DEFAULT_FILTERS,
@@ -40,6 +41,7 @@ import {
   RevenueBasisNote,
 } from "../components/performance-summary";
 import { PerformanceTable } from "../components/performance-table";
+import { UnlinkedAdsPanel } from "../components/unlinked-ads-panel";
 
 /**
  * Campaigns and their ads: what they are, and what they did.
@@ -81,6 +83,13 @@ export function CampaignsPage() {
   const report: AttributedRevenueReport = useSuspenseQuery(
     attributedRevenueQueryOptions(period, touch),
   ).data;
+
+  // Deliberately not suspended on. This is a prompt about ads the merchant has
+  // not dealt with, and a store with no connected ad platform has none — it
+  // must never be the read that holds the campaign grid up. A failure here
+  // leaves the page whole and the prompt absent.
+  const unlinkedWaiting =
+    useQuery(unlinkedAdCountsQueryOptions()).data?.pending ?? 0;
 
   const groups = React.useMemo(
     () =>
@@ -143,6 +152,13 @@ export function CampaignsPage() {
         <div className="space-y-6">
           <PerformanceSummary report={report} />
           <RevenueBasisNote />
+
+          {/* ── Money the platform is spending that nothing here claims ──── */}
+          {/* Above the grid rather than on a page of its own: a merchant will
+              not go looking for a review list they do not know has anything in
+              it, and every figure below this line is understated for as long as
+              it does. */}
+          <UnlinkedAdsPanel campaigns={campaigns} waiting={unlinkedWaiting} />
 
           {/* ── Finding one push among many ─────────────────────────────── */}
           <CampaignFilters

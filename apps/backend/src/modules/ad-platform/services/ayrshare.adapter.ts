@@ -119,6 +119,10 @@ interface VendorAd {
   id?: string;
   adId?: string;
   name?: string;
+  creativeUrl?: string;
+  thumbnailUrl?: string;
+  startDate?: string;
+  endDate?: string;
   daily?: VendorAdDay[];
 }
 
@@ -319,6 +323,11 @@ export class AyrshareAdapter implements AdPlatformProvider {
     return {
       externalAdId,
       name: ad.name ?? null,
+      // Either field, whichever they sent: both are a URL to the picture, and
+      // a merchant recognising their ad does not care which one it came from.
+      creativeUrl: ad.creativeUrl ?? ad.thumbnailUrl ?? null,
+      startsAt: asInstant(ad.startDate),
+      endsAt: asInstant(ad.endDate),
       days: (ad.daily ?? [])
         .map((day) => this.asReportedDay(day))
         .filter((day): day is ReportedAdDay => day !== null),
@@ -399,4 +408,18 @@ export class AyrshareAdapter implements AdPlatformProvider {
 
     return (await response.json()) as T;
   }
+}
+
+/**
+ * A date the vendor sent, or null.
+ *
+ * Unparseable is null rather than an error: a flight date is a recognition aid
+ * on a review list, and refusing a whole ad tree — and with it a day's spend —
+ * over a malformed date the merchant never asked to see would trade something
+ * that matters for something that does not.
+ */
+function asInstant(value: string | undefined): Date | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }

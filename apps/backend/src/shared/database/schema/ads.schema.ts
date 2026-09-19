@@ -6,7 +6,9 @@ import {
   timestamp,
   index,
   unique,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { organizations } from './organizations.schema';
 import { stores } from './stores.schema';
 import { campaigns, campaignStatusEnum } from './campaigns.schema';
@@ -67,7 +69,15 @@ export const ads = pgTable(
      * Tag is: a link already running in an ad platform cannot be recalled.
      */
     tag: varchar('tag', { length: AD_LIMITS.tag }).notNull(),
-    /** The Ad's id on the ad platform, for a later reconciliation. */
+    /**
+     * The Ad's id on the ad platform.
+     *
+     * This is the reconciliation, not a note towards one: `ad_reported_figures`
+     * is keyed on the platform's ad id, so setting this column is what attaches
+     * every figure already pulled for that ad — backfill included — to this Ad.
+     * Claiming an Unlinked Ad writes it; clearing it detaches the history
+     * without deleting a single figure.
+     */
     externalId: varchar('external_id', { length: AD_LIMITS.externalId }),
     /**
      * The creative — the picture a merchant recognises the Ad by, since nobody
@@ -103,6 +113,16 @@ export const ads = pgTable(
     // preceded the insert — two admins naming an ad the same thing at the same
     // moment must not both win. Scoped to the Campaign, not the Store.
     unique('ads_campaign_tag_unique').on(t.campaignId, t.tag),
+    // At most one Ad in a Store may claim a given platform ad. Two would both
+    // match the same rows in `ad_reported_figures` and the same spend would be
+    // reported twice under two names, with nothing in the data saying which was
+    // meant. Scoped to the Store rather than the Campaign, unlike the tag: a
+    // platform ad is one ad, whichever push a merchant decides it belongs to.
+    // Partial, because most Ads have no platform id and all of them are free to
+    // have none.
+    uniqueIndex('ads_store_external_id_unique')
+      .on(t.storeId, t.externalId)
+      .where(sql`${t.externalId} is not null`),
     index('ads_org_store_status_idx').on(t.organizationId, t.storeId, t.status),
     index('ads_campaign_status_idx').on(t.campaignId, t.status),
   ],

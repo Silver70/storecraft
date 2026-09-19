@@ -6,6 +6,7 @@ import type {
   CampaignRuleOperator,
   CampaignStatus,
   Period,
+  UnlinkedAdState,
 } from "~/types/api";
 import {
   generateCampaignLinkServerFn,
@@ -16,6 +17,8 @@ import {
   getCampaignSpendServerFn,
   getCampaignsServerFn,
   getMarketingSummaryServerFn,
+  getUnlinkedAdCountsServerFn,
+  getUnlinkedAdsServerFn,
   previewCampaignRuleServerFn,
 } from "./server";
 
@@ -188,4 +191,33 @@ export const campaignLinkQueryOptions = (
     placeholderData: keepPreviousData,
     staleTime: Infinity,
     retry: false,
+  });
+
+/**
+ * The ads a platform is spending on that nothing here claims.
+ *
+ * Waiting ones by default, because the list is a prompt rather than an archive.
+ * Keyed by state so claiming one refreshes the waiting list and the claimed
+ * list without touching anything else on the page.
+ */
+export const unlinkedAdsQueryOptions = (
+  state: UnlinkedAdState | "all" = "pending",
+) =>
+  queryOptions({
+    queryKey: ["unlinked-ads", state],
+    queryFn: () => getUnlinkedAdsServerFn({ data: { state } }),
+    staleTime: 30 * 1000,
+  });
+
+/**
+ * How many are waiting, read on a page that is not the list.
+ *
+ * Its own query so the badge can load beside the campaign grid without pulling
+ * every row of a list the merchant may never open.
+ */
+export const unlinkedAdCountsQueryOptions = () =>
+  queryOptions({
+    queryKey: ["unlinked-ads", "count"],
+    queryFn: () => getUnlinkedAdCountsServerFn(),
+    staleTime: 30 * 1000,
   });
