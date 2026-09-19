@@ -107,6 +107,48 @@ export class AdRepository {
     return row ?? null;
   }
 
+  /**
+   * The Ads in this Store that carry a platform's ad id, keyed by that id.
+   *
+   * What a sync resolves a reported figure onto. The Campaign comes back with
+   * the Ad because Spend is recorded against both — an Ad has no meaning
+   * outside its Campaign (ADR-0004), and a synced Spend row whose `ad_id` and
+   * `campaign_id` disagreed would be summed into one push and split under
+   * another.
+   *
+   * One query for the whole tree rather than a lookup per ad: a backfill
+   * resolves every ad the platform reports, and most of them will not be
+   * claimed at all. `ads_store_external_id_unique` is what makes the map safe
+   * to build — at most one Ad in a Store may claim a given platform ad, so no
+   * key here can be overwritten by a second row.
+   */
+  async claimedByExternalId(
+    orgId: string,
+    storeId: string,
+  ): Promise<Map<string, { adId: string; campaignId: string }>> {
+    const rows = await this.db
+      .select({
+        id: ads.id,
+        campaignId: ads.campaignId,
+        externalId: ads.externalId,
+      })
+      .from(ads)
+      .where(
+        and(
+          eq(ads.organizationId, orgId),
+          eq(ads.storeId, storeId),
+          isNotNull(ads.externalId),
+        ),
+      );
+
+    return new Map(
+      rows.map((row) => [
+        row.externalId as string,
+        { adId: row.id, campaignId: row.campaignId },
+      ]),
+    );
+  }
+
   /** Whether this Campaign already owns the tag. Sibling Campaigns are free to. */
   async tagExists(
     tag: string,

@@ -3,8 +3,10 @@ import {
   uuid,
   varchar,
   integer,
+  boolean,
   date,
   timestamp,
+  pgEnum,
   index,
   unique,
 } from 'drizzle-orm/pg-core';
@@ -14,6 +16,29 @@ import { campaigns } from './campaigns.schema';
 import { ads } from './ads.schema';
 
 export const CAMPAIGN_SPEND_NOTE_LIMIT = 255;
+
+/**
+ * Where a Spend figure came from.
+ *
+ * - `manual` — a merchant typed it. The only source there was before an ad
+ *   platform could be connected, and still the only one for `email`, `sms`,
+ *   `affiliate`, `influencer` and `other`, which no sync will ever cover.
+ * - `synced` — an ad platform reported it and the sync wrote it down against
+ *   the Ad that claims the platform's ad.
+ *
+ * An enum rather than a boolean because a third source is a question this
+ * column should be able to answer (an import, a bulk upload) without every
+ * caller re-reading `is_manual` as "not synced, or at least not yet".
+ *
+ * Note what this is *not*. A synced Spend row is what the platform says the
+ * merchant **paid**, recorded in the merchant's own book with its provenance
+ * attached. The platform's reported *revenue*, conversions and ROAS are a
+ * different class of fact and live in `ad_reported_figures`, never here and
+ * never merged into ours (ADR-0005).
+ */
+export const spendSourceEnum = pgEnum('spend_source', ['manual', 'synced']);
+
+export type SpendSource = (typeof spendSourceEnum.enumValues)[number];
 
 /**
  * What a merchant paid for a Campaign — or for one Ad under it — on one day.
@@ -44,9 +69,16 @@ export const CAMPAIGN_SPEND_NOTE_LIMIT = 255;
  * silently reinterpret Spend already recorded as a different unit of money.
  * There is no conversion anywhere in this feature.
  *
- * Unlike a Campaign or an Ad, a Spend row is editable and deletable. Those are
- * history that explains Orders; a Spend row is a record of what a merchant
- * typed, and a wrong one should be removable rather than preserved.
+ * Unlike a Campaign or an Ad, a Spend row is editable and deletable — at
+ * either source. Those are history that explains Orders; a Spend row is a
+ * record of what was paid, and a wrong one should be removable rather than
+ * preserved.
+ *
+ * `source` and `pinned` are the two columns that let a sync and a merchant
+ * both describe one day without either quietly winning. A sync wins by
+ * default, so nobody maintains two sets of books; a day the merchant pinned is
+ * left alone, which is what makes reconciling one day against an invoice
+ * survive the next sync an hour later.
  */
 export const campaignSpend = pgTable(
   'campaign_spend',
@@ -77,6 +109,38 @@ export const campaignSpend = pgTable(
     /** The Store's currency at the moment the row was recorded. */
     currency: varchar('currency', { length: 3 }).notNull(),
     note: varchar('note', { length: CAMPAIGN_SPEND_NOTE_LIMIT }),
+    /**
+     * Who wrote this figure: the merchant, or a sync.
+     *
+     * On the row rather than inferred from anything else, for the reason
+     * `ad_reported_figures.platform` is: a label that needs a join to read is
+     * one a future report will forget to make, and a merchant who cannot tell
+     * a figure they typed from one that was pulled cannot tell a reconciliation
+     * from a restatement.
+     *
+     * Defaulted to `manual`, which is what every row written before a platform
+     * could be connected actually was.
+     */
+    source: spendSourceEnum('source').notNull().default('manual'),
+    /**
+     * Whether a sync may overwrite this day.
+     *
+     * **This is the whole of the failure this design exists to prevent.** A
+     * merchant reconciles a day against their invoice, corrects the figure, and
+     * an hour later the sync reverts it with nothing in the UI saying so. A
+     * pinned row is declined by the sync — recorded as declined, not failed —
+     * and stays exactly as the merchant left it until they un-pin it.
+     *
+     * Deliberately not implied by `source = 'manual'`. A sync winning over an
+     * unpinned hand-typed figure is the *default*, because the alternative is a
+     * merchant maintaining two sets of books; pinning is the merchant saying
+     * this particular day is theirs. The two facts are independent, so they are
+     * two columns.
+     *
+     * A hand write is never declined by this. The merchant can always correct,
+     * pin, un-pin or delete their own row, whichever source wrote it.
+     */
+    pinned: boolean('pinned').notNull().default(false),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },

@@ -3,7 +3,10 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import type { CampaignSpend } from '../../../shared/database/schema';
+import type {
+  CampaignSpend,
+  SpendSource,
+} from '../../../shared/database/schema';
 import { StoreService } from '../../tenant/services/store.service';
 import { AdRepository } from '../repositories/ad.repository';
 import { CampaignRepository } from '../repositories/campaign.repository';
@@ -52,6 +55,13 @@ export interface RecordCampaignSpendInput {
   amount: number;
   currency: string;
   note?: string | null;
+  /**
+   * Whether to protect this day from the next sync.
+   *
+   * Omitted leaves whatever the day already had, which is what a correction of
+   * the amount alone should do — see `RecordSpendRow.pinned`.
+   */
+  pinned?: boolean;
 }
 
 /**
@@ -70,11 +80,15 @@ export interface RecordCampaignSpendRangeInput {
   total: number;
   currency: string;
   note?: string | null;
+  /** Applied to every day in the range, as the note is. */
+  pinned?: boolean;
 }
 
 export interface UpdateCampaignSpendInput {
   amount?: number;
   note?: string | null;
+  /** Pin this day against the sync, or hand it back to it. */
+  pinned?: boolean;
 }
 
 /**
@@ -238,6 +252,12 @@ export class CampaignSpendService {
    * The Campaign — or the Ad — may be archived. Closing out a finished
    * creative's real cost is a normal thing to want, and refusing it would leave
    * the account permanently understating what it spent.
+   *
+   * A hand write always lands, over a synced figure or a pinned one, and the
+   * row it leaves says `manual`. A pin is a rule about what the *sync* may
+   * overwrite; it was never a lock against the merchant who set it. Pass
+   * `pinned` to set or clear that rule, or leave it out to keep whatever the
+   * day already had.
    */
   async record(
     target: SpendTarget,
@@ -263,6 +283,7 @@ export class CampaignSpendService {
       // reinterpret it.
       currency: store.currency,
       note: normalizeNote(input.note),
+      pinned: input.pinned,
     });
   }
 
@@ -279,6 +300,7 @@ export class CampaignSpendService {
    * overwritten, not added to. Re-submitting an overlapping range repairs the
    * days it covers instead of doubling them, which is the same guarantee the
    * unique constraint gives `record`, applied to a stretch of days at once.
+   * Every day it writes is a hand-written one, whatever was there before.
    */
   async recordRange(
     target: SpendTarget,
@@ -309,6 +331,7 @@ export class CampaignSpendService {
         // The same note on every day of the range. It describes the entry, and
         // there is no per-day fact to say beyond the day itself.
         note,
+        pinned: input.pinned,
       })),
     );
 
@@ -327,6 +350,18 @@ export class CampaignSpendService {
    * replace the other one" is not an answer a merchant would expect.
    *
    * Nor is the currency: it is the Store's, frozen on the row.
+   *
+   * Correcting the amount makes the row `manual`, whichever source wrote it.
+   * That is simply what happened: the figure on the row is now the merchant's,
+   * and a corrected day still labelled `synced` would tell them the platform
+   * said something it did not.
+   *
+   * **It does not pin the row, and pinning it is the merchant's next click.**
+   * An unpinned correction is handed back to the sync within hours — which is
+   * the right default, since a sync winning is what stops anyone maintaining
+   * two sets of books — but it is also the exact revert this feature exists to
+   * prevent when the correction came from an invoice. So the pin travels on
+   * this same request, and the UI offers it at the moment of correcting.
    */
   async update(
     target: SpendTarget,
@@ -337,10 +372,18 @@ export class CampaignSpendService {
     await this.requireTarget(target);
     const grain = this.editGrain(target);
 
-    const patch: { amount?: number; note?: string | null } = {};
-    if (input.amount !== undefined)
+    const patch: {
+      amount?: number;
+      note?: string | null;
+      pinned?: boolean;
+      source?: SpendSource;
+    } = {};
+    if (input.amount !== undefined) {
       patch.amount = this.assertAmount(input.amount);
+      patch.source = 'manual';
+    }
     if (input.note !== undefined) patch.note = normalizeNote(input.note);
+    if (input.pinned !== undefined) patch.pinned = input.pinned;
 
     if (Object.keys(patch).length === 0) {
       const existing = await this.spend.findById(

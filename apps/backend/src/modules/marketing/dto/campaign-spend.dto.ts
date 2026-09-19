@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsEnum,
   IsInt,
   IsOptional,
@@ -59,6 +60,15 @@ export class RecordCampaignSpendDto {
   @IsString()
   @MaxLength(CAMPAIGN_SPEND_NOTE_LIMIT)
   declare note?: string;
+
+  @ApiPropertyOptional({
+    example: true,
+    description:
+      'Protects this day from the next sync. A synced figure overwrites an unpinned day by default — nobody should have to maintain two sets of books — and is declined by a pinned one, so a day reconciled against an invoice is not reverted an hour later. Leave it out to keep whatever the day already had: correcting an amount does not hand a pinned day back to the sync. Pass false to hand it back deliberately.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  declare pinned?: boolean;
 }
 
 /**
@@ -115,6 +125,15 @@ export class RecordCampaignSpendRangeDto {
   @IsString()
   @MaxLength(CAMPAIGN_SPEND_NOTE_LIMIT)
   declare note?: string;
+
+  @ApiPropertyOptional({
+    example: true,
+    description:
+      'Applied to every day in the range, as the note is. Left out, each day keeps whatever pin it already had.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  declare pinned?: boolean;
 }
 
 /**
@@ -124,7 +143,11 @@ export class RecordCampaignSpendRangeDto {
  * the row so a later currency change cannot reinterpret it.
  */
 export class UpdateCampaignSpendDto {
-  @ApiPropertyOptional({ example: 12500 })
+  @ApiPropertyOptional({
+    example: 12500,
+    description:
+      'Correcting the amount marks the row as hand-entered, whichever source wrote it — the figure is now the merchant’s. It does not pin the day; pass pinned alongside to do that.',
+  })
   @IsOptional()
   @IsInt()
   @Min(0)
@@ -135,6 +158,15 @@ export class UpdateCampaignSpendDto {
   @IsString()
   @MaxLength(CAMPAIGN_SPEND_NOTE_LIMIT)
   declare note?: string;
+
+  @ApiPropertyOptional({
+    example: true,
+    description:
+      'Pins this day against the sync, or hands it back to it. The usual pairing is with a corrected amount: a correction the merchant read off an invoice should survive the next sync, and one they made because the platform had not reported yet should not.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  declare pinned?: boolean;
 }
 
 export class ListCampaignSpendQueryDto {

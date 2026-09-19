@@ -634,6 +634,10 @@ export const recordCampaignSpendRangeServerFn = createServerFn({
 // The day is deliberately absent: moving a figure to another day is recording
 // it there — which corrects that day — and deleting the row entered by mistake.
 // The currency is the store's and frozen on the row.
+//
+// Correcting the amount marks the row as hand-entered whichever source wrote
+// it, because the figure on it is now the merchant's. It does not pin the day:
+// that is a separate decision and rides on the same request.
 export const updateCampaignSpendServerFn = createServerFn({ method: "POST" })
   .inputValidator(
     z.object({
@@ -641,6 +645,15 @@ export const updateCampaignSpendServerFn = createServerFn({ method: "POST" })
       spendId: z.string().min(1),
       amount: z.number().int().min(0).optional(),
       note: z.string().max(255).optional(),
+      /**
+       * Pins the day against the sync, or hands it back to it.
+       *
+       * Sent only when the merchant actually toggled it. Omitted, the backend
+       * leaves the day's pin exactly as it was — so correcting an amount never
+       * silently hands a reconciled day back to the sync, which is the revert
+       * the pin was set against.
+       */
+      pinned: z.boolean().optional(),
     }),
   )
   .handler(async ({ data }): Promise<CampaignSpend> => {

@@ -1,13 +1,23 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, between, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, between, eq, isNull, not, sql } from 'drizzle-orm';
 import type { DrizzleClient } from '../../../shared/database/database.module';
 import { DRIZZLE_CLIENT } from '../../../shared/database/database.module';
 import type {
   CampaignSpend,
   NewCampaignSpend,
+  SpendSource,
 } from '../../../shared/database/schema';
 import { campaignSpend } from '../../../shared/database/schema';
 import type { SpendDay } from '../utils/spend-day.util';
+
+/**
+ * How many days of synced Spend go into one statement.
+ *
+ * A first connection backfills a year for every claimed Ad, which is more
+ * parameters than one `INSERT` should carry. The same reason and the same
+ * shape as the Reported Figure writer's chunking.
+ */
+const SYNC_WRITE_CHUNK = 500;
 
 /**
  * A period's Spend read at every grain the performance report shows it at.
@@ -45,6 +55,42 @@ export interface RecordSpendRow {
   amount: number;
   currency: string;
   note: string | null;
+  /**
+   * Whether the merchant said anything about pinning in this request.
+   *
+   * Three states on purpose. `true` and `false` are the merchant pinning and
+   * un-pinning; `undefined` is them not mentioning it, which must leave a
+   * pinned day pinned. Correcting an amount on a day already pinned is the
+   * commonest way to reach this write, and silently handing that day back to
+   * the sync is exactly the revert the pin was set to prevent.
+   */
+  pinned?: boolean;
+}
+
+/**
+ * One day of Spend as an ad platform reported it, already resolved onto the Ad
+ * that claims the platform's ad.
+ *
+ * No `note` and no `pinned`. A sync has nothing to say in a note, and a sync
+ * pinning its own write would lock the merchant's book against the merchant.
+ */
+export interface SyncedSpendRow {
+  organizationId: string;
+  storeId: string;
+  campaignId: string;
+  /** Always an Ad. A sync knows which creative spent the money, or writes nothing. */
+  adId: string;
+  day: SpendDay;
+  amount: number;
+  currency: string;
+}
+
+/** What a sync's write did, counted in the terms the outcome is reported in. */
+export interface SyncedSpendWrite {
+  /** Days written or corrected. */
+  written: number;
+  /** Days left alone because the merchant pinned them. Not a failure. */
+  declined: number;
 }
 
 /**
@@ -253,9 +299,18 @@ export class CampaignSpendRepository {
    * row is by construction the same Campaign's, and so the same Organization's,
    * but a write that could only ever land inside the caller's tenant is worth
    * the clause on a table holding cost data.
+   *
+   * **There is no pinned guard here, and there must not be.** A pin says a sync
+   * may not overwrite this day; it never says the merchant may not. A hand
+   * write always lands, over a pinned row or a synced one, and takes `manual`
+   * as its source — because it now is one.
    */
   async record(row: RecordSpendRow): Promise<CampaignSpend> {
-    const values: NewCampaignSpend = row;
+    const values: NewCampaignSpend = {
+      ...row,
+      source: 'manual',
+      pinned: row.pinned ?? false,
+    };
 
     const [saved] = await this.db
       .insert(campaignSpend)
@@ -270,6 +325,11 @@ export class CampaignSpendRepository {
           amount: row.amount,
           currency: row.currency,
           note: row.note,
+          source: 'manual',
+          // Only when the merchant said something about it. Omitted from the
+          // `set` entirely otherwise, which leaves the stored value alone — a
+          // day they pinned stays pinned through a correction of its amount.
+          ...(row.pinned === undefined ? {} : { pinned: row.pinned }),
           updatedAt: new Date(),
         },
         setWhere: and(
@@ -302,7 +362,15 @@ export class CampaignSpendRepository {
   async recordMany(rows: RecordSpendRow[]): Promise<CampaignSpend[]> {
     if (rows.length === 0) return [];
 
-    const values: NewCampaignSpend[] = rows;
+    const values: NewCampaignSpend[] = rows.map((row) => ({
+      ...row,
+      source: 'manual' as const,
+      pinned: row.pinned ?? false,
+    }));
+
+    // One decision for the whole range, because one request made it: the
+    // merchant either mentioned pinning for this entry or did not.
+    const pinned = rows[0].pinned;
 
     return this.db
       .insert(campaignSpend)
@@ -317,6 +385,10 @@ export class CampaignSpendRepository {
           amount: sql`excluded.amount`,
           currency: sql`excluded.currency`,
           note: sql`excluded.note`,
+          source: sql`excluded.source`,
+          // As in `record`: absent from the `set` unless the merchant said
+          // something, so a pinned day inside the range keeps its pin.
+          ...(pinned === undefined ? {} : { pinned: sql`excluded.pinned` }),
           updatedAt: new Date(),
         },
         // As in `record`: a conflicting row is by construction the same
@@ -330,13 +402,126 @@ export class CampaignSpendRepository {
       .returning();
   }
 
+  /**
+   * Writes what an ad platform reported, and leaves the merchant's pinned days
+   * alone.
+   *
+   * **`setWhere` carries the pin guard, and that is the whole feature.** The
+   * update branch only applies where the *existing* row is not pinned, so a day
+   * the merchant reconciled against their invoice is not overwritten — not by
+   * this sync and not by the one six hours from now. The alternative, reading
+   * the pinned days first and excluding them from the statement, would leave a
+   * window between the read and the write in which a merchant pinning a day
+   * loses it anyway; the database is the authority here for the same reason it
+   * is the authority on one-row-per-day.
+   *
+   * Being refused is not an error. `RETURNING` omits the rows the `setWhere`
+   * filtered out, so what comes back is exactly what was written and the
+   * difference is exactly what was declined — which is what the sync reports.
+   *
+   * The conflict target is the same `NULLS NOT DISTINCT` constraint every other
+   * write here uses, so a synced day corrects the merchant's row for that day
+   * rather than sitting beside it. Two rows for one Ad and one day — one typed,
+   * one pulled — would be counted twice and double what that day cost.
+   *
+   * Chunked, because a first sync backfills a year across every claimed Ad and
+   * that is more parameters than one statement should carry.
+   */
+  async recordSynced(
+    rows: SyncedSpendRow[],
+    syncedAt: Date,
+  ): Promise<SyncedSpendWrite> {
+    if (rows.length === 0) return { written: 0, declined: 0 };
+
+    let written = 0;
+    for (let start = 0; start < rows.length; start += SYNC_WRITE_CHUNK) {
+      const chunk = rows.slice(start, start + SYNC_WRITE_CHUNK);
+      const values: NewCampaignSpend[] = chunk.map((row) => ({
+        ...row,
+        note: null,
+        source: 'synced' as const,
+        // A sync never pins its own write. Pinning is the merchant saying a day
+        // is theirs, and a sync that pinned would lock the book against them.
+        pinned: false,
+        updatedAt: syncedAt,
+      }));
+
+      const saved = await this.db
+        .insert(campaignSpend)
+        .values(values)
+        .onConflictDoUpdate({
+          target: [
+            campaignSpend.campaignId,
+            campaignSpend.adId,
+            campaignSpend.day,
+          ],
+          set: {
+            amount: sql`excluded.amount`,
+            currency: sql`excluded.currency`,
+            source: sql`excluded.source`,
+            // Not `excluded.note`: a sync has nothing to say, and blanking the
+            // note a merchant left on a day they are handing back to the sync
+            // would delete the only record of why they typed it.
+            updatedAt: syncedAt,
+          },
+          setWhere: and(
+            eq(campaignSpend.organizationId, rows[0].organizationId),
+            eq(campaignSpend.storeId, rows[0].storeId),
+            not(campaignSpend.pinned),
+          ),
+        })
+        .returning({ id: campaignSpend.id });
+
+      written += saved.length;
+    }
+
+    return { written, declined: rows.length - written };
+  }
+
+  /**
+   * Drops the Spend a sync wrote against one Ad, leaving anything the merchant
+   * made their own.
+   *
+   * What undoing a claim needs. The claim is what said these days belong to
+   * this creative; withdrawing it has to withdraw the cost too, or the Ad goes
+   * on reporting money it no longer claims — and a re-claim of the same
+   * platform ad onto a different Ad would write those same days again, with the
+   * cost then counted twice under two names.
+   *
+   * Two rows survive it, and both survive deliberately. A `manual` row was
+   * typed by the merchant and was never the claim's to delete. A pinned row is
+   * the merchant saying that day is theirs, which is the one statement in this
+   * feature that outranks the sync — including the sync's own withdrawal.
+   */
+  async removeSyncedForAd(
+    adId: string,
+    orgId: string,
+    storeId: string,
+  ): Promise<number> {
+    const deleted = await this.db
+      .delete(campaignSpend)
+      .where(
+        and(
+          eq(campaignSpend.adId, adId),
+          eq(campaignSpend.organizationId, orgId),
+          eq(campaignSpend.storeId, storeId),
+          eq(campaignSpend.source, 'synced'),
+          not(campaignSpend.pinned),
+        ),
+      )
+      .returning({ id: campaignSpend.id });
+    return deleted.length;
+  }
+
   /** Scoped as `findById` is, and for the same reason. */
   async update(
     id: string,
     campaignId: string,
     orgId: string,
     storeId: string,
-    data: Partial<Pick<NewCampaignSpend, 'amount' | 'note'>>,
+    data: Partial<Pick<NewCampaignSpend, 'amount' | 'note' | 'pinned'>> & {
+      source?: SpendSource;
+    },
     adId?: string | null,
   ): Promise<CampaignSpend | null> {
     const [row] = await this.db

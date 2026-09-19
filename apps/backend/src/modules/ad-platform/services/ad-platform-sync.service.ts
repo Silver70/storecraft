@@ -16,6 +16,10 @@ import {
   AdReportedFigureRepository,
   type ReportedFigureRow,
 } from '../repositories/ad-reported-figure.repository';
+import {
+  SyncedSpendService,
+  type PlatformSpendDay,
+} from '../../marketing/services/synced-spend.service';
 import { CredentialVault } from './credential-vault.service';
 import { UnlinkedAdService } from './unlinked-ad.service';
 import type { PlatformAdSighting } from '../utils/unlinked-ad-plan.util';
@@ -36,6 +40,34 @@ export interface SyncOutcome {
   backfill: boolean;
   /** How many platform ad-days were written or corrected. */
   figuresWritten: number;
+  /**
+   * How many days of Spend were written into the merchant's own book, against
+   * the Ads that claim the platform's ads.
+   *
+   * A different number from `figuresWritten` and deliberately so: that one
+   * counts every ad the platform reported, this one counts only the days that
+   * landed on a claimed Ad in a matching currency and were not pinned.
+   */
+  spendWritten: number;
+  /**
+   * How many days the sync left alone because the merchant pinned them.
+   *
+   * **Recorded, not failed.** This is the number that makes the pin visible:
+   * a merchant who reconciled a day against their invoice can see that the
+   * sync met it and stood down, rather than wondering whether it ever ran.
+   */
+  spendDeclined: number;
+  /**
+   * The ad account's currency and the Store's, when they differ — in which case
+   * no Spend was written at all.
+   *
+   * The Reported Figures are still pulled and still readable in the currency
+   * they are in. What is refused is dropping them into a book that is summed as
+   * a single currency, because there is no conversion anywhere here (ADR-0005)
+   * and the merchant is owed the mismatch rather than a total built on a rate
+   * nobody chose.
+   */
+  spendCurrencyMismatch: { store: string; account: string } | null;
   /**
    * How many of the platform's ads nothing in this Store claims, and are
    * therefore being held for the merchant to decide about.
@@ -72,13 +104,24 @@ const UNREADABLE_FIGURE =
  *
  * ## What this service is allowed to write
  *
- * `ad_reported_figures`, and the sync state on the connection that produced
- * them. **Never `campaign_spend`.** That table is what the merchant paid and
- * can reconcile against an invoice; this one is what the platform states, on
- * its own attribution window and in its ad account's currency. They are stored
- * beside each other, labelled, and allowed to disagree — which they routinely
- * will, by a factor of two (ADR-0005). Nothing here so much as imports the
- * Spend repository.
+ * `ad_reported_figures`, the sync state on the connection that produced them,
+ * and — through `SyncedSpendService` and nothing else — the **spend** side of
+ * `campaign_spend`.
+ *
+ * That last one is a narrow door, and the narrowness is the point. What an ad
+ * account was charged is the same fact the merchant would otherwise read off
+ * the platform's dashboard and type in by hand, so it belongs in their book of
+ * record, labelled `synced` and never overwriting a day they pinned. The
+ * platform's **revenue, conversions and ROAS do not follow it**: those are
+ * claims made on an attribution window that is not ours, they stay in
+ * `ad_reported_figures` where they are labelled and displayed beside ours, and
+ * they are never an input to Contribution Margin (ADR-0005). The two books are
+ * allowed to disagree — which they routinely will, by a factor of two — and
+ * showing both is the whole point.
+ *
+ * Nothing here touches `CampaignSpendRepository` directly, and nothing here
+ * writes a Campaign-level Spend row: a sync knows which creative spent the
+ * money, and a row naming no Ad is a statement only a merchant can make.
  *
  * ## Why nothing here throws at a merchant
  *
@@ -105,6 +148,7 @@ export class AdPlatformSyncService {
     private readonly credentials: AdPlatformCredentialRepository,
     private readonly figures: AdReportedFigureRepository,
     private readonly unlinked: UnlinkedAdService,
+    private readonly syncedSpend: SyncedSpendService,
     private readonly vault: CredentialVault,
   ) {}
 
@@ -253,12 +297,31 @@ export class AdPlatformSyncService {
         now,
       );
 
+      // And last, the merchant's own book — only for the ads an Ad here claims,
+      // only in the Store's own currency, and never over a day they pinned.
+      // Last because everything before it is recorded regardless of what this
+      // does: the platform's figures are pulled and the unclaimed ads are held
+      // whether or not a single Spend row could be written.
+      const spend = await this.syncedSpend.apply(
+        {
+          organizationId: connection.organizationId,
+          storeId: connection.storeId,
+          currency: tree.currency,
+          days: spendDaysFrom(tree, window.from, window.to),
+        },
+        now,
+      );
+
       await this.connections.recordSyncSuccess(connection.id, now);
 
       this.logger.log(
         `Synced ${connection.platform} for store ${connection.storeId}: ` +
           `${written} figure(s) over ${window.from}…${window.to}` +
-          (window.backfill ? ' (backfill)' : ''),
+          (window.backfill ? ' (backfill)' : '') +
+          `, ${spend.written} spend day(s) recorded` +
+          (spend.declinedPinned
+            ? `, ${spend.declinedPinned} pinned day(s) left alone`
+            : ''),
       );
 
       return {
@@ -268,6 +331,9 @@ export class AdPlatformSyncService {
         to: window.to,
         backfill: window.backfill,
         figuresWritten: written,
+        spendWritten: spend.written,
+        spendDeclined: spend.declinedPinned,
+        spendCurrencyMismatch: spend.currencyMismatch,
         unlinkedHeld: held,
         message: null,
       };
@@ -293,6 +359,9 @@ export class AdPlatformSyncService {
         to: window.to,
         backfill: window.backfill,
         figuresWritten: 0,
+        spendWritten: 0,
+        spendDeclined: 0,
+        spendCurrencyMismatch: null,
         unlinkedHeld: 0,
         message,
       };
@@ -369,6 +438,34 @@ export class AdPlatformSyncService {
 
     return rows;
   }
+}
+
+/**
+ * The tree as spend per platform ad per day, inside the window that was asked
+ * for.
+ *
+ * The same window filter `rowsFrom` applies, and for the same reason: a day
+ * outside the range no later sync will cover is a figure that would be written
+ * once and never confirmed again. Only spend is carried across — the revenue,
+ * conversions and ROAS beside it in the tree stay in the platform's own book.
+ */
+function spendDaysFrom(
+  tree: AdTree,
+  from: string,
+  to: string,
+): PlatformSpendDay[] {
+  const days: PlatformSpendDay[] = [];
+  for (const ad of tree.ads) {
+    for (const day of ad.days) {
+      if (day.day < from || day.day > to) continue;
+      days.push({
+        externalAdId: ad.externalAdId,
+        day: day.day,
+        amount: day.spend,
+      });
+    }
+  }
+  return days;
 }
 
 /**

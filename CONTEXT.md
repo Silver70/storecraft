@@ -152,7 +152,24 @@ where the merchant has split it, against one of that Campaign's Ads. In the
 Store's currency and in minor units like all other money here. A row naming no
 Ad means the cost is known and its split is not — never that it belongs to no
 Ad.
+
+Every row records its **Source**: typed by the merchant, or written by a sync
+against the Ad that claims a platform's ad. A sync writes only against an Ad,
+only in the Store's own currency, and only what the ad account was charged —
+never the platform's revenue, conversions or ROAS, which are Reported Figures
+and stay beside ours. Manual entry is first-class permanently, and is the only
+path for `email`, `sms`, `affiliate`, `influencer` and `other`.
 _Avoid_: Cost, budget, ad cost
+
+**Pinned** (of a Spend row):
+The merchant's statement that this day is theirs and a sync may not overwrite
+it. A sync wins by default — the alternative is a merchant keeping two sets of
+books — and is refused outright by a pinned day, recording that it declined
+rather than treating it as a failure. Un-pinning hands the day back. Independent
+of Source: an unpinned hand-typed figure is overwritten, and a synced figure the
+merchant endorses can be pinned without editing it. A pin never blocks the
+merchant, who can correct, pin, un-pin or delete any row whatever wrote it.
+_Avoid_: Locked, frozen, overridden, manual override
 
 **Measured Figure**:
 A number derived from the tracked event stream rather than from Orders —

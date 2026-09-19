@@ -17,6 +17,7 @@ import { AttributedRevenueService } from './services/attributed-revenue.service'
 import { CampaignService } from './services/campaign.service';
 import { CampaignSpendService } from './services/campaign-spend.service';
 import { RulePreviewService } from './services/rule-preview.service';
+import { SyncedSpendService } from './services/synced-spend.service';
 
 /**
  * Marketing: Campaigns, the Ads running under them, the matching rules that
@@ -29,6 +30,12 @@ import { RulePreviewService } from './services/rule-preview.service';
  * Spend row is validated against. It is a domain module, not a report module —
  * the rule that a report module never depends on another report module is
  * untouched.
+ *
+ * `SyncedSpendService` is exported for one caller, the ad-platform sync, and is
+ * the only way a figure pulled from a platform reaches `campaign_spend`. It
+ * lives here rather than there because this module owns what Spend is and what
+ * may be written to it — including the rule that a pinned day is the merchant's
+ * and a sync may not have it.
  */
 @Module({
   imports: [AuthModule, TenantModule],
@@ -51,6 +58,7 @@ import { RulePreviewService } from './services/rule-preview.service';
     CampaignSpendService,
     AttributedRevenueService,
     RulePreviewService,
+    SyncedSpendService,
   ],
   exports: [
     CampaignRepository,
@@ -61,6 +69,7 @@ import { RulePreviewService } from './services/rule-preview.service';
     CampaignSpendService,
     AttributedRevenueService,
     RulePreviewService,
+    SyncedSpendService,
   ],
 })
 export class MarketingModule {}

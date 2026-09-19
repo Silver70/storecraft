@@ -347,11 +347,17 @@ describe('Unlinked ads (e2e)', () => {
         isCanonical: true,
       });
 
-      // Three days of history, $300, pulled before anything claimed it.
+      // Three days of history, $300, pulled before anything claimed it — and
+      // all three recorded as this ad's own spend, not only as the platform's
+      // figures. A scheduled sync only re-reads a trailing window, so a day
+      // backfilled weeks ago would never come round again and the creative's
+      // spend would start from zero.
       expect(claim.attached).toEqual({
         days: 3,
         spend: 300_00,
         currency: 'USD',
+        spendDaysRecorded: 3,
+        spendCurrencyMismatch: null,
       });
       const figures = await readFigures(fixture.admin.client);
       expect(figures).toHaveLength(3);
@@ -678,6 +684,8 @@ describe('Unlinked ads (e2e)', () => {
         days: 3,
         spend: 300_00,
         currency: 'USD',
+        spendDaysRecorded: 3,
+        spendCurrencyMismatch: null,
       });
       const figures = await readFigures(fixture.admin.client);
       expect(figures.every((f) => f.adId === again.ad.id)).toBe(true);

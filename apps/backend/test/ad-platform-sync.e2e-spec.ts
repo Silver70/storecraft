@@ -170,6 +170,9 @@ describe('Ad platform sync (e2e)', () => {
       to: string;
       backfill: boolean;
       figuresWritten: number;
+      spendWritten: number;
+      spendDeclined: number;
+      spendCurrencyMismatch: { store: string; account: string } | null;
       message: string | null;
     }>
   > => {
@@ -207,6 +210,56 @@ describe('Ad platform sync (e2e)', () => {
       .where(eq(adReportedFigures.organizationId, fixture.organizationId));
     return rows.length;
   };
+
+  /**
+   * A campaign with one ad already claiming a platform ad — the only shape a
+   * sync may write spend against.
+   *
+   * Built through the ordinary admin routes rather than by an insert, so the
+   * tag derivation and the per-store uniqueness of a platform id are the real
+   * ones.
+   */
+  async function claimedAd(
+    externalId: string,
+    client: AdminClient = fixture.admin.client,
+    name = 'Summer reel',
+  ): Promise<{ campaignId: string; adId: string }> {
+    const campaign = (
+      await client
+        .post('/campaigns', { name: 'Summer Sale 2026', platform: 'meta' })
+        .expect(201)
+    ).body as { id: string };
+    const ad = (
+      await client
+        .post(`/campaigns/${campaign.id}/ads`, { name, externalId })
+        .expect(201)
+    ).body as { id: string };
+    return { campaignId: campaign.id, adId: ad.id };
+  }
+
+  /** The merchant's own book of spend, read straight from the table. */
+  const spendRows = async (): Promise<
+    Array<{
+      adId: string | null;
+      day: string;
+      amount: number;
+      currency: string;
+      source: string;
+      pinned: boolean;
+    }>
+  > =>
+    db
+      .select({
+        adId: campaignSpend.adId,
+        day: campaignSpend.day,
+        amount: campaignSpend.amount,
+        currency: campaignSpend.currency,
+        source: campaignSpend.source,
+        pinned: campaignSpend.pinned,
+      })
+      .from(campaignSpend)
+      .where(eq(campaignSpend.organizationId, fixture.organizationId))
+      .orderBy(campaignSpend.day);
 
   // ─── Pulling figures ────────────────────────────────────────────────────────
 
@@ -285,7 +338,7 @@ describe('Ad platform sync (e2e)', () => {
       expect(figures.map((f) => f.externalAdId)).toEqual(['ad_nobody_claims']);
     });
 
-    it('never writes a platform figure into campaign_spend', async () => {
+    it('writes no spend at all for an ad nothing here claims', async () => {
       const { providerRef } = await connect(fixture.admin.client);
       platformReports(providerRef, {
         currency: 'USD',
@@ -298,17 +351,55 @@ describe('Ad platform sync (e2e)', () => {
         ],
       });
 
+      const [outcome] = await syncNow(fixture.admin.client);
+
+      // The money is not lost: it is in the platform's own book and the ad is
+      // held as an Unlinked Ad. What must not happen is an Ad being invented to
+      // hang the cost on, or the cost landing on somebody else's creative.
+      expect(outcome.spendWritten).toBe(0);
+      expect(await spendRows()).toEqual([]);
+      expect(await countFigures()).toBe(1);
+    });
+
+    it("never writes the platform's revenue or conversions into campaign_spend", async () => {
+      const { providerRef } = await connect(fixture.admin.client);
+      const { adId } = await claimedAd('ad_meta_1');
+      platformReports(providerRef, {
+        currency: 'USD',
+        ads: [
+          {
+            externalAdId: 'ad_meta_1',
+            name: 'Summer reel',
+            days: [
+              day(today(), {
+                spend: 500_00,
+                conversions: 43,
+                reportedRevenue: 2_500_00,
+                reportedRoasBp: 50000,
+              }),
+            ],
+          },
+        ],
+      });
+
       await syncNow(fixture.admin.client);
 
-      // ADR-0005: `campaign_spend` is the merchant's book of record and this is
-      // the platform's. A sync that wrote into it would make a spend total
-      // incomparable with itself.
-      const spendRows = await db
-        .select({ id: campaignSpend.id })
-        .from(campaignSpend)
-        .where(eq(campaignSpend.organizationId, fixture.organizationId));
-      expect(spendRows).toEqual([]);
-      expect(await countFigures()).toBe(1);
+      // ADR-0005, at its sharpest. The spend crosses — it is what the merchant
+      // paid, and typing it by hand was the problem this stage exists to solve.
+      // The revenue, conversions and ROAS do not: they are claims made on the
+      // platform's own attribution window, they stay in `ad_reported_figures`
+      // labelled with their source, and Contribution Margin never sees them.
+      const rows = await spendRows();
+      expect(rows).toEqual([
+        {
+          adId,
+          day: today(),
+          amount: 500_00,
+          currency: 'USD',
+          source: 'synced',
+          pinned: false,
+        },
+      ]);
     });
   });
 
@@ -449,6 +540,371 @@ describe('Ad platform sync (e2e)', () => {
   });
 
   // ─── Currency ───────────────────────────────────────────────────────────────
+
+  // ─── The merchant's own book, and whose day it is ───────────────────────────
+
+  /**
+   * What the sync puts into `campaign_spend`, and what it refuses to put there.
+   *
+   * The full seam: the fake provider returns a tree, the real sync runs against
+   * the real database, and the merchant reads their own spend back through the
+   * admin API — the same route they read a figure they typed through, which is
+   * the point of recording provenance on the row rather than in a second table.
+   */
+  describe('spend in the merchant’s own book', () => {
+    const readSpend = async (
+      campaignId: string,
+      client: AdminClient = fixture.admin.client,
+    ): Promise<{
+      total: number;
+      rows: Array<{
+        day: string;
+        amount: number;
+        source: string;
+        pinned: boolean;
+      }>;
+    }> => {
+      const res = await client
+        .get(`/campaigns/${campaignId}/spend?period=90d`)
+        .expect(200);
+      return res.body as never;
+    };
+
+    it('records what a claimed ad spent, against the ad it was claimed onto', async () => {
+      const { providerRef } = await connect(fixture.admin.client);
+      const { campaignId, adId } = await claimedAd('ad_meta_1');
+      platformReports(providerRef, {
+        currency: 'USD',
+        ads: [
+          {
+            externalAdId: 'ad_meta_1',
+            name: 'Summer reel',
+            days: [
+              day(daysBefore(today(), 1), { spend: 267_500 }),
+              day(today(), { spend: 120_000 }),
+            ],
+          },
+        ],
+      });
+
+      const [outcome] = await syncNow(fixture.admin.client);
+      expect(outcome).toMatchObject({
+        status: 'synced',
+        spendWritten: 2,
+        spendDeclined: 0,
+        spendCurrencyMismatch: null,
+      });
+
+      // Worked out by hand: $2,675.00 and $1,200.00 against one creative.
+      const spend = await readSpend(campaignId);
+      expect(spend.total).toBe(387_500);
+      expect(spend.rows.map((r) => [r.amount, r.source, r.pinned])).toEqual([
+        [267_500, 'synced', false],
+        [120_000, 'synced', false],
+      ]);
+      expect((await spendRows()).every((row) => row.adId === adId)).toBe(true);
+    });
+
+    it('corrects an unpinned day rather than adding a second row to it', async () => {
+      const { providerRef } = await connect(fixture.admin.client);
+      const { campaignId, adId } = await claimedAd('ad_meta_1');
+
+      // The merchant typed a figure before the platform reported one.
+      await fixture.admin.client
+        .post(`/campaigns/${campaignId}/ads/${adId}/spend`, {
+          day: today(),
+          amount: 100_000,
+          currency: 'USD',
+        })
+        .expect(201);
+
+      platformReports(providerRef, {
+        currency: 'USD',
+        ads: [
+          {
+            externalAdId: 'ad_meta_1',
+            name: 'Summer reel',
+            days: [day(today(), { spend: 267_500 })],
+          },
+        ],
+      });
+      const [outcome] = await syncNow(fixture.admin.client);
+
+      // A sync wins by default, so nobody is maintaining two sets of books —
+      // and it wins by correcting the day, not by sitting beside it. Two rows
+      // for one ad on one day would double what that day cost.
+      expect(outcome.spendWritten).toBe(1);
+      const spend = await readSpend(campaignId);
+      expect(spend.rows).toHaveLength(1);
+      expect(spend.total).toBe(267_500);
+      expect(spend.rows[0].source).toBe('synced');
+    });
+
+    /**
+     * The failure this whole design exists to prevent.
+     *
+     * A merchant reconciles a day against their invoice, pins it, and the next
+     * sync leaves it alone — and says it did, rather than reporting a problem.
+     */
+    it('leaves a pinned day exactly as the merchant left it, and records that it declined', async () => {
+      const { providerRef } = await connect(fixture.admin.client);
+      const { campaignId, adId } = await claimedAd('ad_meta_1');
+
+      await fixture.admin.client
+        .post(`/campaigns/${campaignId}/ads/${adId}/spend`, {
+          day: today(),
+          amount: 300_000,
+          currency: 'USD',
+          note: 'Reconciled against the invoice',
+          pinned: true,
+        })
+        .expect(201);
+
+      platformReports(providerRef, {
+        currency: 'USD',
+        ads: [
+          {
+            externalAdId: 'ad_meta_1',
+            name: 'Summer reel',
+            days: [day(today(), { spend: 267_500 })],
+          },
+        ],
+      });
+
+      const [outcome] = await syncNow(fixture.admin.client);
+
+      // Synced, not failed. A pinned day is a decision, and a sync that called
+      // it an error would mark a healthy connection as broken.
+      expect(outcome).toMatchObject({
+        status: 'synced',
+        message: null,
+        spendWritten: 0,
+        spendDeclined: 1,
+      });
+
+      const spend = await readSpend(campaignId);
+      expect(spend.rows).toEqual([
+        expect.objectContaining({
+          amount: 300_000,
+          source: 'manual',
+          pinned: true,
+        }),
+      ]);
+
+      // And the platform's own figure is still readable beside it — the
+      // merchant is not denied the number they disagreed with.
+      const [figure] = await readFigures(fixture.admin.client);
+      expect(figure.spend).toBe(267_500);
+    });
+
+    it('still declines the pinned day on every later sync', async () => {
+      const { providerRef } = await connect(fixture.admin.client);
+      const { campaignId, adId } = await claimedAd('ad_meta_1');
+      await fixture.admin.client
+        .post(`/campaigns/${campaignId}/ads/${adId}/spend`, {
+          day: today(),
+          amount: 300_000,
+          currency: 'USD',
+          pinned: true,
+        })
+        .expect(201);
+      platformReports(providerRef, {
+        currency: 'USD',
+        ads: [
+          {
+            externalAdId: 'ad_meta_1',
+            name: 'Summer reel',
+            days: [day(today(), { spend: 267_500 })],
+          },
+        ],
+      });
+
+      await syncNow(fixture.admin.client);
+      await syncNow(fixture.admin.client);
+      const [third] = await syncNow(fixture.admin.client);
+
+      expect(third.spendDeclined).toBe(1);
+      expect((await readSpend(campaignId)).total).toBe(300_000);
+    });
+
+    it('hands the day back once the merchant un-pins it', async () => {
+      const { providerRef } = await connect(fixture.admin.client);
+      const { campaignId, adId } = await claimedAd('ad_meta_1');
+      const saved = (
+        await fixture.admin.client
+          .post(`/campaigns/${campaignId}/ads/${adId}/spend`, {
+            day: today(),
+            amount: 300_000,
+            currency: 'USD',
+            pinned: true,
+          })
+          .expect(201)
+      ).body as { id: string };
+      platformReports(providerRef, {
+        currency: 'USD',
+        ads: [
+          {
+            externalAdId: 'ad_meta_1',
+            name: 'Summer reel',
+            days: [day(today(), { spend: 267_500 })],
+          },
+        ],
+      });
+      await syncNow(fixture.admin.client);
+
+      await fixture.admin.client
+        .patch(`/campaigns/${campaignId}/ads/${adId}/spend/${saved.id}`, {
+          pinned: false,
+        })
+        .expect(200);
+      const [after] = await syncNow(fixture.admin.client);
+
+      expect(after.spendWritten).toBe(1);
+      expect(after.spendDeclined).toBe(0);
+      expect((await readSpend(campaignId)).total).toBe(267_500);
+    });
+
+    it('produces the same rows when the same range is synced twice', async () => {
+      const { providerRef } = await connect(fixture.admin.client);
+      const { campaignId } = await claimedAd('ad_meta_1');
+      platformReports(providerRef, {
+        currency: 'USD',
+        ads: [
+          {
+            externalAdId: 'ad_meta_1',
+            name: 'Summer reel',
+            days: [
+              day(daysBefore(today(), 1), { spend: 267_500 }),
+              day(today(), { spend: 120_000 }),
+            ],
+          },
+        ],
+      });
+
+      await syncNow(fixture.admin.client);
+      await syncNow(fixture.admin.client);
+
+      // Idempotent, for the reason the figures are: platforms restate days
+      // after the fact, so the sync re-reads a trailing window by design. A
+      // spend total that grew every night would never throw and would halve
+      // every ROAS on the page.
+      const spend = await readSpend(campaignId);
+      expect(spend.rows).toHaveLength(2);
+      expect(spend.total).toBe(387_500);
+    });
+
+    it('writes no spend at all when the ad account bills in another currency', async () => {
+      const { providerRef } = await connect(fixture.admin.client, 'meta', {
+        currency: 'EUR',
+      });
+      const { campaignId } = await claimedAd('ad_meta_eu');
+      platformReports(providerRef, {
+        currency: 'EUR',
+        ads: [
+          {
+            externalAdId: 'ad_meta_eu',
+            name: 'EU reel',
+            days: [day(today(), { spend: 100_00 })],
+          },
+        ],
+      });
+
+      const [outcome] = await syncNow(fixture.admin.client);
+
+      // The store bills in USD. There is no conversion anywhere in this feature
+      // and `campaign_spend` is summed as a single currency, so the merchant is
+      // shown the mismatch rather than a total built on an invented rate.
+      expect(outcome.status).toBe('synced');
+      expect(outcome.spendWritten).toBe(0);
+      expect(outcome.spendCurrencyMismatch).toEqual({
+        store: 'USD',
+        account: 'EUR',
+      });
+      expect((await readSpend(campaignId)).total).toBe(0);
+
+      // The platform's own figure is still pulled and still readable, in the
+      // currency it is actually in.
+      const [figure] = await readFigures(fixture.admin.client);
+      expect(figure).toMatchObject({ currency: 'EUR', spend: 100_00 });
+    });
+
+    it('records a claimed ad’s backfilled history as its spend, not from zero', async () => {
+      const { providerRef } = await connect(fixture.admin.client);
+      const longAgo = daysBefore(today(), 45);
+      platformReports(providerRef, {
+        currency: 'USD',
+        ads: [
+          {
+            externalAdId: 'ad_meta_1',
+            name: 'Built in Business Suite',
+            days: [
+              day(longAgo, { spend: 50_000 }),
+              day(today(), { spend: 10_000 }),
+            ],
+          },
+        ],
+      });
+      await syncNow(fixture.admin.client);
+
+      const campaign = (
+        await fixture.admin.client
+          .post('/campaigns', { name: 'Summer Sale 2026', platform: 'meta' })
+          .expect(201)
+      ).body as { id: string };
+      const [unlinked] = (
+        await fixture.admin.client.get('/ad-platforms/unlinked-ads').expect(200)
+      ).body as Array<{ id: string }>;
+
+      await fixture.admin.client
+        .post(`/ad-platforms/unlinked-ads/${unlinked.id}/claim`, {
+          campaignId: campaign.id,
+        })
+        .expect(201);
+
+      // A scheduled sync only re-reads a trailing window, so the day pulled 45
+      // days ago would never come round again. If claiming did not bring it
+      // into the merchant's book, that creative's spend would start from zero
+      // and every ratio built on it would be wrong for as long as it ran.
+      const spend = await readSpend(campaign.id);
+      expect(spend.rows.map((r) => [r.day, r.amount, r.source])).toEqual([
+        [longAgo, 50_000, 'synced'],
+        [today(), 10_000, 'synced'],
+      ]);
+    });
+
+    it('never lets one store’s synced spend reach another', async () => {
+      const other = await seedAdmin(app);
+      try {
+        const { providerRef } = await connect(fixture.admin.client);
+        await claimedAd('ad_meta_1');
+        // The other organization's store claims a platform ad with the same id
+        // — a platform ad id is the vendor's namespace, not ours.
+        const theirs = await claimedAd('ad_meta_1', other.admin.client);
+
+        platformReports(providerRef, {
+          currency: 'USD',
+          ads: [
+            {
+              externalAdId: 'ad_meta_1',
+              name: 'Summer reel',
+              days: [day(today(), { spend: 267_500 })],
+            },
+          ],
+        });
+        await syncNow(fixture.admin.client);
+
+        const mine = await spendRows();
+        expect(mine).toHaveLength(1);
+
+        const theirSpend = await other.admin.client
+          .get(`/campaigns/${theirs.campaignId}/spend?period=90d`)
+          .expect(200);
+        expect((theirSpend.body as { total: number }).total).toBe(0);
+      } finally {
+        await destroyAdmin(app, other);
+      }
+    });
+  });
 
   describe('a figure in another currency', () => {
     it('is stored as that currency, with no rate applied anywhere', async () => {

@@ -141,6 +141,13 @@
       "when": 1789797607214,
       "tag": "0019_unlinked_ads",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1789799446467,
+      "tag": "0020_spend_provenance_and_pinning",
+      "breakpoints": true
     }
   ]
 }

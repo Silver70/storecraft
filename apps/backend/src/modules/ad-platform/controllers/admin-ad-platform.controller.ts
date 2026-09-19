@@ -160,7 +160,7 @@ export class AdminAdPlatformController {
   @ApiOperation({
     summary: "Pull this store's figures from every connected ad platform now",
     description:
-      'Runs the same sync the schedule runs, immediately. A failure is reported in the response and recorded on the connection; nothing already pulled is changed by one.',
+      "Runs the same sync the schedule runs, immediately. A failure is reported in the response and recorded on the connection; nothing already pulled is changed by one. The outcome says what reached the merchant's own book as well as the platform's: spendWritten is the days recorded against claimed ads, spendDeclined is the days left alone because the merchant pinned them — a decision, not a failure — and spendCurrencyMismatch is set instead when the ad account's currency is not the store's, in which case no spend was written and nothing was converted.",
   })
   @ApiResponse({ status: 201 })
   async syncAll(

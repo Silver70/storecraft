@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckIcon, LoaderCircleIcon, PencilIcon, PlusIcon, XIcon } from "lucide-react";
+import { CheckIcon, LoaderCircleIcon, PencilIcon, PinIcon, PinOffIcon, PlusIcon, XIcon } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "~/components/ui/button";
@@ -16,6 +16,7 @@ import type {
     CampaignSpend,
     CampaignSpendReport,
     Period,
+    SpendSource,
 } from "~/types/api";
 import { campaignAdsQueryOptions, campaignSpendQueryOptions } from "../queries";
 import { CampaignPerformancePanel } from "./campaign-performance-panel";
@@ -194,6 +195,45 @@ function GrainBadge({ adId, ads }: { adId: string | null; ads: Ad[] }) {
     return (
         <span className="shrink-0 truncate rounded bg-muted px-1.5 py-0.5 text-xs font-medium">
             {ad?.name ?? "Unknown ad"}
+        </span>
+    );
+}
+
+/**
+ * Where the figure came from, and whether the merchant has claimed the day.
+ *
+ * Shown on every row rather than only on the pulled ones, because the useful
+ * reading is the comparison: a merchant scanning a period needs to see at a
+ * glance which days they typed and which the platform filled in, and a label
+ * that appears only sometimes reads as an exception rather than as a fact about
+ * every row.
+ *
+ * The pin is the louder of the two on purpose. Source is context; a pin is a
+ * promise — that this day will still say what it says after the next sync — and
+ * it is the one thing on the row the merchant set deliberately.
+ */
+function SourceBadge({ source, pinned }: { source: SpendSource; pinned: boolean }) {
+    return (
+        <span className="flex shrink-0 items-center gap-1">
+            <span
+                className={
+                    source === "synced"
+                        ? "rounded bg-sky-500/10 px-1.5 py-0.5 text-xs font-medium text-sky-700 dark:text-sky-300"
+                        : "rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground"
+                }
+                title={source === "synced" ? "Pulled from the ad platform" : "Typed in here"}
+            >
+                {source === "synced" ? "Synced" : "Typed"}
+            </span>
+            {pinned && (
+                <span
+                    className="flex items-center gap-0.5 rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300"
+                    title="The next sync will leave this day alone"
+                >
+                    <PinIcon className="h-3 w-3" />
+                    Pinned
+                </span>
+            )}
         </span>
     );
 }
@@ -670,6 +710,7 @@ function SpendRow({ row, campaignId, ads }: { row: CampaignSpend; campaignId: st
     const [editing, setEditing] = React.useState(false);
     const [amount, setAmount] = React.useState(toInput(row.amount));
     const [note, setNote] = React.useState(row.note ?? "");
+    const [pinned, setPinned] = React.useState(row.pinned);
     const [error, setError] = React.useState<string | null>(null);
 
     const saveMutation = useMutation({
@@ -684,6 +725,10 @@ function SpendRow({ row, campaignId, ads }: { row: CampaignSpend; campaignId: st
                     spendId: row.id,
                     amount: minorUnits,
                     note: note.trim(),
+                    // Only when the merchant moved it. Left out, the backend keeps
+                    // the day's pin as it was — correcting an amount must never
+                    // silently hand a reconciled day back to the sync.
+                    ...(pinned === row.pinned ? {} : { pinned }),
                 },
             });
         },
@@ -701,9 +746,30 @@ function SpendRow({ row, campaignId, ads }: { row: CampaignSpend; campaignId: st
         onError: err => setError(err.message),
     });
 
+    /**
+     * Pinning and un-pinning, on their own rather than folded into the edit.
+     *
+     * A merchant pins a day they have reconciled against an invoice, and they do
+     * it by looking at the row — not by opening it for editing, changing nothing
+     * and saving. Its own control on the row is the whole of "a merchant pins a
+     * day they corrected, and un-pins it to hand it back".
+     */
+    const pinMutation = useMutation({
+        mutationFn: () =>
+            updateCampaignSpendServerFn({
+                data: { campaignId, spendId: row.id, pinned: !row.pinned },
+            }),
+        onSuccess: () => {
+            setError(null);
+            void invalidate();
+        },
+        onError: err => setError(err.message),
+    });
+
     function cancel() {
         setAmount(toInput(row.amount));
         setNote(row.note ?? "");
+        setPinned(row.pinned);
         setError(null);
         setEditing(false);
     }
@@ -762,6 +828,22 @@ function SpendRow({ row, campaignId, ads }: { row: CampaignSpend; campaignId: st
                         <XIcon className="h-3.5 w-3.5" />
                     </Button>
                 </div>
+                {/*
+                 * Offered at the moment of correcting, which is the moment it
+                 * matters. A day read off an invoice and left unpinned is handed
+                 * back to the sync within hours — the exact revert this feature
+                 * exists to prevent — and asking for the pin on a separate click
+                 * after the save is asking for it too late.
+                 */}
+                <label className="flex items-center gap-2 pl-[7.5rem] text-xs text-muted-foreground">
+                    <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5 accent-amber-600"
+                        checked={pinned}
+                        onChange={e => setPinned(e.target.checked)}
+                    />
+                    Keep my figure — the next sync will leave this day alone
+                </label>
                 {error && <p className="text-xs text-destructive">{error}</p>}
             </li>
         );
@@ -773,7 +855,34 @@ function SpendRow({ row, campaignId, ads }: { row: CampaignSpend; campaignId: st
                 <span className="w-28 shrink-0 text-muted-foreground">{formatDay(row.day)}</span>
                 <span className="w-24 shrink-0 font-medium tabular-nums">{formatMoney(row.amount, row.currency)}</span>
                 <GrainBadge adId={row.adId} ads={ads} />
+                <SourceBadge source={row.source} pinned={row.pinned} />
                 <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{row.note}</span>
+                <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className={
+                        row.pinned
+                            ? "h-7 w-7 shrink-0 text-amber-600 hover:text-amber-700"
+                            : "h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
+                    }
+                    aria-label={
+                        row.pinned
+                            ? `Un-pin spend for ${formatDay(row.day)} and hand it back to the sync`
+                            : `Pin spend for ${formatDay(row.day)} so the sync leaves it alone`
+                    }
+                    title={row.pinned ? "Hand this day back to the sync" : "Keep this figure through the next sync"}
+                    disabled={pinMutation.isPending}
+                    onClick={() => pinMutation.mutate()}
+                >
+                    {pinMutation.isPending ? (
+                        <LoaderCircleIcon className="h-3.5 w-3.5 animate-spin" />
+                    ) : row.pinned ? (
+                        <PinOffIcon className="h-3.5 w-3.5" />
+                    ) : (
+                        <PinIcon className="h-3.5 w-3.5" />
+                    )}
+                </Button>
                 <Button
                     type="button"
                     size="icon"

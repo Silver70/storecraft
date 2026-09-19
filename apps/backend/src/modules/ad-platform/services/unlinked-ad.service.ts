@@ -19,6 +19,7 @@ import {
   CampaignService,
   type CampaignTaggedLink,
 } from '../../marketing/services/campaign.service';
+import { SyncedSpendService } from '../../marketing/services/synced-spend.service';
 import { PLATFORM_LINK_DEFAULTS } from '../../marketing/utils/tagged-link.util';
 import { AdReportedFigureRepository } from '../repositories/ad-reported-figure.repository';
 import {
@@ -95,7 +96,23 @@ export interface ClaimResult {
    */
   taggedLinkProblem: string | null;
   /** The history that came with it. Claiming never starts spend from zero. */
-  attached: { days: number; spend: number; currency: string | null };
+  attached: {
+    days: number;
+    spend: number;
+    currency: string | null;
+    /**
+     * How many of those days were recorded as this Ad's own Spend, labelled
+     * `synced`, rather than only as the platform's figures.
+     */
+    spendDaysRecorded: number;
+    /**
+     * Set when the ad account's currency is not the Store's, in which case none
+     * were. The platform's figures are still attached and still readable in the
+     * currency they are in — what is refused is summing them into a book kept
+     * in another one, because there is no conversion anywhere (ADR-0005).
+     */
+    spendCurrencyMismatch: { store: string; account: string } | null;
+  };
 }
 
 export interface ClaimInput {
@@ -137,6 +154,15 @@ const UNNAMED_AD = 'Untitled ad';
  * the backfill included — attaches to the Ad the moment it is set, with nothing
  * rewritten and no second pass. Unlinking clears it, which detaches the history
  * without losing a row of it.
+ *
+ * It also records the spend of those days into the merchant's own book, as
+ * `synced` Spend against the Ad, through `SyncedSpendService`. That is not the
+ * same join doing double duty: a scheduled sync only re-reads a trailing
+ * window, so a day backfilled six weeks ago would never come round again, and a
+ * claim that left it out would start the creative's Spend from zero — the one
+ * thing claiming exists not to do. Unlinking withdraws those rows again,
+ * leaving every Reported Figure and everything the merchant typed or pinned
+ * exactly where it was.
  */
 @Injectable()
 export class UnlinkedAdService {
@@ -149,6 +175,7 @@ export class UnlinkedAdService {
     private readonly adService: AdService,
     private readonly campaigns: CampaignRepository,
     private readonly campaignService: CampaignService,
+    private readonly syncedSpend: SyncedSpendService,
   ) {}
 
   // ─── Reading ────────────────────────────────────────────────────────────────
@@ -239,6 +266,13 @@ export class UnlinkedAdService {
       dismissedAt: null,
     });
 
+    // The history, into the merchant's own book, now rather than at the next
+    // sync. A scheduled sync only re-reads a trailing window, so a backfilled
+    // day from six weeks ago would never be offered again — claiming would
+    // attach the platform's figures and start this creative's Spend from zero,
+    // which is the opposite of what claiming is for.
+    const attachedSpend = await this.attachSpendFor(orgId, storeId, ad.id, row);
+
     const [view] = await this.asViews(orgId, storeId, [moved]);
     const link = await this.taggedLinkFor(orgId, storeId, campaign.id, ad.tag);
 
@@ -255,6 +289,8 @@ export class UnlinkedAdService {
         days: view.days,
         spend: view.spendToDate,
         currency: view.currency,
+        spendDaysRecorded: attachedSpend.written,
+        spendCurrencyMismatch: attachedSpend.currencyMismatch,
       },
     };
   }
@@ -330,6 +366,12 @@ export class UnlinkedAdService {
         await this.ads.update(ad.id, ad.campaignId, orgId, storeId, {
           externalId: null,
         });
+        // The cost goes with the claim. Not a figure is deleted from the
+        // platform's book — `ad_reported_figures` is untouched, and a reclaim
+        // brings all of it back — but an Ad that no longer claims a platform ad
+        // must stop reporting what that ad spent, or the same days would be
+        // counted again under whichever Ad claims it next.
+        await this.syncedSpend.detach(orgId, storeId, ad.id);
       }
     }
 
@@ -559,6 +601,74 @@ export class UnlinkedAdService {
     }
 
     return ad;
+  }
+
+  /**
+   * The spend already pulled for this platform ad, recorded as the Ad's own.
+   *
+   * Grouped by currency and never summed across two of them, for the reason
+   * nothing in this feature crosses a currency: an ad account that reported in
+   * two currencies has days that cannot be added together, and the group whose
+   * currency is not the Store's is refused by `SyncedSpendService` rather than
+   * converted (ADR-0005).
+   *
+   * Reported, never thrown. The claim has already happened by the time this
+   * runs, and failing a claim that succeeded because its bookkeeping did not
+   * would be the worst of both — the next sync records the trailing window
+   * anyway, and the merchant can enter any older day by hand.
+   */
+  private async attachSpendFor(
+    orgId: string,
+    storeId: string,
+    adId: string,
+    row: UnlinkedAd,
+  ): Promise<{
+    written: number;
+    currencyMismatch: { store: string; account: string } | null;
+  }> {
+    try {
+      const days = await this.figures.dailySpendFor(
+        orgId,
+        storeId,
+        row.externalAdId,
+      );
+      if (days.length === 0) return { written: 0, currencyMismatch: null };
+
+      const byCurrency = new Map<string, typeof days>();
+      for (const day of days) {
+        const group = byCurrency.get(day.currency);
+        if (group) group.push(day);
+        else byCurrency.set(day.currency, [day]);
+      }
+
+      let written = 0;
+      let mismatch: { store: string; account: string } | null = null;
+      for (const [currency, group] of byCurrency) {
+        const outcome = await this.syncedSpend.apply({
+          organizationId: orgId,
+          storeId,
+          currency,
+          days: group.map((day) => ({
+            externalAdId: row.externalAdId,
+            day: day.day,
+            amount: day.spend,
+          })),
+        });
+        written += outcome.written;
+        mismatch ??= outcome.currencyMismatch;
+      }
+
+      return { written, currencyMismatch: mismatch };
+    } catch (error) {
+      this.logger.error(
+        `Claimed ad ${adId} but could not record its pulled spend: ${
+          error instanceof Error
+            ? (error.stack ?? error.message)
+            : String(error)
+        }`,
+      );
+      return { written: 0, currencyMismatch: null };
+    }
   }
 
   /**

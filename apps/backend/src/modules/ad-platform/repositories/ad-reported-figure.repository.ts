@@ -196,6 +196,43 @@ export class AdReportedFigureRepository {
   }
 
   /**
+   * Every day of spend already pulled for one platform ad, oldest first.
+   *
+   * What a claim hands to the merchant's book. The figures are keyed on the
+   * platform's ad id precisely so this read needs no second pass: the moment an
+   * Ad claims that id, the whole pulled history — backfill included — is
+   * available to be recorded as that Ad's Spend, and claiming does not start a
+   * creative's cost from zero.
+   *
+   * Only the spend. The revenue, conversions and ROAS beside it in the same row
+   * stay here, in the platform's own book (ADR-0005).
+   *
+   * The currency comes back per day rather than once, because it is
+   * denormalized per row and nothing here may sum across two of them.
+   */
+  async dailySpendFor(
+    orgId: string,
+    storeId: string,
+    externalAdId: string,
+  ): Promise<Array<{ day: string; spend: number; currency: string }>> {
+    return this.db
+      .select({
+        day: adReportedFigures.day,
+        spend: adReportedFigures.spend,
+        currency: adReportedFigures.currency,
+      })
+      .from(adReportedFigures)
+      .where(
+        and(
+          eq(adReportedFigures.organizationId, orgId),
+          eq(adReportedFigures.storeId, storeId),
+          eq(adReportedFigures.externalAdId, externalAdId),
+        ),
+      )
+      .orderBy(asc(adReportedFigures.day));
+  }
+
+  /**
    * What each of these platform ads has spent in total, over every day ever
    * pulled for it.
    *

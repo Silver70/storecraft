@@ -25,6 +25,7 @@ import type {
   Campaign,
   CampaignSpend,
 } from '../src/shared/database/schema';
+import { SyncedSpendService } from '../src/modules/marketing/services/synced-spend.service';
 import { createTestApp } from './helpers/test-app';
 import {
   destroyAdmin,
@@ -64,10 +65,21 @@ describe('Campaign spend (e2e)', () => {
   let db: DrizzleClient;
   let fixture: AdminFixture;
   let campaign: Campaign;
+  /**
+   * The one path a platform's figure reaches this table by, used here exactly
+   * as the sync uses it.
+   *
+   * Driven directly rather than through a connected ad platform, because what
+   * these cases are about is the interaction between a synced row and a
+   * hand-typed one — not how a tree was pulled, which the sync spec owns.
+   * Everything below it is production wiring against the real database.
+   */
+  let synced: SyncedSpendService;
 
   beforeAll(async () => {
     ({ app } = await createTestApp());
     db = app.get<DrizzleClient>(DRIZZLE_CLIENT);
+    synced = app.get(SyncedSpendService);
   });
 
   afterAll(async () => {
@@ -138,6 +150,35 @@ describe('Campaign spend (e2e)', () => {
 
   const adSpendPath = (adId: string, suffix = ''): string =>
     `/campaigns/${campaign.id}/ads/${adId}/spend${suffix}`;
+
+  /**
+   * An Ad that already claims a platform ad, which is the only kind a sync can
+   * write spend against — a sync never invents an Ad, and never writes a
+   * campaign-level row, whose null ad means the split is unknown and is a
+   * statement only a merchant can make.
+   */
+  async function createClaimedAd(
+    name: string,
+    externalId: string,
+  ): Promise<Ad> {
+    const res = await fixture.admin.client
+      .post(`/campaigns/${campaign.id}/ads`, { name, externalId })
+      .expect(201);
+    return res.body as Ad;
+  }
+
+  /** What a sync writes, driven exactly as the sync drives it. */
+  async function syncSpend(
+    days: Array<{ externalAdId: string; day: string; amount: number }>,
+    currency = 'USD',
+  ) {
+    return synced.apply({
+      organizationId: fixture.organizationId,
+      storeId: fixture.storeId,
+      currency,
+      days,
+    });
+  }
 
   async function recordForAd(
     adId: string,
@@ -793,6 +834,521 @@ describe('Campaign spend (e2e)', () => {
 
       expect((await persistedForAd(video.id))[0].amount).toBe(12500);
     });
+  });
+
+  // ─── Where a figure came from, and whose day it is ──────────────────────────
+
+  /**
+   * A synced figure and a merchant's own entry can both describe one day.
+   *
+   * The whole of this block is about who wins when they do. A sync wins by
+   * default, because the alternative is a merchant maintaining two sets of
+   * books — and it is refused outright by a day the merchant pinned, because
+   * reconciling a day against an invoice and watching it revert an hour later
+   * with nothing in the UI saying so is the failure this design exists to
+   * prevent.
+   *
+   * The sync is driven through `SyncedSpendService` here, which is the one path
+   * a platform's figure reaches this table by and exactly what the scheduled
+   * sync calls.
+   */
+  describe('provenance and pinning', () => {
+    let video: Ad;
+
+    beforeEach(async () => {
+      video = await createClaimedAd('Beach video', 'ad_meta_1');
+    });
+
+    const rowFor = async (adId: string): Promise<CampaignSpend> => {
+      const [row] = await db
+        .select()
+        .from(campaignSpend)
+        .where(eq(campaignSpend.adId, adId));
+      return row;
+    };
+
+    it('labels a hand-typed figure as the merchant’s, and leaves it unpinned', async () => {
+      const saved = await recordForAd(video.id, {
+        day: daysAgo(1),
+        amount: 12500,
+        currency: 'USD',
+      });
+
+      // Unpinned by default and deliberately so: pinning every hand entry would
+      // mean a merchant who typed a week before connecting a platform could
+      // never be corrected by it, and a sync would never win anything.
+      expect(saved).toMatchObject({ source: 'manual', pinned: false });
+    });
+
+    it('labels a figure a sync wrote as pulled, against the ad that claims it', async () => {
+      const outcome = await syncSpend([
+        { externalAdId: 'ad_meta_1', day: daysAgo(1), amount: 267_500 },
+      ]);
+
+      expect(outcome).toMatchObject({
+        written: 1,
+        declinedPinned: 0,
+        unclaimed: 0,
+        currencyMismatch: null,
+      });
+
+      const row = await rowFor(video.id);
+      expect(row).toMatchObject({
+        campaignId: campaign.id,
+        adId: video.id,
+        day: daysAgo(1),
+        amount: 267_500,
+        currency: 'USD',
+        source: 'synced',
+        pinned: false,
+      });
+
+      // And a merchant can tell the two apart at a glance, on the row itself
+      // rather than through a join a future report would forget to make.
+      await recordForAd(video.id, {
+        day: daysAgo(2),
+        amount: 1000,
+        currency: 'USD',
+      });
+      const report = await listForAd(video.id);
+      expect(report.rows.map((r) => [r.day, r.source, r.pinned])).toEqual([
+        [daysAgo(2), 'manual', false],
+        [daysAgo(1), 'synced', false],
+      ]);
+    });
+
+    it('overwrites an unpinned day rather than sitting beside it', async () => {
+      const typed = await recordForAd(video.id, {
+        day: daysAgo(1),
+        amount: 10_000,
+        currency: 'USD',
+      });
+
+      const outcome = await syncSpend([
+        { externalAdId: 'ad_meta_1', day: daysAgo(1), amount: 26_750 },
+      ]);
+      expect(outcome).toMatchObject({ written: 1, declinedPinned: 0 });
+
+      // One row, not two. Two rows for one ad on one day would be counted twice
+      // and double what that day cost — the doubling the unique constraint has
+      // always existed to prevent, now reached from a second writer.
+      const rows = await db
+        .select()
+        .from(campaignSpend)
+        .where(eq(campaignSpend.adId, video.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        id: typed.id,
+        amount: 26_750,
+        source: 'synced',
+      });
+      expect((await listForAd(video.id)).total).toBe(26_750);
+    });
+
+    /**
+     * The case this whole feature exists for.
+     *
+     * A merchant reconciles a day against their invoice and pins it. The next
+     * sync meets that day, declines it, and says so — and the merchant's figure
+     * is still there an hour later.
+     */
+    it('never overwrites a pinned day, and records that it declined', async () => {
+      await recordForAd(video.id, {
+        day: daysAgo(1),
+        amount: 26_750,
+        currency: 'USD',
+      });
+      const pinned = await recordForAd(video.id, {
+        day: daysAgo(1),
+        amount: 30_000,
+        currency: 'USD',
+        note: 'Reconciled against the invoice',
+        pinned: true,
+      });
+      expect(pinned).toMatchObject({ pinned: true, source: 'manual' });
+
+      const outcome = await syncSpend([
+        { externalAdId: 'ad_meta_1', day: daysAgo(1), amount: 26_750 },
+      ]);
+
+      // Declined, and reported as its own number. A sync that called this a
+      // failure would mark a healthy connection as broken and show the merchant
+      // a problem where there is a decision.
+      expect(outcome).toMatchObject({ written: 0, declinedPinned: 1 });
+
+      const row = await rowFor(video.id);
+      expect(row).toMatchObject({
+        id: pinned.id,
+        amount: 30_000,
+        source: 'manual',
+        pinned: true,
+        note: 'Reconciled against the invoice',
+      });
+      expect((await listForAd(video.id)).total).toBe(30_000);
+    });
+
+    it('holds a pinned day through sync after sync', async () => {
+      await recordForAd(video.id, {
+        day: daysAgo(1),
+        amount: 30_000,
+        currency: 'USD',
+        pinned: true,
+      });
+
+      for (let run = 0; run < 3; run += 1) {
+        await syncSpend([
+          { externalAdId: 'ad_meta_1', day: daysAgo(1), amount: 26_750 },
+        ]);
+      }
+
+      expect((await rowFor(video.id)).amount).toBe(30_000);
+    });
+
+    it('hands a day back to the sync when the merchant un-pins it', async () => {
+      const pinned = await recordForAd(video.id, {
+        day: daysAgo(1),
+        amount: 30_000,
+        currency: 'USD',
+        pinned: true,
+      });
+
+      const released = await fixture.admin.client
+        .patch(adSpendPath(video.id, `/${pinned.id}`), { pinned: false })
+        .expect(200);
+      expect((released.body as CampaignSpend).pinned).toBe(false);
+
+      const outcome = await syncSpend([
+        { externalAdId: 'ad_meta_1', day: daysAgo(1), amount: 26_750 },
+      ]);
+      expect(outcome).toMatchObject({ written: 1, declinedPinned: 0 });
+      expect(await rowFor(video.id)).toMatchObject({
+        amount: 26_750,
+        source: 'synced',
+      });
+    });
+
+    it('lets the merchant correct a day a sync wrote, and marks it theirs', async () => {
+      await syncSpend([
+        { externalAdId: 'ad_meta_1', day: daysAgo(1), amount: 26_750 },
+      ]);
+      const before = await rowFor(video.id);
+      expect(before.source).toBe('synced');
+
+      const corrected = await fixture.admin.client
+        .patch(adSpendPath(video.id, `/${before.id}`), {
+          amount: 30_000,
+          pinned: true,
+        })
+        .expect(200);
+
+      // The figure on the row is now the merchant's, so the row says so: a
+      // corrected day still labelled `synced` would tell them the platform said
+      // something it did not.
+      expect(corrected.body).toMatchObject({
+        amount: 30_000,
+        source: 'manual',
+        pinned: true,
+      });
+    });
+
+    it('keeps a day pinned when the merchant only corrects its amount', async () => {
+      const pinned = await recordForAd(video.id, {
+        day: daysAgo(1),
+        amount: 30_000,
+        currency: 'USD',
+        pinned: true,
+      });
+
+      // Neither route mentions pinning, and neither may silently hand the day
+      // back to the sync — that revert is the thing the pin was set against.
+      await fixture.admin.client
+        .patch(adSpendPath(video.id, `/${pinned.id}`), { amount: 31_000 })
+        .expect(200);
+      expect((await rowFor(video.id)).pinned).toBe(true);
+
+      await recordForAd(video.id, {
+        day: daysAgo(1),
+        amount: 32_000,
+        currency: 'USD',
+      });
+      expect(await rowFor(video.id)).toMatchObject({
+        amount: 32_000,
+        pinned: true,
+        source: 'manual',
+      });
+    });
+
+    it('lets a hand write land on a pinned day, because a pin is a rule about the sync', async () => {
+      const pinned = await recordForAd(video.id, {
+        day: daysAgo(1),
+        amount: 30_000,
+        currency: 'USD',
+        pinned: true,
+      });
+
+      await recordForAd(video.id, {
+        day: daysAgo(1),
+        amount: 31_500,
+        currency: 'USD',
+      });
+      expect((await rowFor(video.id)).amount).toBe(31_500);
+
+      // And it is still deletable, whichever source last wrote it.
+      await fixture.admin.client
+        .delete(adSpendPath(video.id, `/${pinned.id}`))
+        .expect(204);
+      expect(await persisted()).toHaveLength(0);
+    });
+
+    it('pins every day of a range when the entry says so', async () => {
+      const rows = await recordRangeForAd(video.id, {
+        startDay: daysAgo(2),
+        endDay: daysAgo(0),
+        total: 30_000,
+        currency: 'USD',
+        pinned: true,
+      });
+
+      expect(rows.map((r) => r.pinned)).toEqual([true, true, true]);
+      expect(sum(rows)).toBe(30_000);
+
+      const outcome = await syncSpend(
+        rows.map((row) => ({
+          externalAdId: 'ad_meta_1',
+          day: row.day,
+          amount: 1,
+        })),
+      );
+      expect(outcome).toMatchObject({ written: 0, declinedPinned: 3 });
+      expect((await listForAd(video.id)).total).toBe(30_000);
+    });
+
+    it('declines only the pinned days of a run and writes the rest', async () => {
+      await recordForAd(video.id, {
+        day: daysAgo(1),
+        amount: 30_000,
+        currency: 'USD',
+        pinned: true,
+      });
+
+      const outcome = await syncSpend([
+        { externalAdId: 'ad_meta_1', day: daysAgo(2), amount: 1_000 },
+        { externalAdId: 'ad_meta_1', day: daysAgo(1), amount: 26_750 },
+        { externalAdId: 'ad_meta_1', day: daysAgo(0), amount: 2_000 },
+      ]);
+
+      // Worked out by hand: two days written, one declined, $30 + $10 + $20.
+      expect(outcome).toMatchObject({ written: 2, declinedPinned: 1 });
+      expect((await listForAd(video.id)).total).toBe(33_000);
+    });
+
+    it('writes nothing for an ad nothing here claims', async () => {
+      const outcome = await syncSpend([
+        { externalAdId: 'ad_nobody_claims', day: daysAgo(1), amount: 26_750 },
+      ]);
+
+      // The money is not lost — it is in the platform's own book and the ad is
+      // held as an Unlinked Ad. What must not happen is an Ad being invented to
+      // hang the cost on, or the cost landing on somebody else's creative.
+      expect(outcome).toMatchObject({ written: 0, unclaimed: 1 });
+      expect(await persisted()).toHaveLength(0);
+    });
+
+    it('writes nothing at all across a currency mismatch', async () => {
+      const outcome = await syncSpend(
+        [{ externalAdId: 'ad_meta_1', day: daysAgo(1), amount: 26_750 }],
+        'EUR',
+      );
+
+      // There is no conversion anywhere in this feature, and this table is
+      // summed as a single currency. A EUR figure landing in a USD store's
+      // totals would silently distort every ratio built on it, so the merchant
+      // is shown the mismatch instead.
+      expect(outcome.currencyMismatch).toEqual({
+        store: 'USD',
+        account: 'EUR',
+      });
+      expect(outcome.written).toBe(0);
+      expect(await persisted()).toHaveLength(0);
+    });
+
+    it('never writes a campaign-level row, whichever grain is asked for', async () => {
+      await syncSpend([
+        { externalAdId: 'ad_meta_1', day: daysAgo(1), amount: 26_750 },
+      ]);
+
+      // A null ad means the cost is known and its split is not, which is a
+      // statement only a merchant is in a position to make. A sync always knows
+      // which creative spent the money.
+      const rows = await persisted();
+      expect(rows.every((row) => row.adId !== null)).toBe(true);
+    });
+
+    // ─── Stage 5's day-uniqueness guarantee, re-proved with two writers ──────
+
+    it('leaves one row per ad per day however many times either writer runs', async () => {
+      const body = { day: daysAgo(1), amount: 12_500, currency: 'USD' };
+      await recordForAd(video.id, body);
+      await recordForAd(video.id, body);
+      await syncSpend([
+        { externalAdId: 'ad_meta_1', day: daysAgo(1), amount: 26_750 },
+      ]);
+      await syncSpend([
+        { externalAdId: 'ad_meta_1', day: daysAgo(1), amount: 26_750 },
+      ]);
+      await recordForAd(video.id, { ...body, amount: 9_900 });
+
+      const rows = await db
+        .select()
+        .from(campaignSpend)
+        .where(eq(campaignSpend.adId, video.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ amount: 9_900, source: 'manual' });
+    });
+
+    it('refuses a second row for one ad on one day even with a different source', async () => {
+      // The database is the authority, not the read that preceded the write.
+      // Neither new column is part of the key: a synced row sitting beside a
+      // manual one for the same day would be exactly the doubling the
+      // constraint exists to prevent.
+      const saved = await recordForAd(video.id, {
+        day: daysAgo(1),
+        amount: 12_500,
+        currency: 'USD',
+      });
+
+      await expect(
+        db.insert(campaignSpend).values({
+          organizationId: fixture.organizationId,
+          storeId: fixture.storeId,
+          campaignId: campaign.id,
+          adId: video.id,
+          day: saved.day,
+          amount: 26_750,
+          currency: 'USD',
+          note: null,
+          source: 'synced',
+          pinned: true,
+        }),
+      ).rejects.toThrow();
+
+      expect(
+        await db
+          .select()
+          .from(campaignSpend)
+          .where(eq(campaignSpend.adId, video.id)),
+      ).toHaveLength(1);
+    });
+
+    it('refuses a second campaign-level row for one day with a different source', async () => {
+      const saved = await record({
+        day: daysAgo(1),
+        amount: 12_500,
+        currency: 'USD',
+      });
+
+      await expect(
+        db.insert(campaignSpend).values({
+          organizationId: fixture.organizationId,
+          storeId: fixture.storeId,
+          campaignId: campaign.id,
+          adId: null,
+          day: saved.day,
+          amount: 999,
+          currency: 'USD',
+          note: null,
+          source: 'synced',
+        }),
+      ).rejects.toThrow();
+
+      expect(await persisted()).toHaveLength(1);
+    });
+
+    // ─── The two levels still never disagree ─────────────────────────────────
+
+    it('still sums a campaign’s own rows and its ads’, whoever wrote them', async () => {
+      const carousel = await createAd('Product carousel');
+
+      await record({ day: daysAgo(1), amount: 4_000, currency: 'USD' });
+      await recordForAd(carousel.id, {
+        day: daysAgo(1),
+        amount: 1_000,
+        currency: 'USD',
+        pinned: true,
+      });
+      await syncSpend([
+        { externalAdId: 'ad_meta_1', day: daysAgo(1), amount: 26_750 },
+      ]);
+
+      // Worked out by hand: $40 unsplit + $10 on the carousel + $267.50 pulled
+      // for the video. One cost read at two grains, and the parts reconcile
+      // against the total regardless of which writer produced them.
+      const report = await list();
+      expect(report.total).toBe(31_750);
+      expect(report.unsplitTotal).toBe(4_000);
+      expect([...report.byAd].sort((a, b) => a.total - b.total)).toEqual([
+        { adId: carousel.id, total: 1_000 },
+        { adId: video.id, total: 26_750 },
+      ]);
+      expect(
+        report.unsplitTotal + report.byAd.reduce((n, a) => n + a.total, 0),
+      ).toBe(report.total);
+    });
+
+    it('keeps the currency on the row and converts nothing', async () => {
+      await syncSpend([
+        { externalAdId: 'ad_meta_1', day: daysAgo(1), amount: 26_750 },
+      ]);
+      const row = await rowFor(video.id);
+
+      // Denormalized off the store, frozen on the row, and the same column a
+      // hand entry writes. Nothing anywhere in this feature converts.
+      expect(row.currency).toBe('USD');
+      expect((await listForAd(video.id)).currency).toBe('USD');
+    });
+  });
+
+  // ─── Manual entry is first-class, permanently ───────────────────────────────
+
+  /**
+   * The reason losing the ad platform degrades this product rather than
+   * blanking it — and the only path there will ever be for a campaign on a
+   * platform no sync covers.
+   */
+  describe('hand entry on a platform no sync will ever cover', () => {
+    it.each(['email', 'sms', 'affiliate', 'influencer', 'other'] as const)(
+      'records and corrects spend for a %s campaign',
+      async (platform) => {
+        const created = await fixture.admin.client
+          .post('/campaigns', { name: `Push on ${platform}`, platform })
+          .expect(201);
+        const target = (created.body as Campaign).id;
+        const path = `/campaigns/${target}/spend`;
+
+        const saved = (
+          await fixture.admin.client
+            .post(path, { day: daysAgo(1), amount: 25_000, currency: 'USD' })
+            .expect(201)
+        ).body as CampaignSpend;
+        expect(saved).toMatchObject({ source: 'manual', pinned: false });
+
+        // Pinnable, correctable and deletable, exactly as on a synced platform.
+        // There is nothing second-class about the path that will still be here
+        // if the vendor is not.
+        await fixture.admin.client
+          .patch(`${path}/${saved.id}`, { amount: 26_000, pinned: true })
+          .expect(200);
+        await fixture.admin.client
+          .post(`${path}/range`, {
+            startDay: daysAgo(3),
+            endDay: daysAgo(2),
+            total: 10_000,
+            currency: 'USD',
+          })
+          .expect(201);
+        await fixture.admin.client.delete(`${path}/${saved.id}`).expect(204);
+      },
+    );
   });
 
   describe('updating and removing', () => {

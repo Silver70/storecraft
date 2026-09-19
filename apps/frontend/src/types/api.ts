@@ -621,6 +621,13 @@ export type CampaignTaggedLink = {
  * instant — ad platforms report daily totals and nothing here is more precise
  * than that.
  */
+/**
+ * Where a spend figure came from. `manual` is the only source there was before
+ * an ad platform could be connected, and still the only one for email, SMS,
+ * affiliate, influencer and other campaigns, which no sync will ever cover.
+ */
+export type SpendSource = "manual" | "synced";
+
 export type CampaignSpend = {
   id: string;
   organizationId: string;
@@ -645,6 +652,26 @@ export type CampaignSpend = {
    */
   currency: string;
   note: string | null;
+  /**
+   * Who wrote this figure: the merchant, or a sync from the ad platform.
+   *
+   * On the row rather than inferred, because a merchant who cannot tell a
+   * figure they typed from one that was pulled cannot tell a reconciliation
+   * from a restatement.
+   */
+  source: SpendSource;
+  /**
+   * Whether the next sync may overwrite this day.
+   *
+   * A sync wins by default, so nobody maintains two sets of books. A pinned day
+   * is refused — which is what makes reconciling a day against an invoice
+   * survive the sync an hour later — and the merchant un-pins it to hand it
+   * back.
+   *
+   * Independent of `source`: an unpinned hand-typed figure is overwritten, and
+   * a synced figure the merchant endorsed can be pinned without editing it.
+   */
+  pinned: boolean;
   createdAt: string;
   updatedAt: string;
 };

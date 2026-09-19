@@ -39,13 +39,17 @@ import { CredentialVault } from './services/credential-vault.service';
  * thing it would drift away from is the only reason a claimed ad can ever earn
  * revenue.
  *
- * **Nothing in this module injects `CampaignSpendRepository` or
- * `CampaignSpendService`, and nothing here may.** The sync writes
- * `ad_reported_figures` and the connection's own state; a Reported Figure is
- * never written into `campaign_spend`, which is the merchant's book of record
- * and the platform's is not (ADR-0005). Read the sync service's constructor:
- * spend is not among its dependencies, and that is the check to make on any
- * change here.
+ * **`SyncedSpendService` is the only door from this module into
+ * `campaign_spend`, and nothing here may open another.** Neither
+ * `CampaignSpendRepository` nor `CampaignSpendService` is injected anywhere in
+ * this module, and that is the check to make on any change here.
+ *
+ * What goes through that door is spend and nothing else: what the ad account
+ * was charged, written against the Ad that claims the platform's ad, labelled
+ * `synced` on the row, and declined outright on a day the merchant pinned. The
+ * platform's reported **revenue, conversions and ROAS do not go through it at
+ * all** — they stay in `ad_reported_figures`, displayed beside ours and never
+ * merged into them, and never an input to Contribution Margin (ADR-0005).
  */
 @Module({
   imports: [AuthModule, TenantModule, MarketingModule],
