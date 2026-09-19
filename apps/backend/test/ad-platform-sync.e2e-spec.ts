@@ -29,7 +29,11 @@ import {
   ads,
   campaignSpend,
 } from '../src/shared/database/schema';
-import type { AdPlatform } from '../src/shared/database/schema';
+import type {
+  Ad,
+  AdPlatform,
+  AdPlatformState,
+} from '../src/shared/database/schema';
 import type { AdPlatformConnectionView } from '../src/modules/ad-platform/services/ad-platform-connection.service';
 import type { ReportedFigureView } from '../src/modules/ad-platform/services/reported-figure.service';
 import type {
@@ -37,7 +41,10 @@ import type {
   ReportedAd,
   ReportedAdDay,
 } from '../src/modules/ad-platform/interfaces/ad-platform-provider.interface';
-import { AdPlatformSyncService } from '../src/modules/ad-platform/services/ad-platform-sync.service';
+import {
+  AdPlatformSyncService,
+  type SyncOutcome,
+} from '../src/modules/ad-platform/services/ad-platform-sync.service';
 import { AdPlatformConnectionRepository } from '../src/modules/ad-platform/repositories/ad-platform-connection.repository';
 import {
   DEFAULT_BACKFILL_DAYS,
@@ -53,12 +60,20 @@ import {
   type AdminFixture,
 } from './helpers/admin-fixture';
 
+/** The fields of a reported ad that default to absent when a case is silent. */
+type OptionalAdFields =
+  | 'creativeUrl'
+  | 'startsAt'
+  | 'endsAt'
+  | 'platformState'
+  | 'placement';
+
 /** A tree written with only the fields a case cares about. */
 interface TestAdTree {
   currency: string;
   ads: Array<
-    Omit<ReportedAd, 'creativeUrl' | 'startsAt' | 'endsAt'> &
-      Partial<Pick<ReportedAd, 'creativeUrl' | 'startsAt' | 'endsAt'>>
+    Omit<ReportedAd, OptionalAdFields> &
+      Partial<Pick<ReportedAd, OptionalAdFields>>
   >;
 }
 
@@ -154,6 +169,10 @@ describe('Ad platform sync (e2e)', () => {
         creativeUrl: null,
         startsAt: null,
         endsAt: null,
+        // Absent unless a case says otherwise, which is what most platform ads
+        // report and what most of these cases are indifferent to.
+        platformState: null,
+        placement: null,
         ...ad,
       })),
     } satisfies AdTree);
@@ -162,20 +181,7 @@ describe('Ad platform sync (e2e)', () => {
   const syncNow = async (
     client: AdminClient,
     platform: AdPlatform = 'meta',
-  ): Promise<
-    Array<{
-      platform: AdPlatform;
-      status: string;
-      from: string;
-      to: string;
-      backfill: boolean;
-      figuresWritten: number;
-      spendWritten: number;
-      spendDeclined: number;
-      spendCurrencyMismatch: { store: string; account: string } | null;
-      message: string | null;
-    }>
-  > => {
+  ): Promise<SyncOutcome[]> => {
     const res = await client.post(`/ad-platforms/${platform}/sync`).expect(201);
     return res.body as never;
   };
@@ -1104,6 +1110,349 @@ describe('Ad platform sync (e2e)', () => {
       ]);
       expect(provider.disconnected).toHaveLength(disconnectsBefore);
       expect(provider.revoked).toHaveLength(revokesBefore);
+    });
+  });
+
+  // ─── What the platform says about the ad itself ─────────────────────────────
+
+  /**
+   * Platform State and Placement: the platform's own view of an ad, landing
+   * beside ours and never on top of it.
+   *
+   * The case the whole feature is for is `it('reads as active here and
+   * rejected there')`. It only exists because these are two columns — one the
+   * merchant writes and one the sync writes — so every other case here is
+   * really about protecting that one.
+   */
+  describe('the platform’s own view of an ad', () => {
+    /** One ad, claimed, with whatever the platform is saying about it today. */
+    async function claimedAdReportedAs(
+      reported: {
+        platformState?: AdPlatformState | null;
+        placement?: string | null;
+      },
+      externalId = 'ad_meta_1',
+    ): Promise<{ campaignId: string; adId: string; providerRef: string }> {
+      const { providerRef } = await connect(fixture.admin.client);
+      const { campaignId, adId } = await claimedAd(externalId);
+
+      platformReports(providerRef, {
+        currency: 'USD',
+        ads: [
+          {
+            externalAdId: externalId,
+            name: 'Summer reel',
+            platformState: reported.platformState ?? null,
+            placement: reported.placement ?? null,
+            days: [day(today(), { spend: 40_00 })],
+          },
+        ],
+      });
+
+      return { campaignId, adId, providerRef };
+    }
+
+    /** The ad as the merchant reads it back off their own card. */
+    const readAd = async (
+      campaignId: string,
+      adId: string,
+      client: AdminClient = fixture.admin.client,
+    ): Promise<Ad> => {
+      const res = await client
+        .get(`/campaigns/${campaignId}/ads/${adId}`)
+        .expect(200);
+      return res.body as Ad;
+    };
+
+    it('records what the platform says, against the ad that claims its ad', async () => {
+      const { campaignId, adId } = await claimedAdReportedAs({
+        platformState: 'delivering',
+        placement: 'Instagram Stories',
+      });
+
+      const [outcome] = await syncNow(fixture.admin.client);
+      const ad = await readAd(campaignId, adId);
+
+      expect(outcome.platformStateWritten).toBe(1);
+      expect(ad.platformState).toBe('delivering');
+      expect(ad.placement).toBe('Instagram Stories');
+      expect(ad.platformReportedAt).toBeTruthy();
+    });
+
+    /**
+     * The card this stage exists to produce, and the assertion that says the
+     * two facts are two facts. An ad rejected at the platform keeps the status
+     * the merchant gave it, keeps its place on their active list, and keeps its
+     * spend and its history — and says, beside all of that, that the platform
+     * has rejected it.
+     */
+    it('reads as active here and rejected there, both at once', async () => {
+      const { campaignId, adId } = await claimedAdReportedAs({
+        platformState: 'rejected',
+      });
+
+      await syncNow(fixture.admin.client);
+      const ad = await readAd(campaignId, adId);
+
+      expect(ad.status).toBe('active');
+      expect(ad.platformState).toBe('rejected');
+      expect(ad.archivedAt).toBeNull();
+
+      // And still on the merchant's active list, with its spend on it — the
+      // failure this design exists to prevent is the card quietly leaving.
+      const active = (
+        await fixture.admin.client
+          .get(`/campaigns/${campaignId}/ads`)
+          .expect(200)
+      ).body as Ad[];
+      expect(active.map((row) => row.id)).toContain(adId);
+
+      const spend = await spendRows();
+      expect(spend).toHaveLength(1);
+      expect(spend[0].amount).toBe(40_00);
+    });
+
+    it.each<AdPlatformState>(['rejected', 'paused', 'in_review'])(
+      'never writes the ad’s own status, however %s the platform says it is',
+      async (platformState) => {
+        const { campaignId, adId } = await claimedAdReportedAs({
+          platformState,
+        });
+
+        await syncNow(fixture.admin.client);
+        const ad = await readAd(campaignId, adId);
+
+        expect(ad.status).toBe('active');
+        expect(ad.archivedAt).toBeNull();
+      },
+    );
+
+    /**
+     * The other direction of the same rule. The merchant's decision about their
+     * own campaign is theirs; it says nothing about what the platform thinks,
+     * and must not erase it.
+     */
+    it('keeps reporting the platform’s state for an ad the merchant archived', async () => {
+      const { campaignId, adId } = await claimedAdReportedAs({
+        platformState: 'delivering',
+      });
+      await syncNow(fixture.admin.client);
+
+      await fixture.admin.client
+        .post(`/campaigns/${campaignId}/ads/${adId}/archive`)
+        .expect(201);
+      await syncNow(fixture.admin.client);
+
+      const ad = await readAd(campaignId, adId);
+      expect(ad.status).toBe('archived');
+      expect(ad.platformState).toBe('delivering');
+    });
+
+    it('leaves an ad that was never synced carrying neither field', async () => {
+      const { campaignId } = await claimedAd('ad_meta_never_synced');
+      const created = (
+        await fixture.admin.client
+          .post(`/campaigns/${campaignId}/ads`, { name: 'Hand-made' })
+          .expect(201)
+      ).body as Ad;
+
+      expect(created.platformState).toBeNull();
+      expect(created.placement).toBeNull();
+      expect(created.platformReportedAt).toBeNull();
+    });
+
+    it('holds no placement for an ad the platform named none for', async () => {
+      const { campaignId, adId } = await claimedAdReportedAs({
+        platformState: 'approved',
+      });
+
+      await syncNow(fixture.admin.client);
+      const ad = await readAd(campaignId, adId);
+
+      // Null rather than an empty string, so the card renders no badge at all
+      // instead of an empty one. A placement is a recognition label, and an
+      // empty label recognises nothing.
+      expect(ad.placement).toBeNull();
+      expect(ad.platformState).toBe('approved');
+    });
+
+    it('writes nothing at all for an ad nothing here claims', async () => {
+      const { providerRef } = await connect(fixture.admin.client);
+      const { campaignId, adId } = await claimedAd('ad_meta_ours');
+
+      platformReports(providerRef, {
+        currency: 'USD',
+        ads: [
+          {
+            externalAdId: 'ad_meta_someone_elses',
+            name: 'Not claimed by anything',
+            platformState: 'rejected',
+            placement: 'Facebook Feed',
+            days: [day(today(), { spend: 10_00 })],
+          },
+        ],
+      });
+
+      const [outcome] = await syncNow(fixture.admin.client);
+      const ad = await readAd(campaignId, adId);
+
+      expect(outcome.platformStateWritten).toBe(0);
+      expect(outcome.unlinkedHeld).toBe(1);
+      expect(ad.platformState).toBeNull();
+      expect(ad.placement).toBeNull();
+    });
+
+    it('follows the platform when it changes its mind', async () => {
+      const { campaignId, adId, providerRef } = await claimedAdReportedAs({
+        platformState: 'in_review',
+        placement: 'Facebook Feed',
+      });
+      await syncNow(fixture.admin.client);
+      expect((await readAd(campaignId, adId)).platformState).toBe('in_review');
+
+      platformReports(providerRef, {
+        currency: 'USD',
+        ads: [
+          {
+            externalAdId: 'ad_meta_1',
+            name: 'Summer reel',
+            platformState: 'rejected',
+            placement: 'Facebook Feed, Instagram Stories',
+            days: [day(today(), { spend: 40_00 })],
+          },
+        ],
+      });
+      await syncNow(fixture.admin.client);
+
+      const ad = await readAd(campaignId, adId);
+      expect(ad.platformState).toBe('rejected');
+      expect(ad.placement).toBe('Facebook Feed, Instagram Stories');
+      expect(ad.status).toBe('active');
+    });
+
+    /**
+     * The stated behaviour, asserted so it stays stated: **both fields are
+     * preserved**, not cleared, when the platform stops reporting an ad.
+     *
+     * An ad leaves a tree for reasons that are not facts about the ad — it fell
+     * outside the window asked for, a quota refusal truncated the answer, the
+     * account was disconnected — so clearing would flicker the card against the
+     * sync's luck rather than against anything at the platform. What keeps that
+     * honest is `platformReportedAt`, which does not move: a stale "rejected"
+     * is readable as stale.
+     */
+    it('preserves both fields when the platform stops reporting the ad', async () => {
+      const { campaignId, adId, providerRef } = await claimedAdReportedAs({
+        platformState: 'rejected',
+        placement: 'Instagram Stories',
+      });
+      await syncNow(fixture.admin.client);
+      const afterFirst = await readAd(campaignId, adId);
+
+      platformReports(providerRef, { currency: 'USD', ads: [] });
+      await syncNow(fixture.admin.client);
+
+      const afterSecond = await readAd(campaignId, adId);
+      expect(afterSecond.platformState).toBe('rejected');
+      expect(afterSecond.placement).toBe('Instagram Stories');
+      // Dated by the run that actually reported it, so the claim ages visibly
+      // rather than looking freshly confirmed on every empty sync.
+      expect(afterSecond.platformReportedAt).toBe(
+        afterFirst.platformReportedAt,
+      );
+    });
+
+    it('leaves both fields alone through a provider failure', async () => {
+      const { campaignId, adId } = await claimedAdReportedAs({
+        platformState: 'delivering',
+        placement: 'Facebook Feed',
+      });
+      await syncNow(fixture.admin.client);
+
+      provider.failAlways = new Error('the vendor is down');
+      const [outcome] = await syncNow(fixture.admin.client);
+
+      expect(outcome.status).toBe('failed');
+      expect(outcome.platformStateWritten).toBe(0);
+      const ad = await readAd(campaignId, adId);
+      expect(ad.platformState).toBe('delivering');
+      expect(ad.placement).toBe('Facebook Feed');
+      expect(ad.status).toBe('active');
+    });
+
+    /**
+     * The one case where clearing is the honest answer: an Ad that claims no
+     * platform ad has no platform state, and a preserved "rejected" on it would
+     * be a confident sentence about somebody else's ad. Its own status still
+     * does not move — the Ad is kept, because it may already have earned
+     * revenue through its own tag.
+     */
+    it('forgets what the platform said once the ad stops claiming it', async () => {
+      const { providerRef } = await connect(fixture.admin.client);
+      const campaign = (
+        await fixture.admin.client
+          .post('/campaigns', { name: 'Summer Sale 2026', platform: 'meta' })
+          .expect(201)
+      ).body as { id: string };
+
+      platformReports(providerRef, {
+        currency: 'USD',
+        ads: [
+          {
+            externalAdId: 'ad_meta_1',
+            name: 'Summer reel',
+            platformState: 'rejected',
+            placement: 'Instagram Stories',
+            days: [day(today(), { spend: 40_00 })],
+          },
+        ],
+      });
+
+      // Held first, then claimed by the merchant, then synced again — the
+      // ordinary route by which a platform's state ever lands on an Ad.
+      await syncNow(fixture.admin.client);
+      const [held] = (
+        await fixture.admin.client.get('/ad-platforms/unlinked-ads').expect(200)
+      ).body as Array<{ id: string }>;
+      const claimed = (
+        await fixture.admin.client
+          .post(`/ad-platforms/unlinked-ads/${held.id}/claim`, {
+            campaignId: campaign.id,
+          })
+          .expect(201)
+      ).body as { ad: Ad };
+      await syncNow(fixture.admin.client);
+
+      expect((await readAd(campaign.id, claimed.ad.id)).platformState).toBe(
+        'rejected',
+      );
+
+      await fixture.admin.client
+        .post(`/ad-platforms/unlinked-ads/${held.id}/unlink`)
+        .expect(201);
+
+      const ad = await readAd(campaign.id, claimed.ad.id);
+      expect(ad.externalId).toBeNull();
+      expect(ad.platformState).toBeNull();
+      expect(ad.placement).toBeNull();
+      expect(ad.platformReportedAt).toBeNull();
+      expect(ad.status).toBe('active');
+    });
+
+    it('keeps one organization’s platform state off another’s ad', async () => {
+      const { campaignId, adId } = await claimedAdReportedAs({
+        platformState: 'rejected',
+      });
+      await syncNow(fixture.admin.client);
+
+      const other = await seedAdmin(app);
+      try {
+        await other.admin.client
+          .get(`/campaigns/${campaignId}/ads/${adId}`)
+          .expect(404);
+      } finally {
+        await destroyAdmin(app, other);
+      }
     });
   });
 

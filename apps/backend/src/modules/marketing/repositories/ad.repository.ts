@@ -4,6 +4,7 @@ import type { DrizzleClient } from '../../../shared/database/database.module';
 import { DRIZZLE_CLIENT } from '../../../shared/database/database.module';
 import type {
   Ad,
+  AdPlatformState,
   AdStatus,
   CampaignMatchingRule,
   NewAd,
@@ -147,6 +148,81 @@ export class AdRepository {
         { adId: row.id, campaignId: row.campaignId },
       ]),
     );
+  }
+
+  /**
+   * Records what the ad platform says about one Ad, and nothing else.
+   *
+   * **The only write in this codebase that a sync reaches `ads` through, and
+   * the reason it is its own method rather than a call to `update`.** `update`
+   * takes a patch, and a patch can carry `status`: one careless spread in a
+   * sync and an ad paused at the platform would be archived here, disappearing
+   * from the merchant's active list with its whole history. This method has no
+   * patch. It sets three named columns — the platform's state, its placement
+   * label, and when it said so — and there is no argument by which it could set
+   * a fourth.
+   *
+   * Scoped to the Store rather than to a Campaign, like `findByIdInStore` and
+   * for the same reason: a sync knows which Ad claims the platform's ad and
+   * must not have to trust which Campaign that Ad hangs from today.
+   */
+  async recordPlatformMirror(
+    adId: string,
+    orgId: string,
+    storeId: string,
+    mirror: {
+      platformState: AdPlatformState | null;
+      placement: string | null;
+      reportedAt: Date;
+    },
+  ): Promise<boolean> {
+    const [row] = await this.db
+      .update(ads)
+      .set({
+        platformState: mirror.platformState,
+        placement: mirror.placement,
+        platformReportedAt: mirror.reportedAt,
+        updatedAt: mirror.reportedAt,
+      })
+      .where(
+        and(
+          eq(ads.id, adId),
+          eq(ads.organizationId, orgId),
+          eq(ads.storeId, storeId),
+        ),
+      )
+      .returning({ id: ads.id });
+    return row !== undefined;
+  }
+
+  /**
+   * Forgets what the platform said about an Ad.
+   *
+   * Called when an Ad stops claiming a platform ad, and only then. A synced
+   * state preserved on an Ad that no longer points at anything is a sentence
+   * about somebody else's ad — which is the one case where clearing is more
+   * honest than keeping.
+   */
+  async clearPlatformMirror(
+    adId: string,
+    orgId: string,
+    storeId: string,
+  ): Promise<void> {
+    await this.db
+      .update(ads)
+      .set({
+        platformState: null,
+        placement: null,
+        platformReportedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(ads.id, adId),
+          eq(ads.organizationId, orgId),
+          eq(ads.storeId, storeId),
+        ),
+      );
   }
 
   /** Whether this Campaign already owns the tag. Sibling Campaigns are free to. */

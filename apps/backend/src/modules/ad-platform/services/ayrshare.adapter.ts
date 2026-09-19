@@ -4,7 +4,10 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { AdPlatform } from '../../../shared/database/schema';
+import type {
+  AdPlatform,
+  AdPlatformState,
+} from '../../../shared/database/schema';
 import type {
   AdPlatformProvider,
   AdTree,
@@ -123,6 +126,12 @@ interface VendorAd {
   thumbnailUrl?: string;
   startDate?: string;
   endDate?: string;
+  /** Their review/delivery state, spelled however the platform spells it. */
+  status?: string;
+  effectiveStatus?: string;
+  /** One or several, depending on the platform and how the ad was set up. */
+  placement?: string;
+  placements?: string[];
   daily?: VendorAdDay[];
 }
 
@@ -328,6 +337,13 @@ export class AyrshareAdapter implements AdPlatformProvider {
       creativeUrl: ad.creativeUrl ?? ad.thumbnailUrl ?? null,
       startsAt: asInstant(ad.startDate),
       endsAt: asInstant(ad.endDate),
+      // The platform's own word, translated here and nowhere else — this file
+      // is the only one in the codebase allowed to know how a vendor spells
+      // things. A spelling nobody here recognises becomes null rather than a
+      // guess: no state at all is honest, and a wrong one tells a merchant
+      // their live ad was rejected.
+      platformState: asPlatformState(ad.effectiveStatus ?? ad.status),
+      placement: asPlacement(ad),
       days: (ad.daily ?? [])
         .map((day) => this.asReportedDay(day))
         .filter((day): day is ReportedAdDay => day !== null),
@@ -422,4 +438,69 @@ function asInstant(value: string | undefined): Date | null {
   if (!value) return null;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/**
+ * A platform's word for how an ad is doing, as one of ours.
+ *
+ * Every platform spells this differently and several spell it several ways, so
+ * the whole table of spellings lives here — this file is the only one in the
+ * codebase permitted to know what a vendor calls things, and a state leaking
+ * into the domain vocabulary would make the integration permanent.
+ *
+ * **Anything unrecognised is null, deliberately.** A state we cannot read maps
+ * to no state at all, which shows the merchant nothing; a guess would show them
+ * a sentence saying their live ad was rejected. And nothing here is ever
+ * anywhere near `ads.status` — no spelling of theirs archives a merchant's ad.
+ */
+function asPlatformState(value: string | undefined): AdPlatformState | null {
+  if (!value) return null;
+  const key = value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+
+  switch (key) {
+    case 'approved':
+    case 'active':
+    case 'enabled':
+    case 'eligible':
+      return 'approved';
+    case 'rejected':
+    case 'disapproved':
+    case 'denied':
+      return 'rejected';
+    case 'in_review':
+    case 'pending_review':
+    case 'under_review':
+    case 'review':
+    case 'pending':
+      return 'in_review';
+    case 'delivering':
+    case 'running':
+    case 'serving':
+      return 'delivering';
+    case 'paused':
+    case 'inactive':
+    case 'stopped':
+      return 'paused';
+    default:
+      return null;
+  }
+}
+
+/**
+ * Where the ad ran, as one label a merchant reads on one line.
+ *
+ * Several placements are joined rather than returned as a list, because the
+ * label is a recognition aid and not a dimension: one ad runs in several at
+ * once, and a list here would be an invitation for something downstream to
+ * group by it and split one ad's spend across values it has no split for.
+ */
+function asPlacement(ad: VendorAd): string | null {
+  const many = (ad.placements ?? [])
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  if (many.length) return many.join(', ');
+  return ad.placement?.trim() || null;
 }

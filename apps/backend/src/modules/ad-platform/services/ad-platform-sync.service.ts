@@ -20,6 +20,10 @@ import {
   SyncedSpendService,
   type PlatformSpendDay,
 } from '../../marketing/services/synced-spend.service';
+import {
+  PlatformMirrorService,
+  type PlatformAdMirror,
+} from '../../marketing/services/platform-mirror.service';
 import { CredentialVault } from './credential-vault.service';
 import { UnlinkedAdService } from './unlinked-ad.service';
 import type { PlatformAdSighting } from '../utils/unlinked-ad-plan.util';
@@ -78,6 +82,15 @@ export interface SyncOutcome {
    */
   unlinkedHeld: number;
   /**
+   * How many claimed Ads had the platform's own state and placement recorded
+   * beside their own status.
+   *
+   * **Never a count of status changes — that number is zero on every sync ever
+   * run.** What the platform thinks of an ad and what the merchant decided
+   * about it are two facts, and this one only ever writes the platform's.
+   */
+  platformStateWritten: number;
+  /**
    * Why it failed, in words a merchant can act on, or null on success. Never a
    * stack trace, and never a sentence that blames their own account.
    */
@@ -105,8 +118,16 @@ const UNREADABLE_FIGURE =
  * ## What this service is allowed to write
  *
  * `ad_reported_figures`, the sync state on the connection that produced them,
- * and — through `SyncedSpendService` and nothing else — the **spend** side of
- * `campaign_spend`.
+ * through `SyncedSpendService` and nothing else the **spend** side of
+ * `campaign_spend`, and through `PlatformMirrorService` and nothing else the
+ * **platform's own state and placement** on an Ad.
+ *
+ * **It does not write `ads.status`, and there is no code path here by which it
+ * could.** The platform's view of an ad and the merchant's own status are two
+ * independent facts stored side by side: an ad rejected or paused at the
+ * platform must keep its card, its spend and its revenue on the merchant's
+ * active list, because "Active here, rejected there" is the thing a merchant
+ * needs to see and the thing a single column could never say.
  *
  * That last one is a narrow door, and the narrowness is the point. What an ad
  * account was charged is the same fact the merchant would otherwise read off
@@ -149,6 +170,7 @@ export class AdPlatformSyncService {
     private readonly figures: AdReportedFigureRepository,
     private readonly unlinked: UnlinkedAdService,
     private readonly syncedSpend: SyncedSpendService,
+    private readonly platformMirror: PlatformMirrorService,
     private readonly vault: CredentialVault,
   ) {}
 
@@ -297,6 +319,20 @@ export class AdPlatformSyncService {
         now,
       );
 
+      // What the platform thinks of each ad, onto the Ads that claim them.
+      // Beside their own status and never over it: an ad rejected or paused at
+      // the platform stays exactly as active here as the merchant left it, with
+      // its card and its history where they were, and the card that reads
+      // "Active · rejected at the platform" is the one this whole sync is for.
+      const mirrored = await this.platformMirror.apply(
+        {
+          organizationId: connection.organizationId,
+          storeId: connection.storeId,
+          ads: mirrorsFrom(tree),
+        },
+        now,
+      );
+
       // And last, the merchant's own book — only for the ads an Ad here claims,
       // only in the Store's own currency, and never over a day they pinned.
       // Last because everything before it is recorded regardless of what this
@@ -319,6 +355,9 @@ export class AdPlatformSyncService {
           `${written} figure(s) over ${window.from}…${window.to}` +
           (window.backfill ? ' (backfill)' : '') +
           `, ${spend.written} spend day(s) recorded` +
+          (mirrored.written
+            ? `, platform state on ${mirrored.written} ad(s)`
+            : '') +
           (spend.declinedPinned
             ? `, ${spend.declinedPinned} pinned day(s) left alone`
             : ''),
@@ -335,6 +374,7 @@ export class AdPlatformSyncService {
         spendDeclined: spend.declinedPinned,
         spendCurrencyMismatch: spend.currencyMismatch,
         unlinkedHeld: held,
+        platformStateWritten: mirrored.written,
         message: null,
       };
     } catch (error) {
@@ -363,6 +403,7 @@ export class AdPlatformSyncService {
         spendDeclined: 0,
         spendCurrencyMismatch: null,
         unlinkedHeld: 0,
+        platformStateWritten: 0,
         message,
       };
     }
@@ -466,6 +507,21 @@ function spendDaysFrom(
     }
   }
   return days;
+}
+
+/**
+ * The tree as what the platform says about each ad, with no figures on it and
+ * — the point — no status of ours anywhere in the shape.
+ *
+ * Every ad is carried, claimed or not: which of them there is an Ad to write
+ * against is decided one layer down, where the Ads are already loaded.
+ */
+function mirrorsFrom(tree: AdTree): PlatformAdMirror[] {
+  return tree.ads.map((ad) => ({
+    externalAdId: ad.externalAdId,
+    platformState: ad.platformState,
+    placement: ad.placement,
+  }));
 }
 
 /**

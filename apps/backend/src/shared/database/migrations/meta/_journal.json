@@ -148,6 +148,13 @@
       "when": 1789799446467,
       "tag": "0020_spend_provenance_and_pinning",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1789816402294,
+      "tag": "0021_platform_state_and_placement",
+      "breakpoints": true
     }
   ]
 }

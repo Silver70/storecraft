@@ -93,6 +93,13 @@ export type AdPlatformSyncOutcome = {
    * has no tag rule, so it would show spend against zero revenue.
    */
   unlinkedHeld: number;
+  /**
+   * How many ads had the platform's own state and placement recorded beside
+   * their own status. **Never a count of status changes** — a sync writes no
+   * ad's status, ever, which is what lets an ad be active here and rejected
+   * there at the same time.
+   */
+  platformStateWritten: number;
   message: string | null;
 };
 
@@ -507,6 +514,23 @@ export type Campaign = {
 export type AdStatus = CampaignStatus;
 
 /**
+ * The ad platform's own view of an ad, in the platform's own terms.
+ *
+ * A separate vocabulary from `AdStatus` because it is a separate fact, decided
+ * by somebody else: `active` and `archived` are what the merchant chose here,
+ * and these five are what the platform decided there. Neither translates into
+ * the other and neither overwrites it — an ad that is active here and
+ * `rejected` there is exactly the pairing worth showing, and the merchant
+ * learning it from their own dashboard is the point of the whole sync.
+ */
+export type AdPlatformState =
+  | "approved"
+  | "rejected"
+  | "in_review"
+  | "delivering"
+  | "paused";
+
+/**
  * One creative running under a campaign — the thing a visitor actually sees.
  *
  * A campaign may have none; an ad is a subdivision a merchant opts into, and a
@@ -535,8 +559,36 @@ export type Ad = {
   /** ISO timestamps. Both optional, and either may be set without the other. */
   startsAt: string | null;
   endsAt: string | null;
+  /** The merchant's own status, and the only one the merchant writes. */
   status: AdStatus;
   archivedAt: string | null;
+  /**
+   * What the platform says about this ad, written only by the sync and null for
+   * anything never synced — which is every ad on an email, SMS, affiliate or
+   * influencer campaign, and every ad whose platform ad nothing has claimed.
+   *
+   * Displayed beside `status`, never instead of it. An ad paused or rejected at
+   * the platform stays exactly as active here as the merchant left it, with its
+   * card and its history where they were.
+   */
+  platformState: AdPlatformState | null;
+  /**
+   * Where the platform ran the ad, as it names it — "Instagram Stories".
+   *
+   * **A recognition label only.** Nothing is reported by, filtered by or
+   * grouped by it: one ad runs in several placements at once, so a report built
+   * on this would split one ad's spend across values it has no split for. Null
+   * renders no badge rather than an empty one.
+   */
+  placement: string | null;
+  /**
+   * When the platform last said either of the two things above.
+   *
+   * Both are preserved when a platform stops reporting an ad — it drops out of
+   * a sync for reasons that are not facts about the ad — so this is what keeps
+   * the claim honest by dating it.
+   */
+  platformReportedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };

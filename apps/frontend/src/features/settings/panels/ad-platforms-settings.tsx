@@ -157,6 +157,11 @@ export function AdPlatformsSettings() {
         queryKey: ["settings", "ad-platforms"],
       });
       void queryClient.invalidateQueries({ queryKey: ["unlinked-ads"] });
+      // A sync also writes what the platform says about each claimed ad —
+      // beside its own status, never over it — so the cards showing that are
+      // now behind. None of their own statuses can have changed; a sync does
+      // not write one.
+      void queryClient.invalidateQueries({ queryKey: ["campaigns"] });
     },
     onError: (err: Error) => setError(err.message),
   });

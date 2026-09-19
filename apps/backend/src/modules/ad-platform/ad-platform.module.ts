@@ -50,6 +50,13 @@ import { CredentialVault } from './services/credential-vault.service';
  * platform's reported **revenue, conversions and ROAS do not go through it at
  * all** — they stay in `ad_reported_figures`, displayed beside ours and never
  * merged into them, and never an input to Contribution Margin (ADR-0005).
+ *
+ * `PlatformMirrorService` is the second and last such door, into `ads`. Through
+ * it a sync writes the platform's own state and placement onto the Ads that
+ * claim the platform's ads — and **it cannot write `ads.status`**, which is why
+ * `AdRepository.update` is injected nowhere in this module's sync path. An ad
+ * rejected or paused at the platform stays exactly as active here as the
+ * merchant left it, and that pairing is the whole payoff of the sync.
  */
 @Module({
   imports: [AuthModule, TenantModule, MarketingModule],

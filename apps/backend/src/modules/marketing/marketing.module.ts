@@ -17,6 +17,7 @@ import { AttributedRevenueService } from './services/attributed-revenue.service'
 import { CampaignService } from './services/campaign.service';
 import { CampaignSpendService } from './services/campaign-spend.service';
 import { RulePreviewService } from './services/rule-preview.service';
+import { PlatformMirrorService } from './services/platform-mirror.service';
 import { SyncedSpendService } from './services/synced-spend.service';
 
 /**
@@ -36,6 +37,12 @@ import { SyncedSpendService } from './services/synced-spend.service';
  * lives here rather than there because this module owns what Spend is and what
  * may be written to it — including the rule that a pinned day is the merchant's
  * and a sync may not have it.
+ *
+ * `PlatformMirrorService` is exported for the same one caller and is there for
+ * the same reason: it is the only way a sync reaches the `ads` table, and it
+ * lives here because this module owns what an Ad's `status` means. What it
+ * writes is the platform's own state and placement, beside that status and
+ * never over it.
  */
 @Module({
   imports: [AuthModule, TenantModule],
@@ -59,6 +66,7 @@ import { SyncedSpendService } from './services/synced-spend.service';
     AttributedRevenueService,
     RulePreviewService,
     SyncedSpendService,
+    PlatformMirrorService,
   ],
   exports: [
     CampaignRepository,
@@ -70,6 +78,7 @@ import { SyncedSpendService } from './services/synced-spend.service';
     AttributedRevenueService,
     RulePreviewService,
     SyncedSpendService,
+    PlatformMirrorService,
   ],
 })
 export class MarketingModule {}

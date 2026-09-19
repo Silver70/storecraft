@@ -47,6 +47,11 @@ export class CreateAdDto {
  * that a link already running in an ad platform keeps matching. Status is absent
  * for the same reason archiving is its own endpoint: it is an action, not a
  * field.
+ *
+ * The platform's own state and its placement are absent because they are not
+ * the merchant's to write: the sync is the only writer of either, and a merchant
+ * typing "approved" onto an ad would be recording a claim the platform never
+ * made. The Ad returned by this endpoint carries both for reading.
  */
 export class UpdateAdDto {
   @ApiPropertyOptional()

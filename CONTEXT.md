@@ -195,6 +195,11 @@ What an ad platform says an Ad is doing right now — approved, rejected, in
 review, delivering, paused. Read-only, and absent for anything not synced.
 Distinct from an Ad's status, which is the merchant's own lifecycle and is never
 overwritten by it.
+
+It and the Placement beside it are **preserved, not cleared, when a platform
+stops reporting an ad**, and dated so a stale claim reads as stale: an ad leaves
+a sync's tree for reasons that are not facts about the ad. The one thing that
+clears them is an Ad ceasing to claim a platform ad at all.
 _Avoid_: Status (unqualified), review status, delivery status
 
 **Unlinked Ad**:

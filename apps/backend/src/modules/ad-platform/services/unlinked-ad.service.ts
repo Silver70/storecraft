@@ -19,6 +19,7 @@ import {
   CampaignService,
   type CampaignTaggedLink,
 } from '../../marketing/services/campaign.service';
+import { PlatformMirrorService } from '../../marketing/services/platform-mirror.service';
 import { SyncedSpendService } from '../../marketing/services/synced-spend.service';
 import { PLATFORM_LINK_DEFAULTS } from '../../marketing/utils/tagged-link.util';
 import { AdReportedFigureRepository } from '../repositories/ad-reported-figure.repository';
@@ -163,6 +164,14 @@ const UNNAMED_AD = 'Untitled ad';
  * thing claiming exists not to do. Unlinking withdraws those rows again,
  * leaving every Reported Figure and everything the merchant typed or pinned
  * exactly where it was.
+ *
+ * ## What a claim and an unlink never touch
+ *
+ * `ads.status`. Claiming an ad the platform has rejected does not archive the
+ * Ad, and unlinking one does not revive it. The platform's own state rides
+ * beside the merchant's on its own column and neither overwrites the other —
+ * which is what makes an Ad that is active here and rejected there readable as
+ * both, instead of as a contradiction one of them silently won.
  */
 @Injectable()
 export class UnlinkedAdService {
@@ -176,6 +185,7 @@ export class UnlinkedAdService {
     private readonly campaigns: CampaignRepository,
     private readonly campaignService: CampaignService,
     private readonly syncedSpend: SyncedSpendService,
+    private readonly platformMirror: PlatformMirrorService,
   ) {}
 
   // ─── Reading ────────────────────────────────────────────────────────────────
@@ -372,6 +382,13 @@ export class UnlinkedAdService {
         // must stop reporting what that ad spent, or the same days would be
         // counted again under whichever Ad claims it next.
         await this.syncedSpend.detach(orgId, storeId, ad.id);
+        // And what the platform said about it. This is the one place either
+        // field is cleared: a sync that stops reporting an ad preserves them,
+        // because an ad leaves a tree for reasons that are not facts about the
+        // ad — but an Ad that claims no platform ad has no platform state, and
+        // a preserved "rejected" on it would be a confident sentence about
+        // somebody else's ad. Its own status is untouched, as always.
+        await this.platformMirror.forget(orgId, storeId, ad.id);
       }
     }
 

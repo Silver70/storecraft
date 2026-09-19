@@ -18,6 +18,11 @@ import type { Ad } from "~/types/api";
 import { campaignAdsQueryOptions } from "../queries";
 import { formatFlight } from "../utils";
 import { AdCreative } from "./ad-creative";
+import {
+  AdPlacementBadge,
+  AdPlatformStateBadge,
+  AdPlatformStateNote,
+} from "./ad-platform-state";
 import { CopyButton } from "./copy-button";
 import {
   archiveCampaignAdServerFn,
@@ -114,6 +119,18 @@ export function AdsCard({ campaignId }: { campaignId: string }) {
         <p className="text-xs text-muted-foreground">
           Upload a picture to an ad to recognise it at a glance instead of
           reading its tag. An ad without one works exactly the same.
+        </p>
+
+        {/* Said once, here, because the pairing is the thing merchants
+            misread: a badge saying "Rejected at platform" next to an ad that is
+            still active is not a contradiction, and the ad staying active is
+            deliberate — archiving it here would take its spend and its revenue
+            off this page at the moment they most need reading. */}
+        <p className="text-xs text-muted-foreground">
+          Where a store is connected to an ad platform, an ad also shows what
+          the platform says about it and where it ran. Those are the platform’s
+          words, kept separate from yours: an ad rejected or paused there stays
+          exactly as active here as you left it, with all of its history.
         </p>
 
         {isPending ? (
@@ -376,7 +393,18 @@ function AdRow({
           </span>
         )}
 
+        {/* A label only, and absent entirely when the platform named none —
+            never an empty badge. One ad runs in several placements at once, so
+            nothing here is filtered or reported by it. */}
+        <AdPlacementBadge placement={ad.placement} />
+
         <span className="flex-1" />
+
+        {/* The platform's word, beside the merchant's and never instead of it.
+            An ad rejected there is still active here, still on this list, and
+            still carrying its spend and its history — which is the only way a
+            merchant ever finds out why a campaign stopped producing. */}
+        <AdPlatformStateBadge ad={ad} />
 
         {archived && (
           <span className="shrink-0 text-xs text-muted-foreground">
@@ -415,6 +443,7 @@ function AdRow({
           )}
         </Button>
       </div>
+      <AdPlatformStateNote ad={ad} />
       {error && <p className="text-xs text-destructive">{error}</p>}
     </li>
   );

@@ -5,6 +5,7 @@ import {
   text,
   timestamp,
   index,
+  pgEnum,
   unique,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
@@ -18,6 +19,8 @@ export const AD_LIMITS = {
   /** Same width as the `utm_*` attribution columns the tag is matched against. */
   tag: 255,
   externalId: 255,
+  /** Long enough for the longest label any platform prints, and no longer. */
+  placement: 120,
 } as const;
 
 /**
@@ -27,6 +30,28 @@ export const AD_LIMITS = {
  * Ad would be silently re-bucketed by removing the row.
  */
 export type AdStatus = (typeof campaignStatusEnum.enumValues)[number];
+
+/**
+ * The ad platform's own view of an ad, in the platform's own terms.
+ *
+ * A separate vocabulary from `AdStatus` because it is a separate fact, made by
+ * somebody else: `active` and `archived` are what the merchant decided here,
+ * and these five are what the platform decided there. Neither is a translation
+ * of the other and neither may overwrite the other — an Ad that is active here
+ * and `rejected` there is precisely the pairing this stage exists to show.
+ *
+ * Vendor-neutral, like everything above the adapter. A platform that spells
+ * `in_review` "PENDING_REVIEW" is the adapter's problem and nobody else's.
+ */
+export const adPlatformStateEnum = pgEnum('ad_platform_state', [
+  'approved',
+  'rejected',
+  'in_review',
+  'delivering',
+  'paused',
+]);
+
+export type AdPlatformState = (typeof adPlatformStateEnum.enumValues)[number];
 
 /**
  * One creative running under a Campaign — the thing a visitor actually sees.
@@ -103,7 +128,55 @@ export const ads = pgTable(
      */
     startsAt: timestamp('starts_at'),
     endsAt: timestamp('ends_at'),
+    /**
+     * **The merchant's status, and the only one a merchant writes.** A sync
+     * never touches this column under any circumstance — see `platformState`
+     * below for the reason, and `PlatformMirrorService` for the enforcement.
+     */
     status: campaignStatusEnum('status').notNull().default('active'),
+    /**
+     * What the platform says about this ad, written only by the sync and null
+     * for anything never synced.
+     *
+     * **It never overwrites `status`, and `status` never overwrites it.** They
+     * are two independent facts displayed together: an ad the platform rejected
+     * must not disappear from the merchant's active list along with its
+     * history, and an ad the merchant archived here must not stop reporting
+     * what the platform thinks of it. The whole payoff of the sync is the card
+     * that reads "Active · rejected at the platform" — which exists only
+     * because these are two columns.
+     *
+     * Null for every Ad on an `email`, `sms`, `affiliate` or `influencer`
+     * campaign, and for every Ad whose platform ad nothing has claimed. That is
+     * a designed state, not a missing one.
+     */
+    platformState: adPlatformStateEnum('platform_state'),
+    /**
+     * Where the platform ran the ad, as it names it — "Instagram Stories".
+     *
+     * **A recognition label only.** Nothing is reported by, filtered by or
+     * grouped by this column, and nothing should be: one ad runs in several
+     * placements at once, so treating it as a dimension is treating a
+     * many-to-many as a single value, and the first report built that way would
+     * split one ad's spend across placements it cannot split. Free text rather
+     * than an enum for the same reason it is not a dimension — it exists to be
+     * read, not matched — and deliberately unindexed.
+     */
+    placement: varchar('placement', { length: AD_LIMITS.placement }),
+    /**
+     * When the platform last said either of the two things above.
+     *
+     * Both are **preserved, not cleared,** when a platform stops reporting an
+     * ad: an ad leaves a tree for reasons that are not facts about the ad — it
+     * fell outside the window asked for, a quota refusal truncated the answer,
+     * the account was disconnected — so clearing would flicker the card against
+     * the sync's luck. This column is what keeps that honest, by dating the
+     * claim so a stale `rejected` reads as stale rather than as current.
+     *
+     * Cleared, with both fields, only when the Ad stops claiming a platform ad
+     * at all.
+     */
+    platformReportedAt: timestamp('platform_reported_at'),
     archivedAt: timestamp('archived_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),

@@ -78,6 +78,8 @@ function platformAd(
     creativeUrl: null,
     startsAt: null,
     endsAt: null,
+    platformState: null,
+    placement: null,
     days: [],
     ...overrides,
   };
