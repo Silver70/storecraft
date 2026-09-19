@@ -187,6 +187,23 @@ Ad invented from a sync carries cost with no way to earn revenue, and would read
 as the worst performer in the account.
 _Avoid_: Orphan, unmatched, imported ad, pending ad
 
+**Ad Platform Connection**:
+One Store's link to one ad platform — the ad account a merchant approved on the
+platform's own screen, and when access was last granted. Per Store and never per
+Organization: a US store and a UK store approve separate ad accounts, because
+Campaigns and currency are both Store-scoped. Disconnected, never deleted, so
+revoking access cannot rewrite the reports it produced.
+_Avoid_: Integration, app, install, linked account
+
+**Ad Platform Provider**:
+The interface every reach for an ad platform goes through, and the only place
+this codebase talks to one. Vendor-neutral by rule — one adapter knows the
+vendor's name and nothing else does — and read-only by construction: there is no
+method that creates, boosts, edits, pauses or budgets an ad, so connecting one
+cannot cost a merchant money. Named after the capability, never after whoever
+currently implements it.
+_Avoid_: The vendor's name, ad API, ads client, sync provider
+
 **ROAS**:
 Attributed revenue ÷ Spend for a Campaign or one of its Ads over a period. Compared against ad
 platforms, so it moves with the Lookback Window.

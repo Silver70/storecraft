@@ -53,7 +53,8 @@ export class AuthController {
   @Post('admin/register')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
-    summary: 'Self-serve signup: create an admin user, org, and super_admin role',
+    summary:
+      'Self-serve signup: create an admin user, org, and super_admin role',
   })
   @ApiResponse({ status: 201 })
   async register(@Body() dto: AdminRegisterDto) {
@@ -70,7 +71,9 @@ export class AuthController {
 
   @Post('admin/refresh')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Rotate a refresh token and issue a new access token' })
+  @ApiOperation({
+    summary: 'Rotate a refresh token and issue a new access token',
+  })
   @ApiResponse({ status: 200 })
   async refresh(@Body() dto: AdminRefreshDto) {
     return this.adminAuth.refresh(dto.refreshToken);

@@ -36,6 +36,38 @@ export type ApiKeyWithSecret = ApiKey & {
   rawKey: string;
 };
 
+// ─── Ad platforms ─────────────────────────────────────────────────────────────
+
+// The ad platforms a Store can be connected to. A deliberate subset of the
+// Campaign platforms: email, SMS, affiliate and influencer have no ad tree
+// behind them and stay hand-costed.
+export const AD_PLATFORMS = [
+  "meta",
+  "google",
+  "tiktok",
+  "linkedin",
+  "pinterest",
+  "x",
+] as const;
+
+export type AdPlatform = (typeof AD_PLATFORMS)[number];
+
+// What the admin is allowed to see about a connection. There is no credential
+// here and there never will be: the secret is held server-side, sealed, and is
+// not returned by any read.
+export type AdPlatformConnection = {
+  id: string;
+  platform: AdPlatform;
+  status: "connected" | "disconnected";
+  accountId: string;
+  accountName: string | null;
+  // The ad account's own currency, which may differ from the Store's. Shown as
+  // it is; never converted.
+  accountCurrency: string | null;
+  connectedAt: string;
+  disconnectedAt: string | null;
+};
+
 // ─── Organizations ────────────────────────────────────────────────────────────
 
 // currency/timezone here are only defaults for new stores; authoritative values live on Store

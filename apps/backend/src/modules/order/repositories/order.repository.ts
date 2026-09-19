@@ -368,7 +368,9 @@ export class OrderRepository {
           .where(inArray(orderLineItems.orderId, orderIds))
           .groupBy(orderLineItems.orderId)
       : [];
-    const countByOrder = new Map(countRows.map((r) => [r.orderId, r.itemCount]));
+    const countByOrder = new Map(
+      countRows.map((r) => [r.orderId, r.itemCount]),
+    );
 
     const data: OrderListItem[] = pageRows.map((o) => ({
       ...o,

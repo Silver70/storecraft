@@ -29,6 +29,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { InlineEditModule } from './modules/inline-edit/inline-edit.module';
 import { MarketingModule } from './modules/marketing/marketing.module';
+import { AdPlatformModule } from './modules/ad-platform/ad-platform.module';
 import { ContentModule } from './modules/content/content.module';
 
 @Module({
@@ -98,6 +99,7 @@ import { ContentModule } from './modules/content/content.module';
     DashboardModule,
     AnalyticsModule,
     MarketingModule,
+    AdPlatformModule,
     ContentModule,
     InlineEditModule,
   ],

@@ -1,5 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
 import {
+  getAdPlatformConnectionsServerFn,
   getApiKeysServerFn,
   getAuditLogsServerFn,
   getOrganizationServerFn,
@@ -40,5 +41,12 @@ export const auditLogsQueryOptions = () =>
   queryOptions({
     queryKey: ["settings", "audit-logs"],
     queryFn: () => getAuditLogsServerFn({ data: { limit: 50 } }),
+    staleTime: 60 * 1000,
+  });
+
+export const adPlatformConnectionsQueryOptions = () =>
+  queryOptions({
+    queryKey: ["settings", "ad-platforms"],
+    queryFn: () => getAdPlatformConnectionsServerFn(),
     staleTime: 60 * 1000,
   });

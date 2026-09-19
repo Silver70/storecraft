@@ -16,6 +16,11 @@ export const PERMISSIONS = {
   'discounts.write': ['super_admin', 'product_manager'],
   'campaigns.read': ['super_admin', 'product_manager'],
   'campaigns.write': ['super_admin', 'product_manager'],
+  'ad_platforms.read': ['super_admin', 'product_manager'],
+  // Connecting an ad platform hands a third party standing access to an ad
+  // account, which is an owner's decision in the same class as issuing an API
+  // key — not a campaign edit.
+  'ad_platforms.write': ['super_admin'],
   'content.read': ['super_admin', 'product_manager'],
   'content.write': ['super_admin', 'product_manager'],
   'price_lists.read': ['super_admin', 'product_manager'],

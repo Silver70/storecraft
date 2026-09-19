@@ -4,6 +4,8 @@ import { adminStoreHeader } from "~/lib/active-store";
 import { apiClient, authHeader } from "~/lib/api-client";
 import { getErrorMessage } from "~/lib/errors";
 import type {
+  AdPlatform,
+  AdPlatformConnection,
   ApiKey,
   ApiKeyWithSecret,
   AuditEntry,
@@ -204,6 +206,62 @@ export const getAuditLogsServerFn = createServerFn({ method: "GET" })
       const res = await apiClient.get<PaginatedResponse<AuditEntry>>(
         `/api/admin/audit-logs?${params.toString()}`,
         { headers: await authHeader() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+// ─── Ad platforms ─────────────────────────────────────────────────────────────
+
+const adPlatformInput = z.object({
+  platform: z.enum(["meta", "google", "tiktok", "linkedin", "pinterest", "x"]),
+});
+
+export const getAdPlatformConnectionsServerFn = createServerFn({
+  method: "GET",
+}).handler(async (): Promise<AdPlatformConnection[]> => {
+  try {
+    const res = await apiClient.get<AdPlatformConnection[]>(
+      "/api/admin/ad-platforms",
+      { headers: await storeHeaders() },
+    );
+    return res.data;
+  } catch (err) {
+    throw new Error(getErrorMessage(err));
+  }
+});
+
+/**
+ * Starts a connection and hands back the platform's own approval link, which
+ * the browser is then sent to. We build no account picker: the merchant
+ * approves on the platform's screen with their own credentials, and comes back
+ * to `returnPath` when they are done either way.
+ */
+export const connectAdPlatformServerFn = createServerFn({ method: "POST" })
+  .inputValidator(adPlatformInput)
+  .handler(async ({ data }): Promise<{ approvalUrl: string }> => {
+    try {
+      const res = await apiClient.post<{ approvalUrl: string }>(
+        `/api/admin/ad-platforms/${data.platform}/connect`,
+        { returnPath: `/admin/settings?section=ad-platforms` },
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+export const disconnectAdPlatformServerFn = createServerFn({ method: "POST" })
+  .inputValidator(adPlatformInput)
+  .handler(async ({ data }): Promise<AdPlatformConnection> => {
+    try {
+      const res = await apiClient.post<AdPlatformConnection>(
+        `/api/admin/ad-platforms/${data.platform}/disconnect`,
+        {},
+        { headers: await storeHeaders() },
       );
       return res.data;
     } catch (err) {

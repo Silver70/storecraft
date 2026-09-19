@@ -43,3 +43,5 @@ export * from './ads.schema';
 export * from './campaign-matching-rules.schema';
 export * from './campaign-spend.schema';
 export * from './content-slots.schema';
+export * from './ad-platform-credentials.schema';
+export * from './ad-platform-connections.schema';

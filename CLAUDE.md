@@ -110,6 +110,7 @@ src/modules/
   order/         Order state machine, timeline, refunds
   customer/      Storefront customer accounts, addresses
   payment/       Stripe adapter behind PaymentProvider interface, webhooks
+  ad-platform/   Store-to-ad-platform connections behind AdPlatformProvider (read-only)
   shipping/      Zones, methods, shipments
   audit/         Audit log service + viewer
 
