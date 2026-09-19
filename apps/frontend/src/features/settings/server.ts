@@ -6,6 +6,7 @@ import { getErrorMessage } from "~/lib/errors";
 import type {
   AdPlatform,
   AdPlatformConnection,
+  AdPlatformSyncOutcome,
   ApiKey,
   ApiKeyWithSecret,
   AuditEntry,
@@ -246,6 +247,29 @@ export const connectAdPlatformServerFn = createServerFn({ method: "POST" })
       const res = await apiClient.post<{ approvalUrl: string }>(
         `/api/admin/ad-platforms/${data.platform}/connect`,
         { returnPath: `/admin/settings?section=ad-platforms` },
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+/**
+ * A sync the merchant asked for, without waiting for the schedule.
+ *
+ * The response carries what happened — including a failure — rather than
+ * throwing it, so a platform that refuses the call becomes a sentence on the
+ * page instead of an error the merchant has to interpret. Only a transport
+ * failure reaching our own API is an error here.
+ */
+export const syncAdPlatformServerFn = createServerFn({ method: "POST" })
+  .inputValidator(adPlatformInput)
+  .handler(async ({ data }): Promise<AdPlatformSyncOutcome[]> => {
+    try {
+      const res = await apiClient.post<AdPlatformSyncOutcome[]>(
+        `/api/admin/ad-platforms/${data.platform}/sync`,
+        {},
         { headers: await storeHeaders() },
       );
       return res.data;

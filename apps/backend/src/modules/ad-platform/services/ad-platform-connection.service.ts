@@ -46,6 +46,26 @@ export interface AdPlatformConnectionView {
   accountCurrency: string | null;
   connectedAt: Date;
   disconnectedAt: Date | null;
+  /**
+   * When a sync last succeeded, or null if none ever has.
+   *
+   * On the connection view because it is the merchant's answer to "how current
+   * is this number" — a figure that stopped moving because nothing was spent
+   * and one that stopped moving because the sync stopped running look
+   * identical without it. A stale figure has to be legibly stale.
+   */
+  lastSyncedAt: Date | null;
+  lastSyncAttemptAt: Date | null;
+  /**
+   * Why the last attempt failed, or null after a success.
+   *
+   * Surfaced rather than thrown. A vendor outage costs freshness, not the
+   * dashboard: the page shows the figures already pulled and this sentence
+   * beside them, and the sentence never blames the merchant's own account.
+   */
+  lastSyncError: string | null;
+  /** When the schedule will try again, while a failure is being backed off. */
+  syncPausedUntil: Date | null;
 }
 
 /** How a return trip ended, as the admin page needs to read it. */
@@ -353,6 +373,10 @@ function toView(row: AdPlatformConnection): AdPlatformConnectionView {
     accountCurrency: row.accountCurrency,
     connectedAt: row.connectedAt,
     disconnectedAt: row.disconnectedAt,
+    lastSyncedAt: row.lastSyncedAt,
+    lastSyncAttemptAt: row.lastSyncAttemptAt,
+    lastSyncError: row.lastSyncError,
+    syncPausedUntil: row.syncPausedUntil,
   };
 }
 

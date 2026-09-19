@@ -66,6 +66,27 @@ export type AdPlatformConnection = {
   accountCurrency: string | null;
   connectedAt: string;
   disconnectedAt: string | null;
+  // When a sync last succeeded, or null if none ever has. Shown so a figure
+  // that stopped moving because the sync stopped running is distinguishable
+  // from one that stopped moving because nothing was spent.
+  lastSyncedAt: string | null;
+  lastSyncAttemptAt: string | null;
+  // Why the last attempt failed, in words already written for a merchant.
+  // Displayed, never thrown: a vendor outage costs freshness, not the page.
+  lastSyncError: string | null;
+  syncPausedUntil: string | null;
+};
+
+// What a sync did, as the page reports it back. A failure arrives here rather
+// than as an error, which is why the button can say what happened.
+export type AdPlatformSyncOutcome = {
+  platform: AdPlatform;
+  status: "synced" | "failed";
+  from: string;
+  to: string;
+  backfill: boolean;
+  figuresWritten: number;
+  message: string | null;
 };
 
 // ─── Organizations ────────────────────────────────────────────────────────────

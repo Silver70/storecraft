@@ -127,6 +127,13 @@
       "when": 1789793171456,
       "tag": "0017_ad_platform_connections",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1789796136155,
+      "tag": "0018_reported_figures",
+      "breakpoints": true
     }
   ]
 }

@@ -22,6 +22,8 @@ const EXPECTED_SURFACE = [
   'completeConnection',
   'disconnect',
   'revokeStoreCredential',
+  'fetchAdTree',
+  'health',
 ];
 
 describe('the ad-platform provider contract', () => {
@@ -37,7 +39,8 @@ describe('the ad-platform provider contract', () => {
 
   it('has no method that could create, boost, edit, pause or budget an ad', () => {
     // `issueStoreCredential` and `revokeStoreCredential` write at the provider,
-    // but nothing here writes to an ad — which is the promise being kept.
+    // and `fetchAdTree` reads one, but nothing here writes to an ad — which is
+    // the promise being kept.
     expect(methods.filter((name) => WRITE_VERBS.test(name))).toEqual([]);
   });
 });

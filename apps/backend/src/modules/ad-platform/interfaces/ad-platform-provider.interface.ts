@@ -21,9 +21,9 @@ import type { AdPlatform } from '../../../shared/database/schema';
  * decision, not an implementation detail, and would start by editing this
  * comment.
  *
- * Reading the ad tree and its daily metrics is deliberately not here yet
- * either: this stage proves a merchant can grant access and that the seam
- * holds. The sync adds its own read method when there is something to sync.
+ * `fetchAdTree` is the only read of substance, and it is a read: it names a
+ * date range and returns what the platform says happened in it. It cannot
+ * change anything at the platform, and no call here can.
  */
 export const AD_PLATFORM_PROVIDER = 'AD_PLATFORM_PROVIDER';
 
@@ -87,6 +87,78 @@ export interface ConnectedAccount {
   readonly currency: string | null;
 }
 
+/** Whether the platform is answering, and how much history it will answer with. */
+export interface ProviderHealth {
+  readonly reachable: boolean;
+  /**
+   * How far back this platform reports, in days.
+   *
+   * The backfill asks for the history the platform offers and not a day more:
+   * a request past the window returns nothing extra and spends a quota that is
+   * shared across every customer of the provider to learn that.
+   */
+  readonly maxBackfillDays: number;
+}
+
+export interface FetchAdTreeInput {
+  readonly credential: StoreCredential;
+  readonly platform: AdPlatform;
+  /** The ad account the merchant approved, as the platform spells it. */
+  readonly externalAccountId: string;
+  /** Inclusive `YYYY-MM-DD`, already resolved in the Store's timezone. */
+  readonly from: string;
+  /** Inclusive `YYYY-MM-DD`. The day the merchant is currently spending in. */
+  readonly to: string;
+}
+
+/**
+ * One ad's figures for one day, **already in minor units**.
+ *
+ * The conversion happens in the adapter, at the edge, because the vendor
+ * reports decimals and this codebase holds money as integers. By the time a
+ * value has this type it is an integer, and no float reaches a service, a
+ * repository or a report.
+ */
+export interface ReportedAdDay {
+  /** `YYYY-MM-DD`, as the platform dated it. */
+  readonly day: string;
+  /** In minor units of the tree's currency. */
+  readonly spend: number;
+  readonly impressions: number;
+  readonly clicks: number;
+  /** On the *platform's* attribution window, which is not our Lookback Window. */
+  readonly conversions: number;
+  /** What the platform claims the ad earned, in minor units. */
+  readonly reportedRevenue: number;
+  /**
+   * The platform's own ROAS in basis points — 25000 is 2.5x — or null where it
+   * states none. Null is not zero, and nothing recomputes it from the two
+   * figures above: this is a claim the platform made, not arithmetic of ours.
+   */
+  readonly reportedRoasBp: number | null;
+}
+
+/** One ad at the platform, with every day of the requested range it reported. */
+export interface ReportedAd {
+  /** The ad's id at the platform. The key everything about it is held under. */
+  readonly externalAdId: string;
+  readonly name: string | null;
+  readonly days: readonly ReportedAdDay[];
+}
+
+/**
+ * What the platform says is running and what it says each ad did.
+ *
+ * `currency` is the ad account's own and is allowed to differ from the Store's.
+ * It is carried here so every figure can be stored as the currency it actually
+ * is — no rate is fetched, inferred or hard-coded anywhere in this feature
+ * (ADR-0005).
+ */
+export interface AdTree {
+  readonly currency: string;
+  readonly ads: readonly ReportedAd[];
+}
+
 export interface AdPlatformProvider {
   /**
    * Issues a credential scoped to one Store, creating the provider-side scope
@@ -115,4 +187,26 @@ export interface AdPlatformProvider {
    * connection goes, so a credential never outlives a reason to hold one.
    */
   revokeStoreCredential(credential: StoreCredential): Promise<void>;
+
+  /**
+   * What the platform says its ads did, per ad per day, over a date range.
+   *
+   * A pure read. It names a range rather than "everything since last time"
+   * because the caller owns that decision: a first connection asks for history
+   * so the feature is useful on day one, and every sync after it re-asks for a
+   * trailing window, since platforms restate figures days after the fact.
+   *
+   * Asking twice for the same range is expected and must be safe — the
+   * idempotency that makes it safe is enforced above, in the write.
+   */
+  fetchAdTree(input: FetchAdTreeInput): Promise<AdTree>;
+
+  /**
+   * Whether the provider is answering, and how much history it offers.
+   *
+   * Asked before a backfill rather than on every sync: it decides how far back
+   * day one reaches, and a call whose only purpose is to be reassuring is a
+   * call against a shared quota.
+   */
+  health(platform: AdPlatform): Promise<ProviderHealth>;
 }

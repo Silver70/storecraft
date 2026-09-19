@@ -21,6 +21,10 @@ export const PERMISSIONS = {
   // account, which is an owner's decision in the same class as issuing an API
   // key — not a campaign edit.
   'ad_platforms.write': ['super_admin'],
+  // Refreshing figures is not granting access. It reads what the platform
+  // already holds and changes nothing at the platform, so the person who reads
+  // the campaign report is the person who can ask for it to be current.
+  'ad_platforms.sync': ['super_admin', 'product_manager'],
   'content.read': ['super_admin', 'product_manager'],
   'content.write': ['super_admin', 'product_manager'],
   'price_lists.read': ['super_admin', 'product_manager'],

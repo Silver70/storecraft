@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -15,7 +23,19 @@ import {
   AdPlatformConnectionService,
   type AdPlatformConnectionView,
 } from '../services/ad-platform-connection.service';
-import { AdPlatformParamDto, BeginConnectionDto } from '../dto/ad-platform.dto';
+import {
+  AdPlatformSyncService,
+  type SyncOutcome,
+} from '../services/ad-platform-sync.service';
+import {
+  ReportedFigureService,
+  type ReportedFigureView,
+} from '../services/reported-figure.service';
+import {
+  AdPlatformParamDto,
+  BeginConnectionDto,
+  ReportedFigureQueryDto,
+} from '../dto/ad-platform.dto';
 
 /**
  * Connecting a Store to an ad platform, seeing what it is connected to, and
@@ -31,7 +51,11 @@ import { AdPlatformParamDto, BeginConnectionDto } from '../dto/ad-platform.dto';
 @UseGuards(AdminAuthGuard, RbacGuard)
 @Controller('admin/ad-platforms')
 export class AdminAdPlatformController {
-  constructor(private readonly connections: AdPlatformConnectionService) {}
+  constructor(
+    private readonly connections: AdPlatformConnectionService,
+    private readonly sync: AdPlatformSyncService,
+    private readonly figures: ReportedFigureService,
+  ) {}
 
   @Get()
   @RequirePermission('ad_platforms.read')
@@ -94,5 +118,69 @@ export class AdminAdPlatformController {
       storeId,
       params.platform,
     );
+  }
+
+  /**
+   * The platform's own figures, per platform ad per day.
+   *
+   * A read of our own database and never of the ad platform, which is what lets
+   * a vendor outage cost freshness rather than the page: these rows survive a
+   * failed sync untouched, and how stale they are is told by `lastSyncedAt` on
+   * the connection above rather than by trying the vendor again here.
+   *
+   * Declared before `:platform/...` so a literal path is never read as a
+   * platform name.
+   */
+  @Get('reported-figures')
+  @RequirePermission('ad_platforms.read')
+  @ApiOperation({
+    summary: "The ad platform's own reported figures for this store",
+    description:
+      "What the platform says each of its ads spent and earned, per day, in the ad account's currency — which may not be the store's. Stored beside our own figures and never merged into them: these are the platform's numbers, on the platform's attribution window, and the two are expected to disagree.",
+  })
+  @ApiResponse({ status: 200 })
+  async reportedFigures(
+    @Query() query: ReportedFigureQueryDto,
+    @CurrentTenant() tenant: TenantContext,
+  ): Promise<ReportedFigureView[]> {
+    const { organizationId, storeId } = requireStoreContext(tenant);
+    return this.figures.list(organizationId, storeId, query);
+  }
+
+  /**
+   * A sync the merchant asked for, without waiting for the schedule.
+   *
+   * Answers with what happened rather than throwing it. A platform that refuses
+   * the call is a sentence on the page, not a 500 on a button — and the
+   * sentence does not blame the merchant's account, because a shared upstream
+   * quota has nothing to do with it.
+   */
+  @Post('sync')
+  @RequirePermission('ad_platforms.sync')
+  @ApiOperation({
+    summary: "Pull this store's figures from every connected ad platform now",
+    description:
+      'Runs the same sync the schedule runs, immediately. A failure is reported in the response and recorded on the connection; nothing already pulled is changed by one.',
+  })
+  @ApiResponse({ status: 201 })
+  async syncAll(
+    @CurrentTenant() tenant: TenantContext,
+  ): Promise<SyncOutcome[]> {
+    const { organizationId, storeId } = requireStoreContext(tenant);
+    return this.sync.syncStore(organizationId, storeId);
+  }
+
+  @Post(':platform/sync')
+  @RequirePermission('ad_platforms.sync')
+  @ApiOperation({
+    summary: "Pull one platform's figures for this store now",
+  })
+  @ApiResponse({ status: 201 })
+  async syncPlatform(
+    @Param() params: AdPlatformParamDto,
+    @CurrentTenant() tenant: TenantContext,
+  ): Promise<SyncOutcome[]> {
+    const { organizationId, storeId } = requireStoreContext(tenant);
+    return this.sync.syncStore(organizationId, storeId, params.platform);
   }
 }

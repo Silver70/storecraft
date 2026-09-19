@@ -3,11 +3,14 @@ import { randomUUID } from 'crypto';
 import type { AdPlatform } from '../../src/shared/database/schema';
 import type {
   AdPlatformProvider,
+  AdTree,
   BeginConnectionInput,
   BeginConnectionResult,
   CompleteConnectionInput,
   ConnectedAccount,
+  FetchAdTreeInput,
   IssueCredentialInput,
+  ProviderHealth,
   StoreCredential,
 } from '../../src/modules/ad-platform/interfaces/ad-platform-provider.interface';
 
@@ -25,6 +28,19 @@ interface BegunConnection {
 interface ReleaseRecord {
   providerRef: string;
   platform: AdPlatform;
+}
+
+/**
+ * What a sync asked for, which is most of what is worth asserting about one:
+ * that a first connection asked for history rather than for today, and that
+ * every sync after it asked for a window that overlaps what it already holds.
+ */
+export interface FetchRecord {
+  providerRef: string;
+  platform: AdPlatform;
+  externalAccountId: string;
+  from: string;
+  to: string;
 }
 
 /**
@@ -55,8 +71,23 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
   /** What the merchant will have approved, keyed `providerRef:platform`. */
   private readonly approvals = new Map<string, ConnectedAccount>();
 
+  readonly fetched: FetchRecord[] = [];
+
+  /** What the platform will say is running, keyed `providerRef:platform`. */
+  private readonly trees = new Map<string, AdTree>();
+
   /** Makes the next provider call fail, the way a vendor outage would. */
   failNext: Error | null = null;
+
+  /**
+   * Makes every call fail until it is cleared — a vendor outage that lasts
+   * longer than one request, which is what a merchant actually experiences.
+   */
+  failAlways: Error | null = null;
+
+  /** What `health` answers. A provider can be down without being unreachable. */
+  reachable = true;
+  maxBackfillDays = 365;
 
   /** Says the merchant approved this account on the platform's own screen. */
   approve(
@@ -78,6 +109,11 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     this.approvals.delete(`${providerRef}:${platform}`);
   }
 
+  /** Says what the platform will report for this account. */
+  setAdTree(providerRef: string, platform: AdPlatform, tree: AdTree): void {
+    this.trees.set(`${providerRef}:${platform}`, tree);
+  }
+
   /** The credential issued for a store, as a test that seeded one can find it. */
   credentialFor(storeId: string): IssuedCredential | undefined {
     return this.issued.find((entry) => entry.storeId === storeId);
@@ -88,8 +124,13 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     this.begun.length = 0;
     this.disconnected.length = 0;
     this.revoked.length = 0;
+    this.fetched.length = 0;
     this.approvals.clear();
+    this.trees.clear();
     this.failNext = null;
+    this.failAlways = null;
+    this.reachable = true;
+    this.maxBackfillDays = 365;
   }
 
   issueStoreCredential(input: IssueCredentialInput): Promise<StoreCredential> {
@@ -141,8 +182,40 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     return Promise.resolve();
   }
 
+  /**
+   * Records the range and answers with whatever the test said is running.
+   *
+   * An account nobody set a tree for reports nothing rather than failing: an ad
+   * account with no ads in the window is a real and unremarkable answer.
+   */
+  fetchAdTree(input: FetchAdTreeInput): Promise<AdTree> {
+    this.maybeFail();
+    this.fetched.push({
+      providerRef: input.credential.providerRef,
+      platform: input.platform,
+      externalAccountId: input.externalAccountId,
+      from: input.from,
+      to: input.to,
+    });
+
+    return Promise.resolve(
+      this.trees.get(`${input.credential.providerRef}:${input.platform}`) ?? {
+        currency: 'USD',
+        ads: [],
+      },
+    );
+  }
+
+  health(): Promise<ProviderHealth> {
+    this.maybeFail();
+    return Promise.resolve({
+      reachable: this.reachable,
+      maxBackfillDays: this.maxBackfillDays,
+    });
+  }
+
   private maybeFail(): void {
-    const error = this.failNext;
+    const error = this.failNext ?? this.failAlways;
     if (error) {
       this.failNext = null;
       throw error;
