@@ -440,7 +440,9 @@ export class AdPlatformSyncService {
    * tenant's ad could not write into their figures. And the currency is the ad
    * account's, stored as what it is: no rate is fetched, inferred or
    * hard-coded, and a figure in a currency the Store does not use is still that
-   * currency's figure (ADR-0005).
+   * currency's figure (ADR-0005). The platform's attribution window rides along
+   * on the same principle — recorded as stated, null where it stated none, and
+   * never replaced by ours.
    */
   private rowsFrom(
     tree: AdTree,
@@ -473,6 +475,12 @@ export class AdPlatformSyncService {
           reportedRevenue: day.reportedRevenue,
           reportedRoasBp: day.reportedRoasBp,
           currency: tree.currency,
+          // The window these conversions were counted on, copied onto every
+          // row beside them. It is the caveat that explains why the platform's
+          // revenue and ours disagree, and a caveat stored a join away is one
+          // a report eventually renders without.
+          attributionClickDays: tree.attributionWindow?.clickDays ?? null,
+          attributionViewDays: tree.attributionWindow?.viewDays ?? null,
         });
       }
     }

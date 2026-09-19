@@ -47,8 +47,14 @@ import {
   type CampaignMargin,
   type MarginInput,
 } from '../utils/margin.util';
+import {
+  reportedFiguresFor,
+  type ReportedAdFigures,
+  type ReportedFigureGroup,
+} from '../utils/reported-figures.util';
+import { AdReportedFigureRepository } from '../../ad-platform/repositories/ad-reported-figure.repository';
 
-export type { AttributionTouch, AttributionPeriod };
+export type { AttributionTouch, AttributionPeriod, ReportedAdFigures };
 
 /**
  * The figures every line of this report carries, at whatever grain it is read
@@ -128,6 +134,31 @@ export interface AdRevenueLine extends PerformanceFigures {
    * the stream holds nothing for this Ad — absent, never zero.
    */
   measured: MeasuredTraffic | null;
+  /**
+   * What the ad platform says about this same creative, beside what we say.
+   *
+   * The two will routinely disagree by a factor of two, and **that difference
+   * is the point**: the platform counts conversions on its own attribution
+   * window and its own view-through rules, we count Orders on our Lookback
+   * Window and a tagged link, and a merchant who can see only one of the two
+   * numbers cannot tell a measurement difference from a tracking failure.
+   *
+   * Nested for a stronger version of the reason `measured` is. Every figure
+   * above is ours; every figure in here was stated by somebody else, on a
+   * window that is not ours, in a currency that need not be the Store's. It is
+   * **never merged into the figures above, never a replacement for one that is
+   * missing, and never an input to `contributionMargin`** — which is computed
+   * only from Orders whose goods have cost prices, and a platform's conversion
+   * value has no cost basis behind it (ADR-0005). None of that is a rule
+   * anybody downstream has to remember: nothing in this object is a
+   * `MarginInput` field, and the one place margin is computed takes only those.
+   *
+   * Empty is the ordinary state and the permanent one for every Ad on a
+   * platform no sync covers. More than one entry means the ad account billed in
+   * two currencies inside this period, reported as two figures rather than one
+   * total across a rate nobody chose.
+   */
+  reported: ReportedAdFigures[];
 }
 
 /**
@@ -316,6 +347,8 @@ function adLinesFor(
   tally: AdTally,
   spendByAd: ReadonlyMap<string, number>,
   visitorsByAd: ReadonlyMap<string, number>,
+  reportedByAd: ReadonlyMap<string, ReportedFigureGroup[]>,
+  storeCurrency: string,
 ): AdRevenueLine[] {
   return ads
     .map((ad) => ({
@@ -346,6 +379,16 @@ function adLinesFor(
       // numerator: the purchases this creative actually earned, counted in
       // full, over only the visitors the tracker managed to see.
       measured: measuredTrafficFor(visitorsByAd.get(ad.id), bucket.orders),
+      // And the platform's own claims about the same creative, in their own
+      // object for a stronger version of the same reason: they are on somebody
+      // else's window, in the ad account's currency, and they are not added to
+      // anything above. Note what is *not* here — no reported figure is passed
+      // to `figuresFor`, so none of them can reach the ROAS or the margin it
+      // computes (ADR-0005).
+      reported: reportedFiguresFor(
+        reportedByAd.get(ad.id) ?? [],
+        storeCurrency,
+      ),
     }))
     .sort(
       (a, b) =>
@@ -397,6 +440,10 @@ export class AttributedRevenueService {
     private readonly attribution: AttributionRepository,
     private readonly spend: CampaignSpendRepository,
     private readonly traffic: TrafficRepository,
+    // The platform's own book, read and never written. It lives in its own
+    // module precisely so this report can read it without the two modules
+    // importing each other — see `ReportedFiguresModule`.
+    private readonly reported: AdReportedFigureRepository,
     private readonly stores: StoreService,
     config: ConfigService,
   ) {
@@ -423,7 +470,7 @@ export class AttributedRevenueService {
     if (!store) throw new NotFoundException('Store not found');
     const { from, to } = spendDayRange(start, end, store.timezone);
 
-    // Tenancy is enforced on all seven reads. Both matchers are pure and will
+    // Tenancy is enforced on all eight reads. Both matchers are pure and will
     // faithfully match whatever rules they are handed, so a Store's rules never
     // meeting another Store's orders is a property of this method.
     const [
@@ -434,6 +481,7 @@ export class AttributedRevenueService {
       orderRows,
       spendTotals,
       visitorRows,
+      reportedRows,
     ] = await Promise.all([
       this.campaigns.findMany(orgId, storeId),
       this.campaigns.findMatchableRules(orgId, storeId),
@@ -453,6 +501,15 @@ export class AttributedRevenueService {
       // read last and used least: nothing below depends on it, so a Store with
       // no tracker embedded gets exactly the report it got before.
       this.traffic.findTaggedVisitors(orgId, storeId, start, end),
+      // What the ad platform says, over the *same calendar days* the merchant's
+      // own Spend is counted over. The same window on both books is what makes
+      // the disagreement between them mean something: two figures read over two
+      // periods differ for a reason nobody can act on.
+      //
+      // A separate read, landing in a separate field, and nothing below joins
+      // the two sets of figures together. A Store with no platform connected
+      // gets an empty list here and exactly the report it got before.
+      this.reported.sumByAdForPeriod(orgId, storeId, from, to),
     ]);
 
     // Two matchers, two passes, one tally (ADR-0004). The Campaign matcher runs
@@ -478,6 +535,17 @@ export class AttributedRevenueService {
     // it measures backwards from an Order, and a visit that never became one
     // has nothing to measure from.
     const visitors = tallyVisitors(visitorRows, campaignMatcher, adMatcher);
+
+    // The platform's groups, keyed by the Ad that claims the platform ad they
+    // describe. Only claimed ads are in here at all: an ad nothing claims has
+    // no line on this report to sit beside, and its money is waiting in the
+    // Unlinked Ads list rather than being quietly folded in somewhere.
+    const reportedByAd = new Map<string, ReportedFigureGroup[]>();
+    for (const row of reportedRows) {
+      const existing = reportedByAd.get(row.adId);
+      if (existing) existing.push(row);
+      else reportedByAd.set(row.adId, [row]);
+    }
 
     // The Ads themselves, grouped so each Campaign line can name the creatives
     // its split is made of. Distinct from `tally.adsByCampaign`, which holds
@@ -527,6 +595,8 @@ export class AttributedRevenueService {
           ads,
           spendTotals.byAd,
           visitors.byAd,
+          reportedByAd,
+          store.currency,
         ),
         // The residue at both grains, from the same tally and the same spend
         // read: revenue this Campaign earned that no Ad of its claimed, and

@@ -201,6 +201,10 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     return Promise.resolve(
       this.trees.get(`${input.credential.providerRef}:${input.platform}`) ?? {
         currency: 'USD',
+        // No window stated, which is the ordinary answer for a platform that
+        // does not publish its attribution setting — and the one a card has to
+        // read without.
+        attributionWindow: null,
         ads: [],
       },
     );

@@ -18,6 +18,7 @@ import { AdTaggedLink } from "./ad-tagged-link";
 import { CampaignStatusBadge } from "./campaign-status-badge";
 import { FigureList } from "./performance-figures";
 import { MeasuredPair } from "./measured-traffic";
+import { ReportedFiguresBlock } from "./reported-figures";
 
 /**
  * The picture a merchant recognises an ad by, since nobody recognises a slug.
@@ -232,6 +233,16 @@ function AdCard({
             pair is on the card, and why it is not allowed to look as solid as
             the money above it. */}
         <MeasuredPair measured={ad.measured} />
+        {/* And what the ad platform says about the same creative, under its own
+            name. The two sets will disagree, often by a factor of two, and that
+            is the reason both are here: our lookback window is printed against
+            our ROAS above and the platform's window against theirs below, so a
+            merchant can see a measurement difference for what it is instead of
+            reading it as a tracking failure. Nothing here is added to anything
+            above it, and nothing here reaches the margin (ADR-0005). Absent
+            entirely for every ad on a platform no sync covers, which is most
+            of them. */}
+        <ReportedFiguresBlock reported={ad.reported} className="pt-0.5" />
       </div>
 
       <div className="flex items-center justify-between border-t bg-muted/10 px-2 py-1.5">

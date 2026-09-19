@@ -188,6 +188,19 @@ or conversions, on its own attribution window and in its ad account's currency.
 Kept beside our figures and always labelled with its source, never merged into
 them and never an input to Contribution Margin, which has no cost basis behind
 it.
+
+The platform's own window is recorded and displayed against its figures, the way
+our Lookback Window is displayed against ours — that pairing is what turns a
+routine factor-of-two disagreement into a measurement difference a merchant can
+read rather than a tracking failure they suspect. It is the one place the phrase
+_attribution window_ is used here, and it always means the platform's, never
+ours. Absent is an ordinary answer: a platform that stated no window is reported
+as having stated none, and our own is never substituted for it.
+
+A Reported Figure is also never a stand-in for one of ours that is missing. An
+Ad earning nothing here and a fortune there is two true statements about two
+measurements, and showing only the second would make a revenue total
+incomparable with itself.
 _Avoid_: Actual spend, true spend, platform truth, synced metrics
 
 **Platform State**:

@@ -150,12 +150,17 @@ export function PerformanceCaveats({ lookbackDays }: { lookbackDays: number }) {
   return (
     <div className="space-y-1.5 sm:max-w-md">
       {/* The window is why these figures differ from an ad platform's, so it is
-          stated on screen rather than left for the merchant to infer. */}
+          stated on screen rather than left for the merchant to infer — and now
+          that the platform's own figures sit on the card with their own window
+          printed beside them, this line says where to look rather than leaving
+          the disagreement as something to be discovered. */}
       <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
         <CircleHelpIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <span>
           {lookbackDays}-day lookback window — a touch older than that gets no
-          credit, so these numbers will not match an ad platform&apos;s.
+          credit, so these numbers will not match an ad platform&apos;s. Where a
+          platform is connected, its own figures and its own window are shown on
+          each ad&apos;s card, next to ours and never merged into them.
         </span>
       </p>
       {/* Spend is day-grained and revenue is not. Read at 9am, today's ROAS

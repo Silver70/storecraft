@@ -190,15 +190,42 @@ export interface ReportedAd {
 }
 
 /**
+ * How far back the platform looks when it credits a conversion.
+ *
+ * The counterpart of our own Lookback Window, and the reason the platform's
+ * reported revenue and ours routinely differ by a factor of two. It travels
+ * with the figures so the merchant can read the disagreement with both halves
+ * of the explanation in front of them, rather than as a tracking failure.
+ *
+ * `viewDays` is separately nullable because a great many platforms credit
+ * clicks only. A window of `{ clickDays: 7, viewDays: null }` is a complete
+ * statement, not a half-filled one.
+ */
+export interface PlatformAttributionWindow {
+  /** Days after a click a conversion is still credited. */
+  readonly clickDays: number;
+  /** Days after a view, or null where the platform credits views not at all. */
+  readonly viewDays: number | null;
+}
+
+/**
  * What the platform says is running and what it says each ad did.
  *
  * `currency` is the ad account's own and is allowed to differ from the Store's.
  * It is carried here so every figure can be stored as the currency it actually
  * is — no rate is fetched, inferred or hard-coded anywhere in this feature
  * (ADR-0005).
+ *
+ * `attributionWindow` is the account's, for the same reason and with the same
+ * rule: it is recorded as what the platform said, and **null where it said
+ * nothing**. An adapter that cannot read a window returns null rather than a
+ * plausible default — a guessed 7 shown beside our own 30 would read as the
+ * platform having agreed to it, and would turn the one figure that explains the
+ * gap into a second thing to distrust.
  */
 export interface AdTree {
   readonly currency: string;
+  readonly attributionWindow: PlatformAttributionWindow | null;
   readonly ads: readonly ReportedAd[];
 }
 

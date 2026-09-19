@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { R2StorageService } from '../../shared/storage/r2-storage.service';
 import { TenantModule } from '../tenant/tenant.module';
+import { ReportedFiguresModule } from '../ad-platform/reported-figures.module';
 import { AdminAdController } from './controllers/admin-ad.controller';
 import { AdminAdSpendController } from './controllers/admin-ad-spend.controller';
 import { AdminAttributionController } from './controllers/admin-attribution.controller';
@@ -38,6 +39,14 @@ import { SyncedSpendService } from './services/synced-spend.service';
  * may be written to it — including the rule that a pinned day is the merchant's
  * and a sync may not have it.
  *
+ * `ReportedFiguresModule` is imported so the performance report can put the ad
+ * platform's own figures beside ours on each Ad's line. **A read and only a
+ * read.** The figures arrive in their own field, labelled with the platform
+ * that stated them, and nothing here adds them to a figure of ours or lets one
+ * of them reach Contribution Margin — a platform's conversion value has no cost
+ * basis behind it (ADR-0005). It is a leaf module rather than `AdPlatformModule`
+ * because that module imports this one, for the three services below.
+ *
  * `PlatformMirrorService` is exported for the same one caller and is there for
  * the same reason: it is the only way a sync reaches the `ads` table, and it
  * lives here because this module owns what an Ad's `status` means. What it
@@ -45,7 +54,7 @@ import { SyncedSpendService } from './services/synced-spend.service';
  * never over it.
  */
 @Module({
-  imports: [AuthModule, TenantModule],
+  imports: [AuthModule, TenantModule, ReportedFiguresModule],
   controllers: [
     AdminCampaignController,
     AdminAdController,

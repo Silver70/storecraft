@@ -46,6 +46,17 @@ export interface ReportedFigureView {
   reportedRoasBp: number | null;
   /** The ad account's currency. Stored as what it is; never converted. */
   currency: string;
+  /**
+   * The window the platform counted the conversions and revenue above on,
+   * as it stated it. Null where it stated none — not a zero, and never ours.
+   *
+   * It travels with the figure rather than being looked up, because it is the
+   * explanation for the gap between this row and the merchant's own: a factor
+   * of two between the two books is a measurement difference, and without the
+   * two windows in front of them a merchant reads it as a tracking failure.
+   */
+  attributionClickDays: number | null;
+  attributionViewDays: number | null;
   /** When a sync last confirmed this figure. */
   syncedAt: Date;
   /** The Ad claiming this platform ad, or null while nothing does. */
@@ -133,6 +144,8 @@ export class ReportedFigureService {
       reportedRevenue: figure.reportedRevenue,
       reportedRoasBp: figure.reportedRoasBp,
       currency: figure.currency,
+      attributionClickDays: figure.attributionClickDays,
+      attributionViewDays: figure.attributionViewDays,
       syncedAt: figure.syncedAt,
       adId,
       adName,

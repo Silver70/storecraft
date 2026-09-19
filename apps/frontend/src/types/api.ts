@@ -890,6 +890,75 @@ export type MeasuredTraffic = {
 };
 
 /**
+ * What an ad platform says one creative did, beside what we say it did.
+ *
+ * **A Reported Figure is never one of ours and must never be rendered as
+ * though it were** (ADR-0005). Everything in here was stated by somebody else,
+ * on an attribution window that is not ours, in a currency that need not be the
+ * store's. The two sets of numbers routinely disagree by a factor of two, and
+ * that difference is the point: a merchant with only one of them cannot tell a
+ * measurement difference from a tracking failure.
+ *
+ * The backend nests these in their own array precisely so the UI cannot merge
+ * them by accident — there is no way to spread one into the figures beside it
+ * without noticing. Render them under a heading naming the platform, never in
+ * the same typography as an order-derived figure, and never as a stand-in for
+ * one of ours that is missing.
+ */
+export type ReportedAdFigures = {
+  /** Who stated it. The source label is not optional — see the type. */
+  platform: AdPlatform;
+  /** The ad account's currency, which every money field here is stated in. */
+  currency: string;
+  /** The store's, so the mismatch can be explained where it shows. */
+  storeCurrency: string;
+  /**
+   * Whether those two are the same currency.
+   *
+   * False is not an error: the figures are real and are shown as what they
+   * are. What it forbids is arithmetic — never combine one of these with one of
+   * ours, never take a ratio across the two, and never show a margin derived
+   * from either side. There is no exchange rate anywhere in this product, and
+   * the merchant is owed the mismatch rather than a number built on an invented
+   * rate.
+   */
+  matchesStoreCurrency: boolean;
+  /** What the platform says it charged the account. Minor units of `currency`. */
+  spend: number;
+  /**
+   * What the platform claims the ad earned, on its own window. Minor units.
+   *
+   * **Never a replacement for our revenue.** Where ours is zero and this is
+   * large, both are true statements about different measurements, and showing
+   * only this one would make a revenue total incomparable with itself.
+   */
+  revenue: number;
+  impressions: number;
+  clicks: number;
+  /** Conversions on `attribution` below, which is not our lookback window. */
+  conversions: number;
+  /**
+   * The platform's revenue over the platform's spend, to two decimals.
+   *
+   * Both figures are theirs and both are in `currency`, so it crosses nothing.
+   * It is not our revenue over their spend, and no such number exists.
+   */
+  roas: number | null;
+  /**
+   * The window the platform measured on. Null where it stated none — show that
+   * as unstated rather than substituting ours, which would read as a window the
+   * platform agreed to.
+   */
+  attribution: { clickDays: number; viewDays: number | null } | null;
+  /** How many days of the period the platform reported for this ad. */
+  days: number;
+  firstDay: string;
+  lastDay: string;
+  /** When a sync last confirmed these figures. ISO. */
+  syncedAt: string;
+};
+
+/**
  * One creative's return, beneath the campaign that funds it.
  *
  * Its revenue is the orders whose `utm_content` resolved onto this ad, its
@@ -913,6 +982,16 @@ export type AdRevenueLine = PerformanceFigures & {
   endsAt: string | null;
   /** Who clicked it, as opposed to who bought. Measured — see the type. */
   measured: MeasuredTraffic | null;
+  /**
+   * What a connected ad platform says about this same creative. Reported — see
+   * the type, and never merged into the figures above.
+   *
+   * Empty is the ordinary state and the permanent one for every ad on a
+   * platform no sync covers, so the card has to read without it. More than one
+   * entry means the ad account billed in two currencies inside the period,
+   * reported as two figures rather than one total across a rate nobody chose.
+   */
+  reported: ReportedAdFigures[];
 };
 
 export type CampaignRevenueLine = PerformanceFigures & {

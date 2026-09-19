@@ -155,6 +155,13 @@
       "when": 1789816402294,
       "tag": "0021_platform_state_and_placement",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1789817925608,
+      "tag": "0022_reported_attribution_window",
+      "breakpoints": true
     }
   ]
 }

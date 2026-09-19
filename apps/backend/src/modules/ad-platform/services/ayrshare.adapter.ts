@@ -17,6 +17,7 @@ import type {
   ConnectedAccount,
   FetchAdTreeInput,
   IssueCredentialInput,
+  PlatformAttributionWindow,
   ProviderHealth,
   ReportedAd,
   ReportedAdDay,
@@ -115,6 +116,16 @@ const PLATFORM_RETENTION_DAYS: Record<AdPlatform, number> = {
  */
 interface AdMetricsResponse {
   currency?: string;
+  /**
+   * The account's attribution setting, spelled whichever way they pass it
+   * through from the platform. Both forms are read; neither is required.
+   */
+  attributionWindow?: {
+    clickDays?: number;
+    viewDays?: number;
+  };
+  clickWindowDays?: number;
+  viewWindowDays?: number;
   ads?: VendorAd[];
 }
 
@@ -288,6 +299,13 @@ export class AyrshareAdapter implements AdPlatformProvider {
 
     return {
       currency,
+      // Unlike the currency, a missing window is not fatal. A figure has to be
+      // stored as *some* currency and guessing one would be the conversion
+      // ADR-0005 forbids; a window is a caveat printed beside the figure, and
+      // "the platform did not say" is an honest thing to print. What would not
+      // be honest is a default: a 7 we invented, displayed next to our own 30,
+      // reads as a number the platform stood behind.
+      attributionWindow: asAttributionWindow(body),
       ads: (body.ads ?? [])
         .map((ad) => this.asReportedAd(ad))
         .filter((ad): ad is ReportedAd => ad !== null),
@@ -497,6 +515,46 @@ function asPlatformState(value: string | undefined): AdPlatformState | null {
  * once, and a list here would be an invitation for something downstream to
  * group by it and split one ad's spend across values it has no split for.
  */
+/**
+ * The account's attribution window, from whichever of their two spellings
+ * carried it — or null where neither did.
+ *
+ * Nothing is defaulted and nothing is inferred. A click window that is absent,
+ * not a number, negative or absurd produces null, and a null click window
+ * discards any view window with it: "credited for 1 day after a view, and for
+ * an unstated period after a click" is not a statement a merchant can read the
+ * gap with, and half a caveat invites a reader to supply the other half.
+ *
+ * A view window of zero is kept as zero, because a platform crediting clicks
+ * only is a real and common setting — and is a different fact from not having
+ * said.
+ */
+function asAttributionWindow(
+  body: AdMetricsResponse,
+): PlatformAttributionWindow | null {
+  const clickDays = asWindowDays(
+    body.attributionWindow?.clickDays ?? body.clickWindowDays,
+  );
+  if (clickDays === null) return null;
+
+  return {
+    clickDays,
+    viewDays: asWindowDays(
+      body.attributionWindow?.viewDays ?? body.viewWindowDays,
+    ),
+  };
+}
+
+/** A window length as a whole number of days, or null for anything else. */
+function asWindowDays(value: number | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const days = Math.trunc(value);
+  // A year is longer than any platform's window and longer than most of their
+  // reporting retention. Past that it is not a window, it is a parse error.
+  if (days < 0 || days > 365) return null;
+  return days;
+}
+
 function asPlacement(ad: VendorAd): string | null {
   const many = (ad.placements ?? [])
     .map((value) => value?.trim())

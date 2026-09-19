@@ -108,6 +108,24 @@ export const adReportedFigures = pgTable(
     reportedRoasBp: integer('reported_roas_bp'),
     /** The ad account's currency at the moment the figure was pulled. */
     currency: varchar('currency', { length: 3 }).notNull(),
+    /**
+     * The platform's own attribution window, as it stated it: how many days
+     * after a click, and after a view, it still credits a conversion.
+     *
+     * Denormalized onto the row for exactly the reason `currency` and
+     * `platform` are. This is the caveat on `conversions`, `reported_revenue`
+     * and `reported_roas_bp` in the same row — it is *why* the platform's
+     * revenue and ours disagree by a factor of two — and a caveat that needs a
+     * join to read is one a future report will render without.
+     *
+     * Both nullable and independently so. A platform that states no window has
+     * not stated a window of zero, and plenty state a click window and no view
+     * window. Null renders as "window not stated" rather than as a number
+     * nobody claimed: inventing one here would put our guess next to our own
+     * Lookback Window as though the platform had agreed to it.
+     */
+    attributionClickDays: integer('attribution_click_days'),
+    attributionViewDays: integer('attribution_view_days'),
     /** When this row was last confirmed by a sync — how stale the figure is. */
     syncedAt: timestamp('synced_at').notNull().defaultNow(),
     createdAt: timestamp('created_at').notNull().defaultNow(),

@@ -71,6 +71,8 @@ type OptionalAdFields =
 /** A tree written with only the fields a case cares about. */
 interface TestAdTree {
   currency: string;
+  /** Absent unless the case is about the window the platform measured on. */
+  attributionWindow?: AdTree['attributionWindow'];
   ads: Array<
     Omit<ReportedAd, OptionalAdFields> &
       Partial<Pick<ReportedAd, OptionalAdFields>>
@@ -165,6 +167,7 @@ describe('Ad platform sync (e2e)', () => {
   ): void {
     provider.setAdTree(providerRef, platform, {
       currency: tree.currency,
+      attributionWindow: tree.attributionWindow ?? null,
       ads: tree.ads.map((ad) => ({
         creativeUrl: null,
         startsAt: null,

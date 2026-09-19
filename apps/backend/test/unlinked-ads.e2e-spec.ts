@@ -134,8 +134,20 @@ describe('Unlinked ads (e2e)', () => {
     return providerRef;
   }
 
-  function platformReports(providerRef: string, tree: AdTree): void {
-    provider.setAdTree(providerRef, 'meta', tree);
+  /**
+   * What the platform will report. The attribution window defaults to unstated,
+   * because nothing in this file is about it — these cases are about which ads
+   * are held and which are claimed.
+   */
+  function platformReports(
+    providerRef: string,
+    tree: Omit<AdTree, 'attributionWindow'> &
+      Partial<Pick<AdTree, 'attributionWindow'>>,
+  ): void {
+    provider.setAdTree(providerRef, 'meta', {
+      attributionWindow: null,
+      ...tree,
+    });
   }
 
   const syncNow = async (client: AdminClient): Promise<void> => {

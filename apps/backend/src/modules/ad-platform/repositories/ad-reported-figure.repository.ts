@@ -36,6 +36,9 @@ export interface ReportedFigureRow {
   reportedRevenue: number;
   reportedRoasBp: number | null;
   currency: string;
+  /** The platform's own attribution window. Null where it stated none. */
+  attributionClickDays: number | null;
+  attributionViewDays: number | null;
 }
 
 /**
@@ -72,6 +75,47 @@ export interface ReportedSpendToDate {
   days: number;
   firstDay: string;
   lastDay: string;
+}
+
+/**
+ * What one platform said one Ad of ours did over a period, in one currency and
+ * on one attribution window.
+ *
+ * A group rather than a total, and the grouping is the whole safety property.
+ * Money is summed **within** a currency and never across two, because there is
+ * no rate anywhere in this feature to cross one honestly (ADR-0005). An ad
+ * account that changed currency mid-period therefore produces two of these and
+ * not one wrong one, and the window travels the same way: a merchant reading a
+ * conversion figure is owed the window it was counted on.
+ *
+ * Keyed by our `adId`, which means it exists only for platform ads an Ad here
+ * claims. An unclaimed one has no line on the page to sit beside — it is in the
+ * Unlinked Ads list with its spend, waiting to be answered for.
+ */
+export interface ReportedAdPeriodTotals {
+  /** The Ad claiming the platform ad these figures describe. */
+  adId: string;
+  /** The source. Every figure in this group was stated by this platform. */
+  platform: AdPlatform;
+  /** The ad account's currency. Never converted into the Store's. */
+  currency: string;
+  /** The platform's own attribution window. Null where it stated none. */
+  attributionClickDays: number | null;
+  attributionViewDays: number | null;
+  /** Minor units of `currency`. */
+  spend: number;
+  /** What the platform claims the ad earned. Never an input to any margin. */
+  reportedRevenue: number;
+  impressions: number;
+  clicks: number;
+  /** On the platform's window above, which is not our Lookback Window. */
+  conversions: number;
+  /** How many days of the period the platform reported for this ad. */
+  days: number;
+  firstDay: string;
+  lastDay: string;
+  /** When a sync last confirmed the freshest of these days. */
+  syncedAt: Date;
 }
 
 /**
@@ -138,6 +182,8 @@ export class AdReportedFigureRepository {
             reportedRevenue: sql`excluded.reported_revenue`,
             reportedRoasBp: sql`excluded.reported_roas_bp`,
             currency: sql`excluded.currency`,
+            attributionClickDays: sql`excluded.attribution_click_days`,
+            attributionViewDays: sql`excluded.attribution_view_days`,
             syncedAt,
             updatedAt: syncedAt,
           },
@@ -193,6 +239,94 @@ export class AdReportedFigureRepository {
       .orderBy(asc(adReportedFigures.day), asc(adReportedFigures.externalAdId));
 
     return rows;
+  }
+
+  /**
+   * What each claimed Ad's platform ad did over one inclusive day range,
+   * summed.
+   *
+   * The read behind the platform's figures on the card. It is deliberately a
+   * *separate* read from the one that produces our own figures, and it lands in
+   * a separate field: nothing here is added to, netted against or substituted
+   * for anything in the attributed-revenue report, and there is no column in
+   * the result that a margin could be computed from (ADR-0005).
+   *
+   * An **inner** join, unlike `findForStore`'s: this read exists to put figures
+   * beside a line on the report, and a platform ad no Ad here claims has no line
+   * to sit beside. Its money is not lost — it is in the Unlinked Ads list, which
+   * is where a merchant answers for it.
+   *
+   * Grouped by currency and by window as well as by Ad, so that no total this
+   * returns was summed across two of either. Almost always one group per Ad;
+   * more than one is a real event — an account that switched currency, or a
+   * merchant who changed their attribution setting mid-period — and the caller
+   * is left to say so rather than handed a single figure that hides it.
+   */
+  async sumByAdForPeriod(
+    orgId: string,
+    storeId: string,
+    from: string,
+    to: string,
+  ): Promise<ReportedAdPeriodTotals[]> {
+    const rows = await this.db
+      .select({
+        adId: ads.id,
+        platform: adReportedFigures.platform,
+        currency: adReportedFigures.currency,
+        attributionClickDays: adReportedFigures.attributionClickDays,
+        attributionViewDays: adReportedFigures.attributionViewDays,
+        spend: sum(adReportedFigures.spend),
+        reportedRevenue: sum(adReportedFigures.reportedRevenue),
+        impressions: sum(adReportedFigures.impressions),
+        clicks: sum(adReportedFigures.clicks),
+        conversions: sum(adReportedFigures.conversions),
+        days: count(),
+        firstDay: min(adReportedFigures.day),
+        lastDay: max(adReportedFigures.day),
+        syncedAt: max(adReportedFigures.syncedAt),
+      })
+      .from(adReportedFigures)
+      .innerJoin(
+        ads,
+        and(
+          eq(ads.storeId, adReportedFigures.storeId),
+          eq(ads.externalId, adReportedFigures.externalAdId),
+        ),
+      )
+      .where(
+        and(
+          eq(adReportedFigures.organizationId, orgId),
+          eq(adReportedFigures.storeId, storeId),
+          between(adReportedFigures.day, from, to),
+        ),
+      )
+      .groupBy(
+        ads.id,
+        adReportedFigures.platform,
+        adReportedFigures.currency,
+        adReportedFigures.attributionClickDays,
+        adReportedFigures.attributionViewDays,
+      );
+
+    return rows.map((row) => ({
+      adId: row.adId,
+      platform: row.platform,
+      currency: row.currency,
+      attributionClickDays: row.attributionClickDays,
+      attributionViewDays: row.attributionViewDays,
+      // The driver returns a numeric string for every `sum`. Each value that
+      // went into one was an integer in minor units or a whole count, so each
+      // total is one too.
+      spend: Number(row.spend ?? 0),
+      reportedRevenue: Number(row.reportedRevenue ?? 0),
+      impressions: Number(row.impressions ?? 0),
+      clicks: Number(row.clicks ?? 0),
+      conversions: Number(row.conversions ?? 0),
+      days: Number(row.days ?? 0),
+      firstDay: row.firstDay ?? '',
+      lastDay: row.lastDay ?? '',
+      syncedAt: row.syncedAt ?? new Date(0),
+    }));
   }
 
   /**

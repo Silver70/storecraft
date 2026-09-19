@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { MarketingModule } from '../marketing/marketing.module';
 import { TenantModule } from '../tenant/tenant.module';
+import { ReportedFiguresModule } from './reported-figures.module';
 import { AD_PLATFORM_PROVIDER } from './interfaces/ad-platform-provider.interface';
 import { AyrshareAdapter } from './services/ayrshare.adapter';
 import { AdminAdPlatformController } from './controllers/admin-ad-platform.controller';
@@ -9,7 +10,6 @@ import { AdminUnlinkedAdController } from './controllers/admin-unlinked-ad.contr
 import { AdPlatformCallbackController } from './controllers/ad-platform-callback.controller';
 import { AdPlatformConnectionRepository } from './repositories/ad-platform-connection.repository';
 import { AdPlatformCredentialRepository } from './repositories/ad-platform-credential.repository';
-import { AdReportedFigureRepository } from './repositories/ad-reported-figure.repository';
 import { UnlinkedAdRepository } from './repositories/unlinked-ad.repository';
 import { AdPlatformConnectionService } from './services/ad-platform-connection.service';
 import { AdPlatformSyncService } from './services/ad-platform-sync.service';
@@ -51,6 +51,13 @@ import { CredentialVault } from './services/credential-vault.service';
  * all** — they stay in `ad_reported_figures`, displayed beside ours and never
  * merged into them, and never an input to Contribution Margin (ADR-0005).
  *
+ * `ReportedFiguresModule` is imported rather than declaring
+ * `AdReportedFigureRepository` here, because that table has a second reader:
+ * the campaign performance report, which puts the platform's figures beside
+ * ours on the card. This module already imports `MarketingModule`, so the
+ * repository lives in a leaf both can import rather than in a `forwardRef` pair.
+ * Only the sync writes it.
+ *
  * `PlatformMirrorService` is the second and last such door, into `ads`. Through
  * it a sync writes the platform's own state and placement onto the Ads that
  * claim the platform's ads — and **it cannot write `ads.status`**, which is why
@@ -59,7 +66,7 @@ import { CredentialVault } from './services/credential-vault.service';
  * merchant left it, and that pairing is the whole payoff of the sync.
  */
 @Module({
-  imports: [AuthModule, TenantModule, MarketingModule],
+  imports: [AuthModule, TenantModule, MarketingModule, ReportedFiguresModule],
   controllers: [
     AdminAdPlatformController,
     AdminUnlinkedAdController,
@@ -73,7 +80,6 @@ import { CredentialVault } from './services/credential-vault.service';
     CredentialVault,
     AdPlatformConnectionRepository,
     AdPlatformCredentialRepository,
-    AdReportedFigureRepository,
     UnlinkedAdRepository,
     AdPlatformConnectionService,
     AdPlatformSyncService,
@@ -84,7 +90,7 @@ import { CredentialVault } from './services/credential-vault.service';
     AD_PLATFORM_PROVIDER,
     AdPlatformConnectionRepository,
     AdPlatformCredentialRepository,
-    AdReportedFigureRepository,
+    ReportedFiguresModule,
     AdPlatformConnectionService,
     AdPlatformSyncService,
     ReportedFigureService,
