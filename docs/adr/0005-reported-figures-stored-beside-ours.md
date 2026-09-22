@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0006
 ---
 
 # Ad-platform figures are stored beside ours, never merged into them

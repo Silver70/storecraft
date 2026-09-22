@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0006
 ---
 
 # An Ad is nested under its Campaign, and resolved in a second pass
