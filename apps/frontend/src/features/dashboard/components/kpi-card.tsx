@@ -43,7 +43,7 @@ export function KpiCard({
                 className="pointer-events-none absolute inset-0"
                 style={{
                     backgroundImage:
-                        "radial-gradient(100% 90% at 0% 0%, color-mix(in oklab, var(--primary) 19%, transparent), transparent 60%), radial-gradient(165% 125% at 100% 100%, hsl(var(--chart-1) / 16%), transparent 66%)",
+                        "radial-gradient(100% 90% at 0% 0%, color-mix(in oklab, var(--primary) 19%, transparent), transparent 60%), radial-gradient(165% 125% at 100% 100%, color-mix(in oklab, var(--chart-1) 16%, transparent), transparent 66%)",
                 }}
             />
 

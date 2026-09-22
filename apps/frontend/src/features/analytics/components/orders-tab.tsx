@@ -43,17 +43,17 @@ export function OrdersTab({ period }: { period: Period }) {
     {
       name: "captured",
       value: data.payments.captured,
-      color: "hsl(var(--status-good))",
+      color: "var(--status-good)",
     },
     {
       name: "failed",
       value: data.payments.failed,
-      color: "hsl(var(--status-critical))",
+      color: "var(--status-critical)",
     },
     {
       name: "pending",
       value: data.payments.pending,
-      color: "hsl(var(--status-warning))",
+      color: "var(--status-warning)",
     },
   ];
 

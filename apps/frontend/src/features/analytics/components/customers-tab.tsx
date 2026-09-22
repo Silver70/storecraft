@@ -15,7 +15,7 @@ import { MetricTile } from "./metric-tile";
 import { DonutChart, type DonutSlice } from "./donut-chart";
 
 const growthConfig: ChartConfig = {
-  count: { label: "New customers", color: "hsl(var(--chart-1))" },
+  count: { label: "New customers", color: "var(--chart-1)" },
 };
 
 export function CustomersTab({ period }: { period: Period }) {
@@ -88,12 +88,12 @@ export function CustomersTab({ period }: { period: Period }) {
                 <linearGradient id="custGrad" x1="0" y1="0" x2="0" y2="1">
                   <stop
                     offset="5%"
-                    stopColor="hsl(var(--chart-1))"
+                    stopColor="var(--chart-1)"
                     stopOpacity={0.25}
                   />
                   <stop
                     offset="95%"
-                    stopColor="hsl(var(--chart-1))"
+                    stopColor="var(--chart-1)"
                     stopOpacity={0}
                   />
                 </linearGradient>
@@ -121,7 +121,7 @@ export function CustomersTab({ period }: { period: Period }) {
               <Area
                 type="monotone"
                 dataKey="count"
-                stroke="hsl(var(--chart-1))"
+                stroke="var(--chart-1)"
                 strokeWidth={2}
                 fill="url(#custGrad)"
                 dot={false}

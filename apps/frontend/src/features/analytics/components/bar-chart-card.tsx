@@ -42,7 +42,7 @@ export function BarChartCard({
   maxLabel?: number;
 }) {
   const config: ChartConfig = {
-    value: { label: valueLabel, color: "hsl(var(--chart-1))" },
+    value: { label: valueLabel, color: "var(--chart-1)" },
   };
 
   return (

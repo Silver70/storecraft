@@ -38,11 +38,18 @@ const PERIOD_DAYS: Record<Period, number> = {
   "90d": 90,
 };
 
-/** Map a revenue sparkline to dated points spanning the selected period. */
+/**
+ * Map a revenue sparkline to dated points spanning the selected period.
+ *
+ * Dates stay as `Date` objects rather than pre-formatted strings: the chart
+ * builds a real time scale from them and derives its own tick and tooltip
+ * labels, so formatting here would throw away the ordering information it
+ * needs.
+ */
 export function sparklineToTrend(
   sparkline: number[],
   period: Period,
-): { date: string; revenue: number }[] {
+): { date: Date; revenue: number }[] {
   const days = PERIOD_DAYS[period];
   const start = new Date();
   start.setDate(start.getDate() - days);
@@ -50,9 +57,6 @@ export function sparklineToTrend(
   return sparkline.map((revenue, i) => {
     const d = new Date(start);
     d.setDate(d.getDate() + i);
-    return {
-      date: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-      revenue,
-    };
+    return { date: d, revenue };
   });
 }

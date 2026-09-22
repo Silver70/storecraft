@@ -23,14 +23,14 @@ export function num(n: number): string {
  * colour-blind separation against each surface.
  */
 export const SERIES = [
-  "hsl(var(--chart-1))",
-  "hsl(var(--chart-2))",
-  "hsl(var(--chart-3))",
-  "hsl(var(--chart-4))",
-  "hsl(var(--chart-5))",
-  "hsl(var(--chart-6))",
-  "hsl(var(--chart-7))",
-  "hsl(var(--chart-8))",
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+  "var(--chart-6)",
+  "var(--chart-7)",
+  "var(--chart-8)",
 ];
 
 /** Colour for series slot `i`, capped at the last slot rather than wrapping. */
@@ -38,11 +38,11 @@ export const series = (i: number) => SERIES[Math.min(i, SERIES.length - 1)];
 
 /** Ordered blue ramp, dark → light: magnitude and funnel stages. */
 export const SEQUENTIAL = [
-  "hsl(var(--seq-1))",
-  "hsl(var(--seq-2))",
-  "hsl(var(--seq-3))",
-  "hsl(var(--seq-4))",
-  "hsl(var(--seq-5))",
+  "var(--seq-1)",
+  "var(--seq-2)",
+  "var(--seq-3)",
+  "var(--seq-4)",
+  "var(--seq-5)",
 ];
 
 /** Step `i` of `n` along the sequential ramp, dark → light. */
