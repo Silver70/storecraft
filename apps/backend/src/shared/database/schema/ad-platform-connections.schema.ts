@@ -17,8 +17,7 @@ import { stores } from './stores.schema';
  * A deliberate subset of `campaign_platform`, using the same spellings: every
  * value here is a platform that reports an ad tree we can mirror. `email`,
  * `sms`, `affiliate` and `influencer` are absent because nothing can be pulled
- * from them, and a Campaign on one of those stays hand-costed permanently —
- * which is why manual Spend entry is a first-class path and not a legacy one.
+ * from them.
  *
  * Named for the platform the merchant approves on, never for the provider we
  * reach it through: the provider is one implementation of an interface and is

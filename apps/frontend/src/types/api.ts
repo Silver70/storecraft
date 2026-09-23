@@ -85,14 +85,6 @@ export type AdPlatformSyncOutcome = {
   from: string;
   to: string;
   backfill: boolean;
-  figuresWritten: number;
-  /**
-   * How many of the platform's ads nothing in this store claims, held for the
-   * merchant to decide about. **Never a count of ads created** — a sync creates
-   * none, because an ad invented from a platform's tree carries real cost and
-   * has no tag rule, so it would show spend against zero revenue.
-   */
-  unlinkedHeld: number;
   /**
    * How many ads had the platform's own state and placement recorded beside
    * their own status. **Never a count of status changes** — a sync writes no
@@ -101,81 +93,6 @@ export type AdPlatformSyncOutcome = {
    */
   platformStateWritten: number;
   message: string | null;
-};
-
-// ─── Unlinked ads ─────────────────────────────────────────────────────────────
-
-/**
- * Where a platform ad stands with the merchant.
- *
- * `pending` is where a sync leaves it and the only state a sync may write.
- * Claim, dismiss, restore and unlink move it, through one transition engine on
- * the server — an illegal move is refused with a sentence rather than quietly
- * doing nothing.
- */
-export type UnlinkedAdState = "pending" | "claimed" | "dismissed";
-
-/**
- * An ad the platform is spending money on that nothing in this store claims.
- *
- * Held rather than turned into an ad: one invented from a sync would carry real
- * cost and have no way to earn revenue, and would read as the worst performer
- * in the account. Everything on it is here to answer one question — what is
- * this, and is it worth claiming.
- */
-export type UnlinkedAd = {
-  id: string;
-  platform: AdPlatform;
-  /** The ad's id at the platform — the key its figures are already held under. */
-  externalAdId: string;
-  name: string | null;
-  creativeUrl: string | null;
-  /** ISO timestamps. Either may be absent. */
-  startsAt: string | null;
-  endsAt: string | null;
-  state: UnlinkedAdState;
-  /**
-   * What the platform says it has spent over every day ever pulled, in minor
-   * units of `currency` — the ad account's, which may not be the store's and is
-   * never converted into it.
-   */
-  spendToDate: number;
-  currency: string | null;
-  /** How many days of figures are held, and what they span. */
-  days: number;
-  firstDay: string | null;
-  lastDay: string | null;
-  claimedAdId: string | null;
-  claimedAdName: string | null;
-  claimedCampaignId: string | null;
-  claimedAt: string | null;
-  dismissedAt: string | null;
-  firstSeenAt: string;
-  lastSeenAt: string;
-};
-
-export type UnlinkedAdCounts = {
-  /** What is waiting on the merchant — the number surfaced beside the grid. */
-  pending: number;
-  claimed: number;
-  dismissed: number;
-};
-
-/**
- * What a claim answers with.
- *
- * The tagged link is on the response and not a page away, because pasting it
- * into the platform is the merchant's actual next action and the only thing
- * that will ever tell us what the ad sold.
- */
-export type UnlinkedAdClaimResult = {
-  unlinkedAd: UnlinkedAd;
-  ad: Ad;
-  taggedLink: CampaignTaggedLink | null;
-  /** Why no link could be composed. A claim is never failed by this. */
-  taggedLinkProblem: string | null;
-  /** The history that came with it. Claiming never starts spend from zero. */
-  attached: { days: number; spend: number; currency: string | null };
 };
 
 // ─── Organizations ────────────────────────────────────────────────────────────
@@ -640,132 +557,6 @@ export type CampaignMatchingRule = {
   updatedAt: string;
 };
 
-// ─── Tagged links ─────────────────────────────────────────────────────────────
-
-/**
- * A URL generated for a campaign, ready to paste into an ad platform.
- *
- * Composed by the backend rather than here: the `utm_campaign` value is the
- * campaign's canonical tag, and having one place that builds it is what makes a
- * generated link match by construction instead of by two implementations
- * agreeing. Nothing is stored — the same choices always give the same link.
- */
-export type CampaignTaggedLink = {
-  url: string;
-  /** Where it points, before any tagging. */
-  destination: string;
-  utmSource: string;
-  utmMedium: string;
-  utmCampaign: string;
-  utmContent: string | null;
-  campaignId: string;
-  campaignName: string;
-};
-
-// ─── Campaign spend ───────────────────────────────────────────────────────────
-
-/**
- * What a merchant paid for a campaign — or for one ad under it — on one day.
- *
- * One row per grain per day: recording a day that already has a figure at that
- * grain corrects it rather than adding to it, so a double-submit cannot double
- * a day's cost. The `day` is a calendar date in the store's timezone, never an
- * instant — ad platforms report daily totals and nothing here is more precise
- * than that.
- */
-/**
- * Where a spend figure came from. `manual` is the only source there was before
- * an ad platform could be connected, and still the only one for email, SMS,
- * affiliate, influencer and other campaigns, which no sync will ever cover.
- */
-export type SpendSource = "manual" | "synced";
-
-export type CampaignSpend = {
-  id: string;
-  organizationId: string;
-  storeId: string;
-  campaignId: string;
-  /**
-   * The creative this cost was for, or null for a figure recorded against the
-   * campaign as a whole.
-   *
-   * Null means the cost is known and its split is not — never that the cost
-   * belongs to no ad. A campaign-level row is not a total of the ads beneath
-   * it, so it is counted alongside them rather than instead of them.
-   */
-  adId: string | null;
-  /** `YYYY-MM-DD` in the store's timezone. */
-  day: string;
-  /** Smallest currency unit. Formatted only for display, never on the wire. */
-  amount: number;
-  /**
-   * The store's currency, frozen on the row when it was recorded so a later
-   * currency change cannot reinterpret it. There is no conversion anywhere.
-   */
-  currency: string;
-  note: string | null;
-  /**
-   * Who wrote this figure: the merchant, or a sync from the ad platform.
-   *
-   * On the row rather than inferred, because a merchant who cannot tell a
-   * figure they typed from one that was pulled cannot tell a reconciliation
-   * from a restatement.
-   */
-  source: SpendSource;
-  /**
-   * Whether the next sync may overwrite this day.
-   *
-   * A sync wins by default, so nobody maintains two sets of books. A pinned day
-   * is refused — which is what makes reconciling a day against an invoice
-   * survive the sync an hour later — and the merchant un-pins it to hand it
-   * back.
-   *
-   * Independent of `source`: an unpinned hand-typed figure is overwritten, and
-   * a synced figure the merchant endorsed can be pinned without editing it.
-   */
-  pinned: boolean;
-  createdAt: string;
-  updatedAt: string;
-};
-
-/**
- * A campaign's spend for a period, with the two facts an entry form needs to be
- * correct: the currency it must be in, and the latest day it may be dated.
- * Both come from the store, not from the browser — a date capped by the
- * viewer's own clock would be wrong for anyone not sitting in the store's
- * timezone.
- */
-export type CampaignSpendReport = {
-  campaignId: string;
-  /** The ad the report is scoped to, or null when it covers the whole campaign. */
-  adId: string | null;
-  period: Period;
-  currency: string;
-  timezone: string;
-  /** Today where the store is: the latest day spend can be recorded for. */
-  today: string;
-  /** The inclusive calendar day range the rows cover. */
-  from: string;
-  to: string;
-  /** Both grains when the report is a campaign's: its own rows and its ads'. */
-  rows: CampaignSpend[];
-  /**
-   * What the push cost over the period, in the smallest currency unit: the
-   * campaign's own rows plus its ads'. One cost, read at two grains.
-   */
-  total: number;
-  /** The part of `total` recorded without naming an ad — cost known, split not. */
-  unsplitTotal: number;
-  /** Per-ad totals for the period, for the ads with any spend in it. */
-  byAd: AdSpendTotal[];
-};
-
-export type AdSpendTotal = {
-  adId: string;
-  /** In the smallest currency unit. */
-  total: number;
-};
-
 // ─── Attributed revenue ───────────────────────────────────────────────────────
 
 /**
@@ -781,189 +572,23 @@ export type RevenueBucket = {
 };
 
 /**
- * The **goods basis** — the second of the report's two revenue figures, and the
- * costs against it. All in the smallest currency unit.
+ * The figures every line of this report carries, at whatever grain it is read —
+ * a campaign, one of its ads, or the unassigned residue between them.
  *
- * Not the order total and never meant to be: tax is collected and remitted and
- * is never profit, and shipping is left out of both sides because shipping cost
- * is modelled nowhere, so counting the charge would inflate every margin. What
- * is left is the goods — the only part of an order there is a cost price for.
+ * **There is no cost side.** Spend used to be typed in by hand, one day at a
+ * time, and ROAS and contribution margin were arithmetic on top of it — so all
+ * three were only ever as current as the last day a merchant remembered to
+ * enter. They come back when the ad platform reports what it charged. Nothing
+ * stands in for them: a zero would be a claim about a period, and it would be
+ * false.
  */
-export type CampaignGoods = {
-  /** Line-item totals *before* discount. No tax, no shipping. */
-  goodsRevenue: number;
-  /**
-   * Cost of goods, counted only where the variant has a cost price. An unpriced
-   * line contributes nothing rather than a zero that would read as free.
-   */
-  cost: number;
-  /** The part of `goodsRevenue` that had a known cost behind it. */
-  revenueWithCost: number;
-  /**
-   * Discounts on those orders. Subtracted from the goods basis exactly once —
-   * the order total already has them netted out, so subtracting there as well
-   * would penalise a discounted order twice.
-   */
-  discount: number;
-};
-
-export type CampaignMargin = {
-  /**
-   * Goods revenue minus discounts minus cost of goods minus spend, in the
-   * smallest currency unit. **The figure that says whether to keep spending**,
-   * where ROAS only says how much came back — a 3× ROAS on goods costing 70% of
-   * their price loses money on every order.
-   *
-   * Negative when the campaign lost money, and never clamped. Null when goods
-   * were sold and not one of them has a cost price: a margin built on no cost
-   * data is not a conservative estimate, it is fiction, and the blank is what
-   * sends a merchant to fill their cost prices in.
-   */
-  contributionMargin: number | null;
-  /**
-   * How much of the goods revenue had a known cost behind it, as a whole-number
-   * percentage. **Display only** — the same convention the analytics profit
-   * report uses. It is what qualifies the margin beside it: at 60% the figure
-   * understates cost and so overstates margin, and the merchant has to be able
-   * to see that.
-   */
-  costCoveragePct: number;
-};
-
-/**
- * The figures every line of the performance report carries, at whatever grain
- * it is read — a campaign, one of its ads, or the unassigned residue between
- * them.
- *
- * One shape rather than three, because the backend computes them one way from
- * one read. A split that did not add up to the line above it would leave a
- * merchant unable to tell which half to believe.
- */
-export type PerformanceFigures = RevenueBucket &
-  CampaignGoods &
-  CampaignMargin & {
-    /**
-     * Spend recorded for the period, in the smallest currency unit. Zero for a
-     * line nobody recorded a cost against.
-     */
-    spend: number;
-    /**
-     * Revenue over spend, to two decimal places. A **ratio**, not money — 4.25
-     * means $4.25 back per dollar spent, so it is never passed through the money
-     * formatter. Null when nothing was spent: an organic or email campaign has no
-     * return *on spend*, and a zero would rank it as a failure while an infinity
-     * would rank it as the best thing in the account.
-     */
-    roas: number | null;
-  };
-
-/**
- * The two figures on this report that do not come from orders.
- *
- * Everything else a line carries — revenue, purchases, spend, ROAS, margin — is
- * derived from money that changed hands. These come from the tracked event
- * stream: a script an ad blocker can suppress, that an integrator may never
- * have embedded, and that the retention purge deletes on a schedule. They are
- * **not the same class of fact** and must never be drawn as though they were.
- *
- * The backend nests them in their own object precisely so this cannot happen by
- * accident: there is no way to spread them into the list of order-derived
- * figures without noticing. Render them demoted and labelled — the same
- * convention already used for cost coverage beside contribution margin and the
- * lookback window beside ROAS.
- *
- * Null means the stream held nothing for this line: **absent, not zero**. A
- * zero would say nobody came, when the truth is that nobody was seen.
- */
-export type MeasuredTraffic = {
-  /** Distinct visitors the stream saw on this line's tags. Never zero. */
-  visitors: number;
-  /**
-   * Purchases over visitors, as a percentage to one decimal.
-   *
-   * The most fragile figure on the report: the numerator is every order the
-   * line earned and the denominator only the visitors the tracker saw, so
-   * blocked traffic shrinks the bottom alone and inflates the result. It is
-   * also a period ratio and not a cohort one.
-   */
-  conversionRatePct: number;
-};
-
-/**
- * What an ad platform says one creative did, beside what we say it did.
- *
- * **A Reported Figure is never one of ours and must never be rendered as
- * though it were** (ADR-0005). Everything in here was stated by somebody else,
- * on an attribution window that is not ours, in a currency that need not be the
- * store's. The two sets of numbers routinely disagree by a factor of two, and
- * that difference is the point: a merchant with only one of them cannot tell a
- * measurement difference from a tracking failure.
- *
- * The backend nests these in their own array precisely so the UI cannot merge
- * them by accident — there is no way to spread one into the figures beside it
- * without noticing. Render them under a heading naming the platform, never in
- * the same typography as an order-derived figure, and never as a stand-in for
- * one of ours that is missing.
- */
-export type ReportedAdFigures = {
-  /** Who stated it. The source label is not optional — see the type. */
-  platform: AdPlatform;
-  /** The ad account's currency, which every money field here is stated in. */
-  currency: string;
-  /** The store's, so the mismatch can be explained where it shows. */
-  storeCurrency: string;
-  /**
-   * Whether those two are the same currency.
-   *
-   * False is not an error: the figures are real and are shown as what they
-   * are. What it forbids is arithmetic — never combine one of these with one of
-   * ours, never take a ratio across the two, and never show a margin derived
-   * from either side. There is no exchange rate anywhere in this product, and
-   * the merchant is owed the mismatch rather than a number built on an invented
-   * rate.
-   */
-  matchesStoreCurrency: boolean;
-  /** What the platform says it charged the account. Minor units of `currency`. */
-  spend: number;
-  /**
-   * What the platform claims the ad earned, on its own window. Minor units.
-   *
-   * **Never a replacement for our revenue.** Where ours is zero and this is
-   * large, both are true statements about different measurements, and showing
-   * only this one would make a revenue total incomparable with itself.
-   */
-  revenue: number;
-  impressions: number;
-  clicks: number;
-  /** Conversions on `attribution` below, which is not our lookback window. */
-  conversions: number;
-  /**
-   * The platform's revenue over the platform's spend, to two decimals.
-   *
-   * Both figures are theirs and both are in `currency`, so it crosses nothing.
-   * It is not our revenue over their spend, and no such number exists.
-   */
-  roas: number | null;
-  /**
-   * The window the platform measured on. Null where it stated none — show that
-   * as unstated rather than substituting ours, which would read as a window the
-   * platform agreed to.
-   */
-  attribution: { clickDays: number; viewDays: number | null } | null;
-  /** How many days of the period the platform reported for this ad. */
-  days: number;
-  firstDay: string;
-  lastDay: string;
-  /** When a sync last confirmed these figures. ISO. */
-  syncedAt: string;
-};
+export type PerformanceFigures = RevenueBucket;
 
 /**
  * One creative's return, beneath the campaign that funds it.
  *
- * Its revenue is the orders whose `utm_content` resolved onto this ad, its
- * spend the figures recorded against this ad alone. Both are real subdivisions
- * of the campaign line above, never estimates of it.
+ * Its revenue is the orders whose `utm_content` resolved onto this ad — a real
+ * subdivision of the campaign line above, never an estimate of it.
  */
 export type AdRevenueLine = PerformanceFigures & {
   adId: string;
@@ -980,18 +605,6 @@ export type AdRevenueLine = PerformanceFigures & {
   /** When the creative ran. ISO timestamps; either may be set without the other. */
   startsAt: string | null;
   endsAt: string | null;
-  /** Who clicked it, as opposed to who bought. Measured — see the type. */
-  measured: MeasuredTraffic | null;
-  /**
-   * What a connected ad platform says about this same creative. Reported — see
-   * the type, and never merged into the figures above.
-   *
-   * Empty is the ordinary state and the permanent one for every ad on a
-   * platform no sync covers, so the card has to read without it. More than one
-   * entry means the ad account billed in two currencies inside the period,
-   * reported as two figures rather than one total across a rate nobody chose.
-   */
-  reported: ReportedAdFigures[];
 };
 
 export type CampaignRevenueLine = PerformanceFigures & {
@@ -1001,7 +614,7 @@ export type CampaignRevenueLine = PerformanceFigures & {
   platform: CampaignPlatform;
   status: CampaignStatus;
   /**
-   * How this campaign's period divides across its creatives.
+   * How this campaign's revenue divides across its creatives.
    *
    * Empty for a campaign nobody has split, which is not an incomplete report:
    * an ad is a subdivision a merchant opts into, and a campaign without one
@@ -1012,8 +625,7 @@ export type CampaignRevenueLine = PerformanceFigures & {
   ads: AdRevenueLine[];
   /**
    * The part of the campaign no ad of its explains: revenue that matched the
-   * campaign and none of its ads, plus spend recorded against the campaign
-   * without naming one.
+   * campaign and none of its ads.
    *
    * **Its own visible bucket**, on the same principle that keeps unattributed
    * visible at the store level — spreading it across whichever creatives happen
@@ -1022,28 +634,7 @@ export type CampaignRevenueLine = PerformanceFigures & {
    * two are never shown as one thing.
    */
   unassigned: PerformanceFigures;
-  /**
-   * Who this campaign was seen by, whichever creative they arrived through.
-   *
-   * **Not the sum of its ads', and not meant to be.** A visitor who clicked two
-   * creatives is one person here and a visitor of both there. Revenue
-   * subdivides because an order belongs to exactly one ad; an audience overlaps
-   * because a person does not — which is also why `unassigned` has no measured
-   * pair at all. A residue invites a subtraction, and there is none that holds.
-   */
-  measured: MeasuredTraffic | null;
 };
-
-/** Every campaign line summed, and the figures taken of the sums. */
-export type BlendedPerformance = CampaignGoods &
-  CampaignMargin & {
-    /** The order-total basis. Smallest currency unit. */
-    revenue: number;
-    /** Smallest currency unit. */
-    spend: number;
-    /** A ratio, not money. Null when nothing was spent anywhere. */
-    roas: number | null;
-  };
 
 export type AttributedRevenueReport = {
   period: Period;
@@ -1056,137 +647,12 @@ export type AttributedRevenueReport = {
   rangeStart: string;
   rangeEnd: string;
   campaigns: CampaignRevenueLine[];
-  /**
-   * The inclusive calendar days spend was counted over, in the store's
-   * timezone. Spend is recorded per day and revenue to the second, so the two
-   * windows are named separately rather than assumed to be the same shape.
-   */
-  spendFrom: string;
-  spendTo: string;
-  /**
-   * The account as a whole. Unattributed is not part of it — nobody spent
-   * against a bucket that has no campaign.
-   */
-  blended: BlendedPerformance;
+  /** Every campaign line summed. Unattributed is not part of it. */
+  blended: RevenueBucket;
   /** Its own line. Never spread across the campaigns above. */
   unattributed: RevenueBucket;
   /** Attributed plus unattributed — the period's realized revenue. */
   totals: RevenueBucket;
-};
-
-/**
- * The account as a whole for a period — the dashboard card's figures.
- *
- * Every value here is read off the campaign performance report on the backend
- * rather than computed a second way, which is what lets the card link straight
- * to that report: the number on the dashboard and the number one click away are
- * the same number, resolved once.
- */
-export type MarketingSummary = {
-  period: Period;
-  touch: AttributionTouch;
-  /** The active lookback window in days — why these figures differ from an ad platform's. */
-  lookbackDays: number;
-  rangeStart: string;
-  rangeEnd: string;
-  /** The inclusive calendar days spend was counted over, in the store's timezone. */
-  spendFrom: string;
-  spendTo: string;
-  /** Total spend across every campaign. Smallest currency unit. */
-  spend: number;
-  /** Attributed revenue on the order-total basis — what the ROAS divides. */
-  revenue: number;
-  /** A ratio, not money. Null when nothing was spent: never formatted as currency. */
-  roas: number | null;
-  /** Attributed plus unattributed — the period's realized revenue. */
-  realizedRevenue: number;
-  /** The revenue no campaign explains. */
-  unattributedRevenue: number;
-  /**
-   * Unattributed as a whole-number share of realized revenue. Display only, and
-   * shown beside the ROAS because it is the caveat on it — a blended ratio over
-   * a third of the revenue is not an account-wide verdict.
-   */
-  unattributedPct: number;
-  /**
-   * Whether any spend has ever been recorded for this store. Tells "not set up
-   * yet" apart from "this period cost nothing", which a zero cannot, and is
-   * what the card's empty state turns on.
-   */
-  spendEverRecorded: boolean;
-};
-
-// ─── Matching-rule preview ────────────────────────────────────────────────────
-
-/**
- * What a candidate matching rule would do to a period's orders, before it is
- * saved.
- *
- * Campaigns resolve at read time, so a saved rule reshapes historical reports
- * the instant it exists. That is what lets a correction repair the past, and it
- * is what lets an over-broad rule quietly rewrite it — so the consequence is
- * shown while the rule is still a draft. The backend runs the same matcher over
- * the same orders for the same period as the revenue report, which is why
- * saving produces the figures shown here.
- */
-export type RulePreviewOverlap = {
-  campaignId: string;
-  name: string;
-  tag: string;
-  status: CampaignStatus;
-  /** What this campaign would lose, because the candidate outranks its rule. */
-  taken: RevenueBucket;
-  /** What the candidate matches but this campaign keeps, because it outranks. */
-  blocked: RevenueBucket;
-};
-
-/** One order the rule would claim, named so the merchant can recognise it. */
-export type RulePreviewSampleOrder = {
-  orderId: string;
-  orderNumber: string;
-  placedAt: string;
-  /** Smallest currency unit. The backend never formats money. */
-  total: number;
-  /** The campaign crediting it today. Null is Unattributed. */
-  currentCampaignId: string | null;
-  currentCampaignName: string | null;
-  /** What the order carries in the field this rule compares. */
-  matchedValue: string | null;
-};
-
-export type RulePreviewReport = {
-  campaignId: string;
-  campaignName: string;
-  /** The candidate exactly as it would be stored and compared. */
-  rule: {
-    field: CampaignRuleField;
-    operator: CampaignRuleOperator;
-    /** What would be written — a pasted URL is already reduced to a host. */
-    value: string;
-    /** What both sides of every comparison are actually reduced to. */
-    normalizedValue: string;
-  };
-  /** True when this campaign already has a rule meaning the same thing. */
-  duplicate: boolean;
-  period: Period;
-  touch: AttributionTouch;
-  lookbackDays: number;
-  rangeStart: string;
-  rangeEnd: string;
-  /** Orders the rule would move onto this campaign. The headline figure. */
-  claimed: RevenueBucket;
-  /** The part of `claimed` that is unattributed today. */
-  fromUnattributed: RevenueBucket;
-  /** Every other campaign the rule would meet, in either direction. */
-  overlaps: RulePreviewOverlap[];
-  /** This campaign's figures as they stand, and as they would stand. */
-  campaignBefore: RevenueBucket;
-  campaignAfter: RevenueBucket;
-  /** The period's realized revenue — the scale to judge the claim against. */
-  totals: RevenueBucket;
-  /** How many orders `samples` can hold, so the UI can say "10 of 47". */
-  sampleLimit: number;
-  samples: RulePreviewSampleOrder[];
 };
 
 // ─── Price Lists ──────────────────────────────────────────────────────────────

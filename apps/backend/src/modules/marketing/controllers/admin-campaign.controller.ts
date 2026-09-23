@@ -28,22 +28,13 @@ import type {
   Campaign,
   CampaignMatchingRule,
 } from '../../../shared/database/schema';
-import {
-  CampaignService,
-  type CampaignTaggedLink,
-} from '../services/campaign.service';
-import {
-  RulePreviewService,
-  type RulePreviewReport,
-} from '../services/rule-preview.service';
+import { CampaignService } from '../services/campaign.service';
 import {
   CreateCampaignDto,
   CreateCampaignRuleDto,
-  GenerateCampaignLinkQueryDto,
   ListCampaignsQueryDto,
   UpdateCampaignDto,
 } from '../dto/campaign.dto';
-import { PreviewCampaignRuleQueryDto } from '../dto/rule-preview.dto';
 
 /**
  * Campaign management. There is no DELETE: a Campaign explains Orders that have
@@ -55,10 +46,7 @@ import { PreviewCampaignRuleQueryDto } from '../dto/rule-preview.dto';
 @UseGuards(AdminAuthGuard, RbacGuard)
 @Controller('admin/campaigns')
 export class AdminCampaignController {
-  constructor(
-    private readonly campaigns: CampaignService,
-    private readonly rulePreview: RulePreviewService,
-  ) {}
+  constructor(private readonly campaigns: CampaignService) {}
 
   @Get()
   @RequirePermission('campaigns.read')
@@ -86,7 +74,7 @@ export class AdminCampaignController {
   @ApiOperation({
     summary: 'Create a campaign',
     description:
-      'Assigns a canonical tag unique within the store and an exact-match rule on it, so links generated from the campaign are attributed without any rule authored by hand.',
+      'Assigns a canonical tag unique within the store and an exact-match rule on it, so a link carrying that tag is attributed without any rule authored by hand.',
   })
   @ApiResponse({ status: 201 })
   async create(
@@ -158,30 +146,6 @@ export class AdminCampaignController {
     return this.campaigns.unarchive(organizationId, storeId, id);
   }
 
-  // ─── Tagged links ───────────────────────────────────────────────────────────
-
-  @Get(':id/link')
-  @RequirePermission('campaigns.read')
-  @ApiOperation({
-    summary: 'Generate a tagged link for a campaign',
-    description:
-      "Composes the URL to paste into an ad platform: a page of the store, the chosen source and medium, and the campaign's own canonical tag. Because the tag comes from the campaign rather than from typing, traffic through the link is attributed with no rule authored by hand — and links differing only by source or medium all report as the same campaign. Nothing is stored: the link is derived, so generating it again gives the same URL.",
-  })
-  @ApiResponse({ status: 200 })
-  @ApiResponse({
-    status: 400,
-    description: 'Unusable destination or parameter',
-  })
-  @ApiResponse({ status: 404 })
-  async generateLink(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Query() query: GenerateCampaignLinkQueryDto,
-    @CurrentTenant() tenant: TenantContext,
-  ): Promise<CampaignTaggedLink> {
-    const { organizationId, storeId } = requireStoreContext(tenant);
-    return this.campaigns.generateLink(organizationId, storeId, id, query);
-  }
-
   // ─── Matching rules ─────────────────────────────────────────────────────────
 
   @Get(':id/rules')
@@ -199,36 +163,6 @@ export class AdminCampaignController {
   ): Promise<CampaignMatchingRule[]> {
     const { organizationId, storeId } = requireStoreContext(tenant);
     return this.campaigns.listRules(organizationId, storeId, id);
-  }
-
-  /**
-   * Declared before any `:id/rules/:ruleId` route: `preview` is a static
-   * segment beside a parameter, and a `GET :id/rules/:ruleId` added below this
-   * would never shadow it, but one added *above* it would.
-   */
-  @Get(':id/rules/preview')
-  @RequirePermission('campaigns.read')
-  @ApiOperation({
-    summary: 'Preview which orders a candidate rule would claim',
-    description:
-      "Runs a candidate rule against the period's orders without saving it. Because campaigns resolve at read time, a saved rule reshapes historical reports immediately — this shows that consequence first. Reports the orders and revenue the rule would move onto the campaign, which part of it is unattributed today, and which other campaigns it overlaps: what it would take from them, and what it matches but loses to a rule that outranks it. Nothing is created and no report changes; the same matcher, rows and period as the attributed-revenue read, so saving produces the figures shown.",
-  })
-  @ApiResponse({ status: 200 })
-  @ApiResponse({ status: 400, description: 'Value can never match anything' })
-  @ApiResponse({ status: 404 })
-  async previewRule(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Query() query: PreviewCampaignRuleQueryDto,
-    @CurrentTenant() tenant: TenantContext,
-  ): Promise<RulePreviewReport> {
-    const { organizationId, storeId } = requireStoreContext(tenant);
-    return this.rulePreview.preview(organizationId, storeId, id, {
-      field: query.field,
-      operator: query.operator,
-      value: query.value,
-      period: query.period ?? '30d',
-      touch: query.touch ?? 'last',
-    });
   }
 
   @Post(':id/rules')
@@ -257,7 +191,7 @@ export class AdminCampaignController {
   @ApiOperation({
     summary: 'Remove a matching rule',
     description:
-      "The campaign's own tag rule is not removable: every link generated from the campaign carries that tag.",
+      "The campaign's own tag rule is not removable: it is the one rule the campaign's own tag is matched by.",
   })
   @ApiResponse({ status: 204 })
   @ApiResponse({ status: 404 })

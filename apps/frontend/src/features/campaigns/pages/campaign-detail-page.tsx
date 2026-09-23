@@ -11,11 +11,9 @@ import { CAMPAIGN_PLATFORMS, type Campaign, type CampaignPlatform } from "~/type
 import { AdsCard } from "../components/ads-card";
 import { ArchiveCampaignButton } from "../components/archive-campaign-button";
 import { CampaignFields } from "../components/campaign-fields";
-import { CampaignSpendCard } from "../components/campaign-spend-card";
 import { CampaignStatusBadge } from "../components/campaign-status-badge";
 import { CopyButton } from "../components/copy-button";
 import { MatchingRulesCard } from "../components/matching-rules-card";
-import { TaggedLinkCard } from "../components/tagged-link-card";
 import { campaignQueryOptions } from "../queries";
 import { updateCampaignServerFn } from "../server";
 
@@ -159,17 +157,11 @@ export function CampaignDetailPage() {
                     </CardContent>
                 </Card>
 
-                {/* ── Tagged links ──────────────────────────────────────────────────── */}
-                <TaggedLinkCard campaign={campaign} />
-
                 {/* ── Matching rules ────────────────────────────────────────────────── */}
                 <MatchingRulesCard campaignId={campaignId} />
 
                 {/* ── Ads ───────────────────────────────────────────────────────────── */}
                 <AdsCard campaignId={campaignId} />
-
-                {/* ── Spend ─────────────────────────────────────────────────────────── */}
-                <CampaignSpendCard campaignId={campaignId} />
 
                 {/* ── Retire ────────────────────────────────────────────────────────── */}
                 <div className="flex items-center justify-between gap-4 rounded-lg border border-dashed px-4 py-3">

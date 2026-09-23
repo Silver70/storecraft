@@ -1,4 +1,4 @@
-import { AyrshareAdapter } from '../services/ayrshare.adapter';
+import { UnconfiguredAdPlatformAdapter } from '../services/unconfigured-ad-platform.adapter';
 
 /**
  * The mirror-only rule, asserted rather than remembered.
@@ -11,6 +11,11 @@ import { AyrshareAdapter } from '../services/ayrshare.adapter';
  *
  * So the check is on the adapter's own surface, including the private helpers,
  * and it fails the moment a write verb appears anywhere on it.
+ *
+ * It runs against whichever adapter is bound to the seam. Right now that is the
+ * one that refuses everything, which is a thin thing to assert against — but the
+ * assertion is about the shape, and the shape is what the next adapter has to
+ * arrive matching.
  */
 const WRITE_VERBS =
   /(create|boost|edit|update|pause|unpause|resume|activate|budget|bid|spend|publish|schedule|launch|delete|archive)/i;
@@ -27,9 +32,9 @@ const EXPECTED_SURFACE = [
 ];
 
 describe('the ad-platform provider contract', () => {
-  const methods = Object.getOwnPropertyNames(AyrshareAdapter.prototype).filter(
-    (name) => name !== 'constructor',
-  );
+  const methods = Object.getOwnPropertyNames(
+    UnconfiguredAdPlatformAdapter.prototype,
+  ).filter((name) => name !== 'constructor');
 
   it('implements exactly the interface, and nothing has quietly grown on it', () => {
     for (const expected of EXPECTED_SURFACE) {

@@ -1,18 +1,55 @@
 /**
  * What range a sync asks the platform for, and how long it waits after a
- * refusal.
+ * refusal — plus the one thing both need first, which calendar day it is.
  *
- * Both are pure and both are decisions rather than mechanics, which is why they
- * are here rather than inline in the service: the range decides whether the
+ * The range and the backoff are decisions rather than mechanics, which is why
+ * they are here rather than inline in the service: the range decides whether the
  * feature is useful on day one, and the backoff decides whether a shared
  * upstream quota is something we wait out or something we make worse.
  *
- * No clock, no database, no timezone. The calendar day is already resolved in
- * the Store's timezone by the caller — the same resolution a Spend day gets,
- * from the same function, because the platform's day and the merchant's day
- * have to be the same day or the two books will never line up.
+ * A day here is a date and never an instant. Platforms report daily totals, so
+ * any greater precision would be invented rather than observed, and the day is
+ * read in the Store's timezone because that is the day the platform is
+ * reporting — a merchant in Auckland reading Tuesday's figures means their
+ * Tuesday, not the server's.
+ *
+ * `dayInTimezone` is the only impure thing in the file, and only in that it
+ * formats: `now` is a parameter everywhere above it, so every window this
+ * computes can be exercised without waiting for a date to arrive.
  */
-import type { SpendDay } from '../../marketing/utils/spend-day.util';
+
+/** `YYYY-MM-DD`. The wire format for a platform's reporting day. */
+export type CalendarDay = string;
+
+/**
+ * A formatter for one timezone, falling back to UTC for a value Node cannot
+ * resolve.
+ *
+ * `stores.timezone` is a free-text column, so an unusable value is reachable.
+ * Falling back is deliberate: a Store whose timezone was mistyped should still
+ * get its figures, off by at most a day, rather than have every sync fail with
+ * a message about the IANA database.
+ */
+function dayFormatter(timezone: string): Intl.DateTimeFormat {
+  const options: Intl.DateTimeFormatOptions = {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  };
+  try {
+    return new Intl.DateTimeFormat('en-CA', { ...options, timeZone: timezone });
+  } catch {
+    return new Intl.DateTimeFormat('en-CA', { ...options, timeZone: 'UTC' });
+  }
+}
+
+/** The calendar day an instant falls on, in the given timezone. */
+export function dayInTimezone(instant: Date, timezone: string): CalendarDay {
+  const parts = dayFormatter(timezone).formatToParts(instant);
+  const part = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((p) => p.type === type)?.value ?? '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
 
 /**
  * How far back a first sync asks for.
@@ -28,11 +65,11 @@ export const DEFAULT_BACKFILL_DAYS = 90;
 /**
  * How many recent days every sync re-pulls.
  *
- * Platforms restate: conversions land days after the click they are attributed
- * to, and yesterday's number is not final. Re-pulling a trailing window is what
- * keeps a figure current, and it is only safe because the write is an upsert
- * keyed on the platform's ad and the day — the same reason the analytics
- * rollup re-rolls its last complete days.
+ * Platforms restate: spend and clicks are adjusted days after the fact, and
+ * yesterday's number is not final. Re-pulling a trailing window is what keeps a
+ * figure current, and it is only safe because the write is an upsert keyed on
+ * the platform's ad and the day — the same reason the analytics rollup re-rolls
+ * its last complete days.
  */
 export const RESTATEMENT_DAYS = 7;
 
@@ -61,25 +98,25 @@ export const MAX_BACKOFF_MINUTES = 12 * 60;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** A `YYYY-MM-DD` as a UTC instant. Exact: a calendar date has no offset. */
-function toUtcMillis(day: SpendDay): number {
+function toUtcMillis(day: CalendarDay): number {
   const [year, month, date] = day.split('-').map(Number);
   return Date.UTC(year, month - 1, date);
 }
 
-function fromUtcMillis(millis: number): SpendDay {
+function fromUtcMillis(millis: number): CalendarDay {
   return new Date(millis).toISOString().slice(0, 10);
 }
 
 /** The calendar day `days` before `day`. Day arithmetic in UTC, which has no DST. */
-export function daysBefore(day: SpendDay, days: number): SpendDay {
+export function daysBefore(day: CalendarDay, days: number): CalendarDay {
   return fromUtcMillis(toUtcMillis(day) - days * MS_PER_DAY);
 }
 
 export interface SyncWindow {
   /** Inclusive, `YYYY-MM-DD` in the Store's timezone. */
-  from: SpendDay;
+  from: CalendarDay;
   /** Inclusive, and always today: the day the merchant is spending in. */
-  to: SpendDay;
+  to: CalendarDay;
   /**
    * Whether this is the backfill of a connection that has never synced.
    * Recorded so the log says which kind of pull a range belongs to, and so a
@@ -90,9 +127,9 @@ export interface SyncWindow {
 
 export interface SyncWindowInput {
   /** Today, in the Store's timezone. */
-  today: SpendDay;
+  today: CalendarDay;
   /** The day the last *successful* sync covered up to, or null if none has. */
-  lastSyncedDay: SpendDay | null;
+  lastSyncedDay: CalendarDay | null;
   /** How far back this platform will report, as the provider states it. */
   maxBackfillDays: number;
 }

@@ -97,11 +97,10 @@ export const ads = pgTable(
     /**
      * The Ad's id on the ad platform.
      *
-     * This is the reconciliation, not a note towards one: `ad_reported_figures`
-     * is keyed on the platform's ad id, so setting this column is what attaches
-     * every figure already pulled for that ad — backfill included — to this Ad.
-     * Claiming an Unlinked Ad writes it; clearing it detaches the history
-     * without deleting a single figure.
+     * The join to whatever the platform says about this creative — the state and
+     * placement a sync records beside our own status, and the figures it will
+     * report once there is an adapter to ask. An Ad without one is simply not
+     * matched to anything at the platform.
      */
     externalId: varchar('external_id', { length: AD_LIMITS.externalId }),
     /**
@@ -187,9 +186,9 @@ export const ads = pgTable(
     // moment must not both win. Scoped to the Campaign, not the Store.
     unique('ads_campaign_tag_unique').on(t.campaignId, t.tag),
     // At most one Ad in a Store may claim a given platform ad. Two would both
-    // match the same rows in `ad_reported_figures` and the same spend would be
-    // reported twice under two names, with nothing in the data saying which was
-    // meant. Scoped to the Store rather than the Campaign, unlike the tag: a
+    // match whatever the platform reports for it, and the same figures would be
+    // attributed twice under two names, with nothing in the data saying which
+    // was meant. Scoped to the Store rather than the Campaign, unlike the tag: a
     // platform ad is one ad, whichever push a merchant decides it belongs to.
     // Partial, because most Ads have no platform id and all of them are free to
     // have none.

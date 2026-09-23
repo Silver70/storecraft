@@ -44,42 +44,6 @@ export interface AttributableOrder {
   isBot: boolean;
 }
 
-/**
- * The **goods basis** — a second, smaller revenue figure and the costs against
- * it, all in the smallest currency unit.
- *
- * This is not the Order total and is never meant to be. Tax is collected and
- * remitted and is never profit; shipping is excluded from both sides because
- * shipping *cost* is modelled nowhere, and counting the charge without the cost
- * would inflate every margin. What is left is the goods, which is the only part
- * of an Order there is a cost price for.
- *
- * Discounts are carried here rather than netted out in advance, because the
- * Order total already has them netted out and the two bases must not both
- * subtract them — a discounted Order penalised twice is the specific error this
- * shape exists to make hard.
- */
-export interface GoodsBucket {
-  /** Line-item totals *before* discount. No tax, no shipping. */
-  goodsRevenue: number;
-  /**
-   * Cost of goods, summed only over lines whose variant has a cost price. Cost
-   * price is nullable and most merchants fill it in late, so an unpriced line
-   * contributes nothing here rather than a zero that would read as free.
-   */
-  cost: number;
-  /**
-   * The part of `goodsRevenue` that had a known cost behind it — the numerator
-   * of cost coverage, and the figure that says how much of a margin is real.
-   */
-  revenueWithCost: number;
-  /** Discounts on those Orders, subtracted from the goods basis exactly once. */
-  discount: number;
-}
-
-/** An Order with the goods basis its Campaign's margin is built on. */
-export interface CostedOrder extends AttributableOrder, GoodsBucket {}
-
 /** Money and Order count, the two figures every line of the report carries. */
 export interface RevenueBucket {
   orders: number;
@@ -89,49 +53,30 @@ export interface RevenueBucket {
 /**
  * How one Campaign's credit divides across its own Ads.
  *
- * The same two bases as the Campaign level, one level down, filled in the same
- * pass from the same Order and the same matching decision — so an Ad created
- * today claims the Orders its links already produced, exactly as a Campaign
- * created after its ads ran does.
+ * Filled in the same pass from the same Order and the same matching decision as
+ * the Campaign level above it — so an Ad created today claims the Orders its
+ * links already produced, exactly as a Campaign created after its ads ran does.
  *
  * `unassigned` holds the Campaign's Orders that matched none of its Ads. It is
  * **not** Unattributed: those Orders have a Campaign, and it is the one this
  * tally belongs to. The two are different outcomes and are never folded
- * together.
- *
- * Unlike Unattributed, Unassigned carries a goods basis. Money really was spent
- * against this Campaign, and the split has to reconcile with the Campaign's own
- * line — every Ad's figures plus this one add back up to it, on every basis.
+ * together — every Ad's figures plus this one add back up to the Campaign's own
+ * line.
  */
 export interface AdTally {
   /** Credit per Ad id. An Ad that earned none is simply absent. */
   byAd: Map<string, RevenueBucket>;
-  /** The goods basis of the same credit, per Ad id. */
-  goodsByAd: Map<string, GoodsBucket>;
   /**
    * Everything this Campaign earned that no Ad of its claimed. Always its own
    * bucket — never spread across the Ads that happen to exist, which would make
    * every one of them look better than it is.
    */
   unassigned: RevenueBucket;
-  unassignedGoods: GoodsBucket;
 }
 
 export interface AttributionTally {
   /** Credit per Campaign id. A Campaign that earned none is simply absent. */
   byCampaign: Map<string, RevenueBucket>;
-  /**
-   * The goods basis of the same credit, per Campaign id — filled in the same
-   * pass, from the same Order, by the same matching decision as `byCampaign`.
-   * One loop rather than two on purpose: a Campaign created after its ads ran
-   * gets its margin exactly when it gets its revenue, and a corrected matching
-   * rule repairs both or neither.
-   *
-   * Kept beside `byCampaign` rather than folded into it because the two are
-   * different revenue bases. A single bucket holding both would offer two keys
-   * called revenue and invite the wrong one into a subtraction.
-   */
-  goodsByCampaign: Map<string, GoodsBucket>;
   /**
    * The same credit again, divided by Ad within each Campaign that earned any
    * — the second pass of ADR-0004.
@@ -146,9 +91,6 @@ export interface AttributionTally {
    * Everything that qualified for no Campaign. Always its own bucket — never
    * spread across Campaigns, which would make every one of them look better
    * than it is.
-   *
-   * No goods basis: nobody spent against Unattributed, so there is no margin to
-   * build and a cost figure on this line would only invite one.
    */
   unattributed: RevenueBucket;
   /** Every Order read, credited or not. Reconciles with the sales reports. */
@@ -186,21 +128,6 @@ function add(bucket: RevenueBucket, order: AttributableOrder): void {
   bucket.revenue += order.total;
 }
 
-/**
- * The goods basis of one Order, added to a Campaign's running total.
- *
- * Every figure stays an integer in the smallest currency unit here, and the one
- * subtraction that makes a margin out of them happens once, at the end, in
- * `margin.util`. Summing first and subtracting last is what keeps a thousand
- * Orders adding up to the same number as one Order a thousand times over.
- */
-function addGoods(bucket: GoodsBucket, order: CostedOrder): void {
-  bucket.goodsRevenue += order.goodsRevenue;
-  bucket.cost += order.cost;
-  bucket.revenueWithCost += order.revenueWithCost;
-  bucket.discount += order.discount;
-}
-
 /** The bucket under `key`, created empty on first use. */
 function bucketFor(
   map: Map<string, RevenueBucket>,
@@ -214,28 +141,8 @@ function bucketFor(
   return bucket;
 }
 
-/** The goods bucket under `key`, created empty on first use. */
-function goodsFor(map: Map<string, GoodsBucket>, key: string): GoodsBucket {
-  let goods = map.get(key);
-  if (!goods) {
-    goods = { goodsRevenue: 0, cost: 0, revenueWithCost: 0, discount: 0 };
-    map.set(key, goods);
-  }
-  return goods;
-}
-
 function emptyAdTally(): AdTally {
-  return {
-    byAd: new Map(),
-    goodsByAd: new Map(),
-    unassigned: { orders: 0, revenue: 0 },
-    unassignedGoods: {
-      goodsRevenue: 0,
-      cost: 0,
-      revenueWithCost: 0,
-      discount: 0,
-    },
-  };
+  return { byAd: new Map(), unassigned: { orders: 0, revenue: 0 } };
 }
 
 /**
@@ -251,13 +158,12 @@ function emptyAdTally(): AdTally {
  * all.
  */
 export function tallyAttributedRevenue(
-  orders: Iterable<CostedOrder>,
+  orders: Iterable<AttributableOrder>,
   matcher: CampaignMatcher,
   adMatcher: AdMatcher,
   lookbackDays: number,
 ): AttributionTally {
   const byCampaign = new Map<string, RevenueBucket>();
-  const goodsByCampaign = new Map<string, GoodsBucket>();
   const adsByCampaign = new Map<string, AdTally>();
   const unattributed: RevenueBucket = { orders: 0, revenue: 0 };
   const totals: RevenueBucket = { orders: 0, revenue: 0 };
@@ -272,7 +178,6 @@ export function tallyAttributedRevenue(
     }
 
     add(bucketFor(byCampaign, campaignId), order);
-    addGoods(goodsFor(goodsByCampaign, campaignId), order);
 
     let ads = adsByCampaign.get(campaignId);
     if (!ads) {
@@ -286,19 +191,11 @@ export function tallyAttributedRevenue(
     const adId = adMatcher(campaignId, order.touch);
     if (adId === null) {
       add(ads.unassigned, order);
-      addGoods(ads.unassignedGoods, order);
       continue;
     }
 
     add(bucketFor(ads.byAd, adId), order);
-    addGoods(goodsFor(ads.goodsByAd, adId), order);
   }
 
-  return {
-    byCampaign,
-    goodsByCampaign,
-    adsByCampaign,
-    unattributed,
-    totals,
-  };
+  return { byCampaign, adsByCampaign, unattributed, totals };
 }

@@ -1,12 +1,4 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  Post,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -27,15 +19,7 @@ import {
   AdPlatformSyncService,
   type SyncOutcome,
 } from '../services/ad-platform-sync.service';
-import {
-  ReportedFigureService,
-  type ReportedFigureView,
-} from '../services/reported-figure.service';
-import {
-  AdPlatformParamDto,
-  BeginConnectionDto,
-  ReportedFigureQueryDto,
-} from '../dto/ad-platform.dto';
+import { AdPlatformParamDto, BeginConnectionDto } from '../dto/ad-platform.dto';
 
 /**
  * Connecting a Store to an ad platform, seeing what it is connected to, and
@@ -54,7 +38,6 @@ export class AdminAdPlatformController {
   constructor(
     private readonly connections: AdPlatformConnectionService,
     private readonly sync: AdPlatformSyncService,
-    private readonly figures: ReportedFigureService,
   ) {}
 
   @Get()
@@ -62,7 +45,7 @@ export class AdminAdPlatformController {
   @ApiOperation({
     summary: "List a store's ad-platform connections",
     description:
-      'What this store is connected to and when access was last granted. A disconnected platform is still listed, because the figures it produced are still on the page.',
+      'What this store is connected to and when access was last granted. A disconnected platform is still listed, because what it recorded is still here.',
   })
   @ApiResponse({ status: 200 })
   async list(
@@ -104,7 +87,7 @@ export class AdminAdPlatformController {
   @ApiOperation({
     summary: 'Disconnect an ad platform from this store',
     description:
-      'Revokes access and destroys the credential. Everything already pulled survives: the connection is marked disconnected, never deleted, so no past report is rewritten.',
+      'Revokes access and destroys the credential. Everything already recorded survives: the connection is marked disconnected, never deleted, so no past report is rewritten.',
   })
   @ApiResponse({ status: 201 })
   @ApiResponse({ status: 404 })
@@ -121,33 +104,6 @@ export class AdminAdPlatformController {
   }
 
   /**
-   * The platform's own figures, per platform ad per day.
-   *
-   * A read of our own database and never of the ad platform, which is what lets
-   * a vendor outage cost freshness rather than the page: these rows survive a
-   * failed sync untouched, and how stale they are is told by `lastSyncedAt` on
-   * the connection above rather than by trying the vendor again here.
-   *
-   * Declared before `:platform/...` so a literal path is never read as a
-   * platform name.
-   */
-  @Get('reported-figures')
-  @RequirePermission('ad_platforms.read')
-  @ApiOperation({
-    summary: "The ad platform's own reported figures for this store",
-    description:
-      "What the platform says each of its ads spent and earned, per day, in the ad account's currency — which may not be the store's. Stored beside our own figures and never merged into them: these are the platform's numbers, on the platform's attribution window, and the two are expected to disagree.",
-  })
-  @ApiResponse({ status: 200 })
-  async reportedFigures(
-    @Query() query: ReportedFigureQueryDto,
-    @CurrentTenant() tenant: TenantContext,
-  ): Promise<ReportedFigureView[]> {
-    const { organizationId, storeId } = requireStoreContext(tenant);
-    return this.figures.list(organizationId, storeId, query);
-  }
-
-  /**
    * A sync the merchant asked for, without waiting for the schedule.
    *
    * Answers with what happened rather than throwing it. A platform that refuses
@@ -160,7 +116,7 @@ export class AdminAdPlatformController {
   @ApiOperation({
     summary: "Pull this store's figures from every connected ad platform now",
     description:
-      "Runs the same sync the schedule runs, immediately. A failure is reported in the response and recorded on the connection; nothing already pulled is changed by one. The outcome says what reached the merchant's own book as well as the platform's: spendWritten is the days recorded against claimed ads, spendDeclined is the days left alone because the merchant pinned them — a decision, not a failure — and spendCurrencyMismatch is set instead when the ad account's currency is not the store's, in which case no spend was written and nothing was converted.",
+      "Runs the same sync the schedule runs, immediately. A failure is reported in the response and recorded on the connection; nothing already recorded is changed by one. The outcome names the range that was asked for and how many claimed ads had the platform's own state and placement written beside their own status — never over it, so an ad rejected at the platform keeps the status the merchant gave it here.",
   })
   @ApiResponse({ status: 201 })
   async syncAll(

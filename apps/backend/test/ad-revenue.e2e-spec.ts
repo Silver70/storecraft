@@ -22,13 +22,7 @@
  * journey: storefront input, cart, checkout, order columns, report.
  */
 import type { INestApplication } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
 import type { App } from 'supertest/types';
-import {
-  DRIZZLE_CLIENT,
-  type DrizzleClient,
-} from '../src/shared/database/database.module';
-import { productVariants } from '../src/shared/database/schema';
 import { createTestApp } from './helpers/test-app';
 import type { FakeStorageService } from './helpers/fake-storage.service';
 import {
@@ -97,43 +91,12 @@ const VARIANT_PRICE = 2500;
 const SHIPPING_PRICE = 500;
 /** What one seeded order is worth, in the smallest currency unit. */
 const ORDER_TOTAL = VARIANT_PRICE + SHIPPING_PRICE;
-/**
- * The goods basis of the same order — one unit, no shipping and no tax.
- * Deliberately a different number from `ORDER_TOTAL`, so a report reading the
- * wrong one of the two cannot pass.
- */
-const ORDER_GOODS = VARIANT_PRICE;
-/** What that unit costs the merchant, where a cost price has been entered. */
-const UNIT_COST = 1000;
-
 const DAY_MS = 24 * 60 * 60 * 1000;
 const daysAgo = (days: number) =>
   new Date(Date.now() - days * DAY_MS).toISOString();
-/** The same instant as a calendar day. The seeded store's timezone is UTC. */
-const dayAgo = (days: number): string => daysAgo(days).slice(0, 10);
-
 interface PerformanceFigures {
   orders: number;
   revenue: number;
-  spend: number;
-  /** A ratio, not money. Null when nothing was spent. */
-  roas: number | null;
-  goodsRevenue: number;
-  cost: number;
-  revenueWithCost: number;
-  discount: number;
-  /** Null when goods were sold and none of them have a cost price. */
-  contributionMargin: number | null;
-  costCoveragePct: number;
-}
-
-/**
- * The measured pair, in its own object because that is how it arrives — the one
- * part of a line that comes from the event stream rather than from Orders.
- */
-interface MeasuredTraffic {
-  visitors: number;
-  conversionRatePct: number;
 }
 
 interface AdRevenueLine extends PerformanceFigures {
@@ -144,7 +107,6 @@ interface AdRevenueLine extends PerformanceFigures {
   creativeUrl: string | null;
   startsAt: string | null;
   endsAt: string | null;
-  measured: MeasuredTraffic | null;
 }
 
 interface CampaignRevenueLine extends PerformanceFigures {
@@ -154,7 +116,6 @@ interface CampaignRevenueLine extends PerformanceFigures {
   status: string;
   ads: AdRevenueLine[];
   unassigned: PerformanceFigures;
-  measured: MeasuredTraffic | null;
 }
 
 interface AttributedRevenueReport {
@@ -254,28 +215,6 @@ describe('Revenue split by ad (e2e)', () => {
     return res.body as { id: string; tag: string; name: string };
   }
 
-  /** Records one day's spend, against one creative or against the whole push. */
-  async function recordSpend(
-    campaignId: string,
-    amount: number,
-    adId?: string,
-  ): Promise<void> {
-    const path = adId
-      ? `/campaigns/${campaignId}/ads/${adId}/spend`
-      : `/campaigns/${campaignId}/spend`;
-    await admin.client
-      .post(path, { day: dayAgo(0), amount, currency: 'USD' })
-      .expect(201);
-  }
-
-  async function setCostPrice(costPrice: number | null): Promise<void> {
-    const db = app.get<DrizzleClient>(DRIZZLE_CLIENT);
-    await db
-      .update(productVariants)
-      .set({ costPrice })
-      .where(eq(productVariants.id, fixture.variantId));
-  }
-
   async function readReport(
     touch: 'first' | 'last' = 'last',
   ): Promise<AttributedRevenueReport> {
@@ -371,12 +310,10 @@ describe('Revenue split by ad (e2e)', () => {
       tag: video.tag,
       orders: 2,
       revenue: ORDER_TOTAL * 2,
-      goodsRevenue: ORDER_GOODS * 2,
     });
     expect(adLineFor(campaign, still.id)).toMatchObject({
       orders: 1,
       revenue: ORDER_TOTAL,
-      goodsRevenue: ORDER_GOODS,
     });
   });
 
@@ -433,12 +370,6 @@ describe('Revenue split by ad (e2e)', () => {
     const summer = await createCampaign('Summer Sale');
     const video = await createAd(summer.id, 'Beach video A');
     const still = await createAd(summer.id, 'Still B');
-    await setCostPrice(UNIT_COST);
-
-    await recordSpend(summer.id, 6000, video.id);
-    await recordSpend(summer.id, 2000, still.id);
-    // Recorded against the push as a whole: cost known, split not.
-    await recordSpend(summer.id, 1000);
 
     await placeOrder({
       lastTouch: { utmCampaign: summer.tag, utmContent: video.tag },
@@ -452,30 +383,25 @@ describe('Revenue split by ad (e2e)', () => {
 
     const campaign = lineFor(await readReport(), summer.id);
 
-    // Three orders, worked out by hand: $30 each, $25 of goods each, $10 cost
-    // each, $90 of spend across both grains.
+    // Three orders, worked out by hand: $30 each.
     expect(campaign).toMatchObject({
       orders: 3,
       revenue: ORDER_TOTAL * 3,
-      goodsRevenue: ORDER_GOODS * 3,
-      cost: UNIT_COST * 3,
-      spend: 9000,
     });
 
     const lines = [...campaign.ads, campaign.unassigned];
-    const sum = (
-      key: 'orders' | 'revenue' | 'goodsRevenue' | 'cost' | 'spend',
-    ) => lines.reduce((total, line) => total + line[key], 0);
+    const sum = (key: 'orders' | 'revenue') =>
+      lines.reduce((total, line) => total + line[key], 0);
 
     expect(sum('orders')).toBe(campaign.orders);
     expect(sum('revenue')).toBe(campaign.revenue);
-    expect(sum('goodsRevenue')).toBe(campaign.goodsRevenue);
-    expect(sum('cost')).toBe(campaign.cost);
-    expect(sum('spend')).toBe(campaign.spend);
 
-    // The unsplit figure lands on the unassigned line, never divided among the
-    // creatives it is not a total of.
-    expect(campaign.unassigned.spend).toBe(1000);
+    // The order no creative claimed lands on the unassigned line, never
+    // divided among the creatives it is not a total of.
+    expect(campaign.unassigned).toMatchObject({
+      orders: 1,
+      revenue: ORDER_TOTAL,
+    });
   });
 
   // ─── Two campaigns, one tag ─────────────────────────────────────────────────
@@ -617,150 +543,6 @@ describe('Revenue split by ad (e2e)', () => {
     expect(adLineFor(byLast, discovery.id)).toMatchObject({ orders: 0 });
   });
 
-  // ─── Spend, ROAS and margin per ad ──────────────────────────────────────────
-
-  it('divides each ad’s own spend into its own revenue', async () => {
-    const summer = await createCampaign('Summer Sale');
-    const winner = await createAd(summer.id, 'Winner');
-    const loser = await createAd(summer.id, 'Loser');
-
-    // $20 on the winner, which brought back two $30 sales: 3.00×. $50 on the
-    // loser, which brought back nothing: 0.00×, and that is a real zero.
-    await recordSpend(summer.id, 2000, winner.id);
-    await recordSpend(summer.id, 5000, loser.id);
-
-    await placeOrder({
-      lastTouch: { utmCampaign: summer.tag, utmContent: winner.tag },
-    });
-    await placeOrder({
-      lastTouch: { utmCampaign: summer.tag, utmContent: winner.tag },
-    });
-
-    const campaign = lineFor(await readReport(), summer.id);
-
-    expect(adLineFor(campaign, winner.id)).toMatchObject({
-      spend: 2000,
-      revenue: 6000,
-      roas: 3,
-    });
-    expect(adLineFor(campaign, loser.id)).toMatchObject({
-      spend: 5000,
-      revenue: 0,
-      roas: 0,
-    });
-    // The campaign still divides its own total spend into its own revenue.
-    expect(campaign).toMatchObject({ spend: 7000, revenue: 6000 });
-  });
-
-  it('withholds a per-ad ROAS where nothing was spent', async () => {
-    const summer = await createCampaign('Summer Sale');
-    const organic = await createAd(summer.id, 'Organic post');
-
-    await placeOrder({
-      lastTouch: { utmCampaign: summer.tag, utmContent: organic.tag },
-    });
-
-    const campaign = lineFor(await readReport(), summer.id);
-    const line = adLineFor(campaign, organic.id)!;
-
-    // Null, never zero and never infinity: a creative nobody funded has no
-    // return *on spend*, and the honest answer is that there is no figure.
-    expect(line.revenue).toBe(ORDER_TOTAL);
-    expect(line.roas).toBeNull();
-  });
-
-  it('withholds a per-ad margin where no goods were costed', async () => {
-    const summer = await createCampaign('Summer Sale');
-    const video = await createAd(summer.id, 'Video A');
-    await recordSpend(summer.id, 1000, video.id);
-
-    await placeOrder({
-      lastTouch: { utmCampaign: summer.tag, utmContent: video.tag },
-    });
-
-    // Nobody has entered a cost price. A margin here would report the whole
-    // sale as profit, which is fiction — the blank is what sends a merchant to
-    // fill their costs in.
-    const uncosted = adLineFor(
-      lineFor(await readReport(), summer.id),
-      video.id,
-    )!;
-    expect(uncosted.contributionMargin).toBeNull();
-    expect(uncosted.costCoveragePct).toBe(0);
-
-    await setCostPrice(UNIT_COST);
-
-    // Entered late, and the margin repairs on the next read rather than only
-    // affecting the next sale. $25 of goods, no discount, $10 of cost, $10 of
-    // spend: $5.
-    const costed = adLineFor(lineFor(await readReport(), summer.id), video.id)!;
-    expect(costed.contributionMargin).toBe(ORDER_GOODS - UNIT_COST - 1000);
-    expect(costed.costCoveragePct).toBe(100);
-  });
-
-  it('keeps ad money in minor units and the ratio out of the formatter', async () => {
-    const summer = await createCampaign('Summer Sale');
-    const video = await createAd(summer.id, 'Video A');
-    await recordSpend(summer.id, 1500, video.id);
-    await placeOrder({
-      lastTouch: { utmCampaign: summer.tag, utmContent: video.tag },
-    });
-
-    const line = adLineFor(lineFor(await readReport(), summer.id), video.id)!;
-
-    // Integers with no symbol and no decimal point — nothing a caller has to
-    // parse back. ROAS is the one figure that is deliberately not an integer:
-    // $30 over $15 is 2, a ratio, not 2 cents.
-    expect(Number.isInteger(line.revenue)).toBe(true);
-    expect(Number.isInteger(line.spend)).toBe(true);
-    expect(Number.isInteger(line.goodsRevenue)).toBe(true);
-    expect(line.roas).toBe(2);
-  });
-
-  // ─── Which ads appear ───────────────────────────────────────────────────────
-
-  it('returns no split for a campaign nobody has divided', async () => {
-    const summer = await createCampaign('Summer Sale');
-    await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
-
-    const campaign = lineFor(await readReport(), summer.id);
-
-    // A campaign without ads reports exactly as it did before ads existed.
-    expect(campaign.ads).toEqual([]);
-    expect(campaign.unassigned).toMatchObject({
-      orders: 1,
-      revenue: ORDER_TOTAL,
-    });
-  });
-
-  it('keeps an archived creative on the report while it still explains money', async () => {
-    const summer = await createCampaign('Summer Sale');
-    const retired = await createAd(summer.id, 'Retired video');
-    const quiet = await createAd(summer.id, 'Quiet still');
-
-    await placeOrder({
-      lastTouch: { utmCampaign: summer.tag, utmContent: retired.tag },
-    });
-
-    await admin.client
-      .post(`/campaigns/${summer.id}/ads/${retired.id}/archive`)
-      .expect(201);
-    await admin.client
-      .post(`/campaigns/${summer.id}/ads/${quiet.id}/archive`)
-      .expect(201);
-
-    const campaign = lineFor(await readReport(), summer.id);
-
-    // The one that earned money stays, still explaining it. The one that did
-    // nothing leaves, rather than accumulating on the page forever.
-    expect(adLineFor(campaign, retired.id)).toMatchObject({
-      status: 'archived',
-      orders: 1,
-      revenue: ORDER_TOTAL,
-    });
-    expect(adLineFor(campaign, quiet.id)).toBeUndefined();
-  });
-
   // ─── What a card is read by ─────────────────────────────────────────────────
 
   /** The smallest valid PNG, so the upload has real bytes to validate. */
@@ -820,266 +602,5 @@ describe('Revenue split by ad (e2e)', () => {
     expect(plainLine.creativeUrl).toBeNull();
     expect(plainLine.startsAt).toBeNull();
     expect(plainLine.endsAt).toBeNull();
-  });
-
-  // ─── Visitors and conversion rate ───────────────────────────────────────────
-  // The report's only measured figures, and the only ones on it that do not
-  // come from Orders. They arrive through the public ingest API the way a
-  // tracker delivers them, and are read back off the same admin report as
-  // everything else — which is the whole seam: a tag typed into a link has to
-  // survive the beacon, the ingest, both matchers and the join.
-
-  /** Records one visit, the way the drop-in tracker posts it. */
-  async function trackVisit(
-    visitorId: string,
-    utmCampaign: string,
-    utmContent?: string,
-  ): Promise<void> {
-    await fixture.storefront
-      .track([
-        {
-          type: 'page_view',
-          sessionId: `session-${visitorId}`,
-          visitorId,
-          path: '/',
-          utmCampaign,
-          ...(utmContent === undefined ? {} : { utmContent }),
-        },
-      ])
-      .expect(202);
-  }
-
-  it('reports the visitors a campaign and each of its creatives were seen by', async () => {
-    const summer = await createCampaign('Summer Sale');
-    const video = await createAd(summer.id, 'Beach video A');
-    const still = await createAd(summer.id, 'Plain still B');
-
-    // Four people on this push: two on the video, one on the still, one who
-    // arrived on a link carrying no ad tag at all.
-    await trackVisit('visitor-1', summer.tag, video.tag);
-    await trackVisit('visitor-2', summer.tag, video.tag);
-    await trackVisit('visitor-3', summer.tag, still.tag);
-    await trackVisit('visitor-4', summer.tag);
-    // The same person coming back. A visitor is a person, not a hit.
-    await trackVisit('visitor-1', summer.tag, video.tag);
-
-    // One of the four bought, through the video.
-    await placeOrder({
-      lastTouch: { utmCampaign: summer.tag, utmContent: video.tag },
-    });
-
-    const campaign = lineFor(await readReport(), summer.id);
-
-    // 1 purchase over the 4 people the stream saw.
-    expect(campaign.measured).toEqual({ visitors: 4, conversionRatePct: 25 });
-
-    // 1 purchase over the 2 it saw on this creative.
-    expect(adLineFor(campaign, video.id)!.measured).toEqual({
-      visitors: 2,
-      conversionRatePct: 50,
-    });
-
-    // Seen by one person, bought by none — the distinction this whole feature
-    // exists to draw. A creative nobody clicked reports nothing at all;
-    // this one reports a real zero.
-    expect(adLineFor(campaign, still.id)!.measured).toEqual({
-      visitors: 1,
-      conversionRatePct: 0,
-    });
-  });
-
-  it('reports nothing, rather than zero, where the stream saw nobody', async () => {
-    const summer = await createCampaign('Summer Sale');
-    const video = await createAd(summer.id, 'Beach video A');
-    const unseen = await createAd(summer.id, 'Never clicked');
-
-    await trackVisit('visitor-1', summer.tag, video.tag);
-    await placeOrder({
-      lastTouch: { utmCampaign: summer.tag, utmContent: video.tag },
-    });
-
-    const report = await readReport();
-    const campaign = lineFor(report, summer.id);
-
-    // A zero here would say nobody came. What happened is that we did not see
-    // anyone, which on an ad-blocked visit or a purged period is the same
-    // creative and a very different claim.
-    expect(adLineFor(campaign, unseen.id)!.measured).toBeNull();
-
-    // And the residue carries no measured pair at all. Visitors do not
-    // subdivide the way revenue does — one person can click two creatives — so
-    // there is no subtraction for an unassigned figure to be the answer to.
-    expect(campaign.unassigned).not.toHaveProperty('measured');
-  });
-
-  it('leaves a visitor no creative claims on the campaign and on no ad', async () => {
-    const summer = await createCampaign('Summer Sale');
-    const video = await createAd(summer.id, 'Beach video A');
-
-    // An untagged link and a tag naming no ad of this campaign. The campaign
-    // saw both people; no creative is credited by default.
-    await trackVisit('visitor-1', summer.tag);
-    await trackVisit('visitor-2', summer.tag, 'video-z');
-
-    const campaign = lineFor(await readReport(), summer.id);
-
-    expect(campaign.measured).toEqual({ visitors: 2, conversionRatePct: 0 });
-    expect(adLineFor(campaign, video.id)!.measured).toBeNull();
-  });
-
-  it('never credits a creative with a visitor of another campaign', async () => {
-    // Two pushes each running a `video-a`, which is exactly what ad tags being
-    // unique per campaign lets a merchant do. ADR-0004's property has to hold
-    // for people as well as for money.
-    const summer = await createCampaign('Summer Sale');
-    const spring = await createCampaign('Spring Sale');
-    const summerVideo = await createAd(summer.id, 'Video A');
-    const springVideo = await createAd(spring.id, 'Video A');
-    expect(summerVideo.tag).toBe(springVideo.tag);
-
-    await trackVisit('visitor-1', summer.tag, summerVideo.tag);
-    await trackVisit('visitor-2', spring.tag, springVideo.tag);
-    await trackVisit('visitor-3', spring.tag, springVideo.tag);
-
-    const report = await readReport();
-
-    expect(
-      adLineFor(lineFor(report, summer.id), summerVideo.id)!.measured,
-    ).toEqual({ visitors: 1, conversionRatePct: 0 });
-    expect(
-      adLineFor(lineFor(report, spring.id), springVideo.id)!.measured,
-    ).toEqual({ visitors: 2, conversionRatePct: 0 });
-  });
-
-  it('counts no bots among the visitors', async () => {
-    // The same exclusion every other event query applies, and the same one the
-    // attributed-revenue read applies to orders. A crawler is not an audience.
-    const summer = await createCampaign('Summer Sale');
-    const video = await createAd(summer.id, 'Beach video A');
-
-    await trackVisit('visitor-1', summer.tag, video.tag);
-    await fixture.storefront
-      .track(
-        [
-          {
-            type: 'page_view',
-            sessionId: 'session-crawler',
-            visitorId: 'visitor-crawler',
-            utmCampaign: summer.tag,
-            utmContent: video.tag,
-          },
-        ],
-        'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-      )
-      .expect(202);
-
-    const campaign = lineFor(await readReport(), summer.id);
-
-    expect(campaign.measured).toEqual({ visitors: 1, conversionRatePct: 0 });
-    expect(adLineFor(campaign, video.id)!.measured).toEqual({
-      visitors: 1,
-      conversionRatePct: 0,
-    });
-  });
-
-  it('leaves every order-derived figure exactly as it was', async () => {
-    const summer = await createCampaign('Summer Sale');
-    const video = await createAd(summer.id, 'Beach video A');
-
-    await placeOrder({
-      lastTouch: { utmCampaign: summer.tag, utmContent: video.tag },
-    });
-    await recordSpend(summer.id, 1_000, video.id);
-
-    // Read once with no traffic recorded at all, then again with a stream that
-    // reports a hundred visitors. Nothing derived from money may move.
-    const before = lineFor(await readReport(), summer.id);
-    expect(before.measured).toBeNull();
-
-    for (let i = 0; i < 100; i++) {
-      await trackVisit(`visitor-${i}`, summer.tag, video.tag);
-    }
-
-    const after = lineFor(await readReport(), summer.id);
-
-    expect(after.measured).toEqual({ visitors: 100, conversionRatePct: 1 });
-    expect(after.revenue).toBe(before.revenue);
-    expect(after.orders).toBe(before.orders);
-    expect(after.spend).toBe(before.spend);
-    expect(after.roas).toBe(before.roas);
-    expect(after.contributionMargin).toBe(before.contributionMargin);
-    expect(after.costCoveragePct).toBe(before.costCoveragePct);
-    expect(after.goodsRevenue).toBe(before.goodsRevenue);
-  });
-
-  it('never counts one organization’s traffic toward another’s', async () => {
-    const summer = await createCampaign('Summer Sale');
-    const video = await createAd(summer.id, 'Beach video A');
-
-    // A second merchant whose campaign and creative carry exactly the same
-    // tags. The join is scoped to the organization and store like every other
-    // read, so neither report may show the other's audience.
-    const other = await seedStorefront(app, {
-      variantPrice: VARIANT_PRICE,
-      shippingPrice: SHIPPING_PRICE,
-    });
-    const otherAdmin = await createAdminUser(
-      app,
-      other.organizationId,
-      other.storeId,
-    );
-
-    try {
-      const otherSummer = (
-        await otherAdmin.client
-          .post('/campaigns', { name: 'Summer Sale', platform: 'meta' })
-          .expect(201)
-      ).body as { id: string; tag: string };
-      const otherVideo = (
-        await otherAdmin.client
-          .post(`/campaigns/${otherSummer.id}/ads`, { name: 'Beach video A' })
-          .expect(201)
-      ).body as { id: string; tag: string };
-      expect(otherSummer.tag).toBe(summer.tag);
-      expect(otherVideo.tag).toBe(video.tag);
-
-      await trackVisit('visitor-1', summer.tag, video.tag);
-      await other.storefront
-        .track([
-          {
-            type: 'page_view',
-            sessionId: 'session-theirs-1',
-            visitorId: 'visitor-theirs-1',
-            utmCampaign: otherSummer.tag,
-            utmContent: otherVideo.tag,
-          },
-          {
-            type: 'page_view',
-            sessionId: 'session-theirs-2',
-            visitorId: 'visitor-theirs-2',
-            utmCampaign: otherSummer.tag,
-            utmContent: otherVideo.tag,
-          },
-        ])
-        .expect(202);
-
-      const mine = lineFor(await readReport(), summer.id);
-      expect(mine.measured).toEqual({ visitors: 1, conversionRatePct: 0 });
-      expect(adLineFor(mine, video.id)!.measured).toEqual({
-        visitors: 1,
-        conversionRatePct: 0,
-      });
-
-      const theirsReport = (
-        await otherAdmin.client
-          .get('/marketing/attributed-revenue?period=30d&touch=last')
-          .expect(200)
-      ).body as AttributedRevenueReport;
-      const theirs = lineFor(theirsReport, otherSummer.id);
-      expect(theirs.measured).toEqual({ visitors: 2, conversionRatePct: 0 });
-    } finally {
-      await destroyStorefront(app, other.organizationId);
-      await destroyAdminUsers(app, [otherAdmin.id]);
-    }
   });
 });

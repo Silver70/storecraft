@@ -117,10 +117,18 @@ export interface FetchAdTreeInput {
 /**
  * One ad's figures for one day, **already in minor units**.
  *
- * The conversion happens in the adapter, at the edge, because the vendor
- * reports decimals and this codebase holds money as integers. By the time a
- * value has this type it is an integer, and no float reaches a service, a
- * repository or a report.
+ * The conversion happens in the adapter, at the edge, because a vendor reports
+ * decimals and this codebase holds money as integers. By the time a value has
+ * this type it is an integer, and no float reaches a service, a repository or a
+ * report.
+ *
+ * Three figures, and they are measurements: what the ad account was charged,
+ * how many times the ad was shown, and how many people it sent somewhere. The
+ * platform's own **revenue, conversions and ROAS are not here** and are not
+ * read. They were claims made on an attribution window that is not ours, held
+ * in a table of their own and printed beside our figures with a paragraph
+ * explaining the disagreement — which asked a merchant to arbitrate between two
+ * numbers instead of giving them one.
  */
 export interface ReportedAdDay {
   /** `YYYY-MM-DD`, as the platform dated it. */
@@ -129,26 +137,14 @@ export interface ReportedAdDay {
   readonly spend: number;
   readonly impressions: number;
   readonly clicks: number;
-  /** On the *platform's* attribution window, which is not our Lookback Window. */
-  readonly conversions: number;
-  /** What the platform claims the ad earned, in minor units. */
-  readonly reportedRevenue: number;
-  /**
-   * The platform's own ROAS in basis points — 25000 is 2.5x — or null where it
-   * states none. Null is not zero, and nothing recomputes it from the two
-   * figures above: this is a claim the platform made, not arithmetic of ours.
-   */
-  readonly reportedRoasBp: number | null;
 }
 
 /**
  * One ad at the platform, with every day of the requested range it reported.
  *
- * The descriptive fields are here for one reason: an ad nothing in the Store
- * claims is held as an Unlinked Ad, and a merchant asked "is this yours?" needs
- * to recognise it. A platform ad id recognises nothing. The name, the creative
- * and the flight are what turn a row in a review list into an ad the merchant
- * remembers building.
+ * The descriptive fields are here because a platform ad id recognises nothing.
+ * The name, the creative and the flight are what let a merchant tell which of
+ * their own ads a row is about.
  */
 export interface ReportedAd {
   /** The ad's id at the platform. The key everything about it is held under. */
@@ -190,42 +186,14 @@ export interface ReportedAd {
 }
 
 /**
- * How far back the platform looks when it credits a conversion.
- *
- * The counterpart of our own Lookback Window, and the reason the platform's
- * reported revenue and ours routinely differ by a factor of two. It travels
- * with the figures so the merchant can read the disagreement with both halves
- * of the explanation in front of them, rather than as a tracking failure.
- *
- * `viewDays` is separately nullable because a great many platforms credit
- * clicks only. A window of `{ clickDays: 7, viewDays: null }` is a complete
- * statement, not a half-filled one.
- */
-export interface PlatformAttributionWindow {
-  /** Days after a click a conversion is still credited. */
-  readonly clickDays: number;
-  /** Days after a view, or null where the platform credits views not at all. */
-  readonly viewDays: number | null;
-}
-
-/**
  * What the platform says is running and what it says each ad did.
  *
  * `currency` is the ad account's own and is allowed to differ from the Store's.
  * It is carried here so every figure can be stored as the currency it actually
- * is — no rate is fetched, inferred or hard-coded anywhere in this feature
- * (ADR-0005).
- *
- * `attributionWindow` is the account's, for the same reason and with the same
- * rule: it is recorded as what the platform said, and **null where it said
- * nothing**. An adapter that cannot read a window returns null rather than a
- * plausible default — a guessed 7 shown beside our own 30 would read as the
- * platform having agreed to it, and would turn the one figure that explains the
- * gap into a second thing to distrust.
+ * is — no rate is fetched, inferred or hard-coded anywhere in this feature.
  */
 export interface AdTree {
   readonly currency: string;
-  readonly attributionWindow: PlatformAttributionWindow | null;
   readonly ads: readonly ReportedAd[];
 }
 

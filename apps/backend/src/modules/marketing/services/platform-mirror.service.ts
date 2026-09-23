@@ -24,9 +24,8 @@ export interface PlatformMirrorOutcome {
   /**
    * Ads the platform reported that nothing in this Store claims.
    *
-   * Not a failure and not a loss: the ad is held as an Unlinked Ad and its
-   * money is in `ad_reported_figures`. There is simply no Ad to put a state on,
-   * and a sync does not create one.
+   * Not a failure: there is simply no Ad to put a state on, and a sync does not
+   * create one.
    */
   unclaimed: number;
 }
@@ -42,7 +41,7 @@ export interface PlatformMirrorOutcome {
  * campaign — it decides what is on their active list and what their history
  * hangs off — and `platform_state` is somebody else's word about somebody
  * else's system. An ad rejected at the platform that quietly archived itself
- * here would take its card, its spend and its revenue out of the merchant's
+ * here would take its card and its revenue out of the merchant's
  * active view at exactly the moment they most need to look at it.
  *
  * The enforcement is structural rather than remembered: this service's only
@@ -124,21 +123,5 @@ export class PlatformMirrorService {
     }
 
     return { written, unclaimed };
-  }
-
-  /**
-   * Drops what the platform said about one Ad.
-   *
-   * Called when a claim is undone, and only then. The Ad no longer points at a
-   * platform ad, so a preserved `rejected` on it would be a confident sentence
-   * about an ad that is not this one's any more. Its own status is untouched,
-   * here as everywhere.
-   */
-  async forget(
-    organizationId: string,
-    storeId: string,
-    adId: string,
-  ): Promise<void> {
-    await this.ads.clearPlatformMirror(adId, organizationId, storeId);
   }
 }

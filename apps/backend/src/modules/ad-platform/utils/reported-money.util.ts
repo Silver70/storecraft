@@ -25,15 +25,12 @@
  * A flat hundred, matching the assumption every money column in this codebase
  * already makes (`money.util.format` divides by 100 for every currency). It is
  * wrong for the zero-decimal currencies — JPY, KRW — and deliberately wrong the
- * same way as everything around it: a Reported Figure in yen scaled by 1 and a
- * `campaign_spend` row in yen scaled by 100 would be two unit systems inside
- * one report, which is worse than one consistent offset. Fixing it is a
+ * same way as everything around it: a platform figure in yen scaled by 1 beside
+ * an order total in yen scaled by 100 would be two unit systems inside one
+ * report, which is worse than one consistent offset. Fixing it is a
  * codebase-wide change, starting at `money.util`, not a change to this file.
  */
 const MINOR_UNITS_PER_MAJOR = 100;
-
-/** 10000 basis points is 1.0x, matching how discounts are held here. */
-const BASIS_POINTS_PER_UNIT = 10000;
 
 /**
  * Significant digits kept before rounding.
@@ -77,24 +74,11 @@ export function toMinorUnits(amount: number): number {
 }
 
 /**
- * A platform's ROAS as basis points — `2.5` becomes `25000`.
- *
- * Null in, null out, and that is a distinction worth keeping: a platform that
- * states no ROAS has not stated a ROAS of zero. Nothing downstream recomputes
- * the ratio from spend and revenue, because this column records a claim the
- * platform made rather than arithmetic of ours.
- */
-export function toBasisPoints(ratio: number | null | undefined): number | null {
-  if (ratio === null || ratio === undefined) return null;
-  return scaleToInteger(ratio, BASIS_POINTS_PER_UNIT);
-}
-
-/**
  * A count the platform reported, as a whole number.
  *
- * Platforms return fractional impressions and conversions — attributed
- * conversions are frequently apportioned — and a count column is an integer.
- * Halves round away from zero here too, so one rule covers the file.
+ * Platforms return fractional impressions and clicks — apportioned figures
+ * frequently arrive with a decimal — and a count column is an integer. Halves
+ * round away from zero here too, so one rule covers the file.
  */
 export function toCount(value: number | null | undefined): number {
   if (value === null || value === undefined) return 0;

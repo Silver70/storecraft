@@ -14,7 +14,6 @@ import { requireStoreContext } from '../../../shared/tenant/tenant.util';
 import {
   AttributedRevenueService,
   type AttributedRevenueReport,
-  type MarketingSummary,
 } from '../services/attributed-revenue.service';
 import { AttributedRevenueQueryDto } from '../dto/attributed-revenue.dto';
 
@@ -34,10 +33,9 @@ export class AdminAttributionController {
   @Get('attributed-revenue')
   @RequirePermission('campaigns.read')
   @ApiOperation({
-    summary:
-      'Attributed revenue, spend, ROAS and contribution margin by campaign',
+    summary: 'Attributed revenue and order counts by campaign',
     description:
-      "Resolves each order in the period to a campaign by running the store's matching rules against the touch it froze at checkout, so a campaign created after its ads ran still claims them and a corrected rule repairs history. Unattributed is its own bucket, is never spread across campaigns, and carries no spend, ROAS or margin. Touches older than the returned lookback window, and visitors the event log classified as bots, receive no credit but still count in the totals — which reconcile with the dashboard and analytics sales figures for the same period. Revenue is in the smallest currency unit and is unchanged by the cost figures. Each line also carries the spend recorded for the period and the ROAS between the two: a ratio to two decimal places, not a money value, and null rather than zero or infinity when nothing was spent. A campaign appears if it is active, earned revenue in the period, or recorded spend in the period — an archived campaign quietly burning budget is the row this report exists to show. Spend is recorded per calendar day in the store's timezone while revenue is timestamped, so a partial current day compares a full day of cost against part of a day of revenue. Two revenue bases are returned and they are different numbers: `revenue` is the order total (tax and shipping in, discounts already netted out) and is what ROAS divides, while `goodsRevenue` is line-item totals before discount and is what `contributionMargin` — goods revenue minus discounts minus cost of goods minus spend — is built on. Cost price is nullable on variants, so `costCoveragePct` reports the share of goods revenue that had a known cost behind it, on the same convention as the analytics profit report, and `contributionMargin` is null rather than fictional when goods were sold and none of them were costed. A negative margin is returned as a negative number and never clamped. Each campaign line also carries `ads` — the same figures per creative, resolved in a second pass from `utm_content` over that campaign's own ads alone, so an ad can never claim a sale whose `utm_campaign` names a different campaign and two campaigns are each free to run a `video-a` — and `unassigned`, the revenue this campaign earned that no ad of its claimed together with the spend recorded against it without naming one. Unassigned is its own visible bucket, is never spread across the ads that exist, and is a different outcome from unattributed, which has no campaign at all. The split comes from the same read as the campaign line, so every ad's figures plus the unassigned figure reconcile to the campaign above them; a campaign with no ads returns an empty list and reports exactly as it did before ads existed. Each ad line also carries `reported` — what a connected ad platform says about the same creative over the same calendar days, in its own nested objects and never merged into the figures beside them (ADR-0005). Every entry names the `platform` that stated it and the `currency` it is stated in, which is the ad account's and need not be the store's: `matchesStoreCurrency` is false where it differs, no figure is converted, and nothing combines the two sides — there is no exchange rate anywhere in this feature. The `roas` on a reported entry is the platform's own revenue over the platform's own spend, both its figures in one currency, and is never our revenue over their spend. `attribution` is the window the platform counted on, or null where it stated none, and sits opposite the `lookbackDays` our own figures were counted on — the two windows are why the numbers routinely differ by a factor of two, which is a measurement difference rather than a tracking failure. **No reported figure is an input to `contributionMargin`**, which is computed only from orders whose goods have cost prices; a platform's conversion value has no cost basis behind it. The list is empty for every ad on a platform no sync covers, and carries more than one entry only where the ad account billed in two currencies inside the period — reported as two figures rather than one total across a rate nobody chose.",
+      "Resolves each order in the period to a campaign by running the store's matching rules against the touch it froze at checkout, so a campaign created after its ads ran still claims them and a corrected rule repairs history. Unattributed is its own bucket and is never spread across campaigns. Touches older than the returned lookback window, and visitors the event log classified as bots, receive no credit but still count in the totals — which reconcile with the dashboard and analytics sales figures for the same period. Revenue is the order total (tax and shipping in, discounts already netted out) in the smallest currency unit. A campaign appears if it is active or earned revenue in the period. Each campaign line also carries `ads` — the same figures per creative, resolved in a second pass from `utm_content` over that campaign's own ads alone, so an ad can never claim a sale whose `utm_campaign` names a different campaign and two campaigns are each free to run a `video-a` — and `unassigned`, the revenue this campaign earned that no ad of its claimed. Unassigned is its own visible bucket, is never spread across the ads that exist, and is a different outcome from unattributed, which has no campaign at all. The split comes from the same read as the campaign line, so every ad's revenue plus the unassigned figure reconciles to the campaign above them; a campaign with no ads returns an empty list. **There is no cost side.** Spend, ROAS and contribution margin are not returned: spend was recorded by hand and every figure built on it was only as current as the last day a merchant remembered to enter. They return when the ad platform reports the spend itself, and nothing here stands a zero in for them in the meantime.",
   })
   @ApiResponse({ status: 200 })
   async attributedRevenue(
@@ -46,41 +44,6 @@ export class AdminAttributionController {
   ): Promise<AttributedRevenueReport> {
     const { organizationId, storeId } = requireStoreContext(tenant);
     return this.revenue.byCampaign(
-      organizationId,
-      storeId,
-      query.period,
-      query.touch ?? 'last',
-    );
-  }
-
-  /**
-   * The same period as `attributed-revenue`, reduced to what fits on a card.
-   *
-   * It exists so the admin dashboard can show what was spent without the
-   * dashboard module learning anything about Campaigns. A report module never
-   * depends on another report module here — analytics owns its own period
-   * helper rather than importing the dashboard's, and marketing owns its own
-   * rather than importing analytics' — so marketing publishes this read and the
-   * dashboard *page* composes the card from a second request. The coupling
-   * lives in the frontend, where it costs one fetch and no dependency.
-   *
-   * Same permission as the full report, because it is the same data: a role
-   * that may not see what Campaigns cost may not see the total either.
-   */
-  @Get('summary')
-  @RequirePermission('campaigns.read')
-  @ApiOperation({
-    summary: 'Blended spend, attributed revenue and ROAS for a period',
-    description:
-      "The dashboard card behind the campaign performance report. Every figure is read off that report rather than computed a second way, so the card and the report cannot disagree about the same period — the lookback window, the matching, and the calendar days spend is counted over are all the report's. `spend` and `revenue` are in the smallest currency unit; `roas` is a ratio to two decimal places and is null rather than zero when nothing was spent. `unattributedPct` is the share of realized revenue no campaign explains, returned beside the ratio because it is the caveat on it: a blended ROAS over a third of a store's revenue is not an account-wide verdict. `spendEverRecorded` tells a store that has never recorded a cost apart from one that simply spent nothing this period, which a zero cannot.",
-  })
-  @ApiResponse({ status: 200 })
-  async summary(
-    @Query() query: AttributedRevenueQueryDto,
-    @CurrentTenant() tenant: TenantContext,
-  ): Promise<MarketingSummary> {
-    const { organizationId, storeId } = requireStoreContext(tenant);
-    return this.revenue.summary(
       organizationId,
       storeId,
       query.period,

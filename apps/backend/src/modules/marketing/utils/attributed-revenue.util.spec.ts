@@ -1,5 +1,5 @@
 /**
- * The credit decision and the arithmetic on top of it, as a pure unit.
+ * The credit decision and the tally on top of it, as a pure unit.
  *
  * The matching rules themselves are covered next door in
  * `campaign-matching.util.spec.ts`. What is asserted here is everything wrapped
@@ -11,7 +11,7 @@
 import {
   campaignCreditFor,
   tallyAttributedRevenue,
-  type CostedOrder,
+  type AttributableOrder,
 } from './attributed-revenue.util';
 import {
   createCampaignMatcher,
@@ -83,18 +83,11 @@ const AD_RULES: MatchableAdRule[] = [
 const adMatcher = createAdMatcher(AD_RULES);
 const noAds = createAdMatcher([]);
 
-function order(overrides: Partial<CostedOrder> = {}): CostedOrder {
+function order(overrides: Partial<AttributableOrder> = {}): AttributableOrder {
   return {
     total: 3000,
     placedAt: PLACED_AT,
     isBot: false,
-    // A $30 order is $25 of goods plus $5 of shipping, all of it costed at
-    // $10. The two revenue figures differ by construction here, because a
-    // fixture where they agreed would hide every place the wrong one is read.
-    goodsRevenue: 2500,
-    cost: 1000,
-    revenueWithCost: 2500,
-    discount: 0,
     touch: {
       utmSource: 'instagram',
       utmMedium: 'paid_social',
@@ -106,7 +99,7 @@ function order(overrides: Partial<CostedOrder> = {}): CostedOrder {
   };
 }
 
-const credit = (o: CostedOrder, m = matcher) =>
+const credit = (o: AttributableOrder, m = matcher) =>
   campaignCreditFor(o, m, DEFAULT_ATTRIBUTION_LOOKBACK_DAYS);
 
 describe('campaignCreditFor', () => {
@@ -206,7 +199,7 @@ describe('campaignCreditFor', () => {
 });
 
 describe('tallyAttributedRevenue', () => {
-  const tally = (orders: CostedOrder[], m = matcher, a = noAds) =>
+  const tally = (orders: AttributableOrder[], m = matcher, a = noAds) =>
     tallyAttributedRevenue(orders, m, a, DEFAULT_ATTRIBUTION_LOOKBACK_DAYS);
 
   it('sums revenue and order count per campaign', () => {
@@ -274,85 +267,8 @@ describe('tallyAttributedRevenue', () => {
     const result = tally([]);
 
     expect(result.byCampaign.size).toBe(0);
-    expect(result.goodsByCampaign.size).toBe(0);
     expect(result.unattributed).toEqual({ orders: 0, revenue: 0 });
     expect(result.totals).toEqual({ orders: 0, revenue: 0 });
-  });
-
-  // ─── The goods basis ────────────────────────────────────────────────────────
-
-  describe('the goods basis', () => {
-    it('buckets the goods figures by the same campaign as the revenue', () => {
-      const result = tally([
-        order({ goodsRevenue: 2500, cost: 1000, revenueWithCost: 2500 }),
-        order({ goodsRevenue: 1000, cost: 400, revenueWithCost: 1000 }),
-        order({
-          goodsRevenue: 900,
-          cost: 300,
-          revenueWithCost: 900,
-          touch: { ...order().touch, utmCampaign: 'Spring-Sale' },
-        }),
-      ]);
-
-      expect(result.goodsByCampaign.get(SUMMER)).toEqual({
-        goodsRevenue: 3500,
-        cost: 1400,
-        revenueWithCost: 3500,
-        discount: 0,
-      });
-      expect(result.goodsByCampaign.get(SPRING)).toEqual({
-        goodsRevenue: 900,
-        cost: 300,
-        revenueWithCost: 900,
-        discount: 0,
-      });
-    });
-
-    it('keeps the goods basis apart from the order-total basis', () => {
-      // $30 orders holding $25 of goods. Reading either figure where the other
-      // belongs is the mistake this separation exists to prevent, so the two
-      // are asserted as different numbers rather than assumed to agree.
-      const result = tally([order(), order()]);
-
-      expect(result.byCampaign.get(SUMMER)!.revenue).toBe(6000);
-      expect(result.goodsByCampaign.get(SUMMER)!.goodsRevenue).toBe(5000);
-    });
-
-    it('sums the discount once per order, on the goods side only', () => {
-      const result = tally([
-        order({ discount: 500 }),
-        order({ discount: 250 }),
-      ]);
-
-      expect(result.goodsByCampaign.get(SUMMER)!.discount).toBe(750);
-      // The order total already has the discount netted out at checkout, so
-      // nothing subtracts it from the revenue bucket as well.
-      expect(result.byCampaign.get(SUMMER)!.revenue).toBe(6000);
-    });
-
-    it('carries uncosted goods as revenue with no cost behind it', () => {
-      // The variant has no cost price. The sale is real and the cost is
-      // unknown, which is a different thing from a cost of zero.
-      const result = tally([
-        order({ goodsRevenue: 2500, cost: 0, revenueWithCost: 0 }),
-      ]);
-
-      expect(result.goodsByCampaign.get(SUMMER)).toEqual({
-        goodsRevenue: 2500,
-        cost: 0,
-        revenueWithCost: 0,
-        discount: 0,
-      });
-    });
-
-    it('gives an uncredited order no goods bucket at all', () => {
-      // Unattributed carries no cost data: nobody spent against it, so there
-      // is no margin to build and a cost figure there would only invite one.
-      const result = tally([order({ isBot: true })]);
-
-      expect(result.goodsByCampaign.size).toBe(0);
-      expect(result.unattributed).toEqual({ orders: 1, revenue: 3000 });
-    });
   });
 
   // ─── The split by ad ────────────────────────────────────────────────────────
@@ -361,14 +277,15 @@ describe('tallyAttributedRevenue', () => {
     /** The same order, arriving through a creative's link. */
     const via = (
       utmContent: string | null,
-      overrides: Partial<CostedOrder> = {},
+      overrides: Partial<AttributableOrder> = {},
     ) =>
       order({
         ...overrides,
         touch: { ...order().touch, ...overrides.touch, utmContent },
       });
 
-    const split = (orders: CostedOrder[]) => tally(orders, matcher, adMatcher);
+    const split = (orders: AttributableOrder[]) =>
+      tally(orders, matcher, adMatcher);
 
     it('credits each ad the orders its tag claimed', () => {
       const result = split([
@@ -466,91 +383,19 @@ describe('tallyAttributedRevenue', () => {
 
     it('reconciles the ads plus unassigned back to the campaign line', () => {
       const orders = [
-        via('video-a', {
-          total: 3000,
-          goodsRevenue: 2500,
-          cost: 1000,
-          revenueWithCost: 2500,
-          discount: 100,
-        }),
-        via('still-b', {
-          total: 1000,
-          goodsRevenue: 900,
-          cost: 300,
-          revenueWithCost: 900,
-          discount: 0,
-        }),
-        via('carousel-c', {
-          total: 700,
-          goodsRevenue: 600,
-          cost: 0,
-          revenueWithCost: 0,
-          discount: 50,
-        }),
+        via('video-a', { total: 3000 }),
+        via('still-b', { total: 1000 }),
+        via('carousel-c', { total: 700 }),
       ];
       const result = split(orders);
       const ads = result.adsByCampaign.get(SUMMER)!;
 
-      const sum = <T>(
-        buckets: T[],
-        key: { [K in keyof T]: T[K] extends number ? K : never }[keyof T],
-      ) =>
-        buckets.reduce((total, bucket) => total + (bucket[key] as number), 0);
+      const buckets = [...ads.byAd.values(), ads.unassigned];
+      const sum = (key: 'revenue' | 'orders') =>
+        buckets.reduce((total, bucket) => total + bucket[key], 0);
 
-      const revenueBuckets = [...ads.byAd.values(), ads.unassigned];
-      expect(sum(revenueBuckets, 'revenue')).toBe(
-        result.byCampaign.get(SUMMER)!.revenue,
-      );
-      expect(sum(revenueBuckets, 'orders')).toBe(
-        result.byCampaign.get(SUMMER)!.orders,
-      );
-
-      const goodsBuckets = [...ads.goodsByAd.values(), ads.unassignedGoods];
-      const campaignGoods = result.goodsByCampaign.get(SUMMER)!;
-      for (const key of [
-        'goodsRevenue',
-        'cost',
-        'revenueWithCost',
-        'discount',
-      ] as const) {
-        expect(sum(goodsBuckets, key)).toBe(campaignGoods[key]);
-      }
-    });
-
-    it('buckets the goods basis by the same ad as the revenue', () => {
-      const result = split([
-        via('video-a', {
-          goodsRevenue: 2500,
-          cost: 1000,
-          revenueWithCost: 2500,
-        }),
-        via('video-a', {
-          goodsRevenue: 1000,
-          cost: 400,
-          revenueWithCost: 1000,
-        }),
-        via('carousel-c', {
-          goodsRevenue: 600,
-          cost: 200,
-          revenueWithCost: 600,
-        }),
-      ]);
-      const ads = result.adsByCampaign.get(SUMMER)!;
-
-      expect(ads.goodsByAd.get(VIDEO_A)).toEqual({
-        goodsRevenue: 3500,
-        cost: 1400,
-        revenueWithCost: 3500,
-        discount: 0,
-      });
-      // Unassigned carries a goods basis where unattributed does not: money was
-      // spent against this campaign, and the split has to reconcile with it.
-      expect(ads.unassignedGoods).toEqual({
-        goodsRevenue: 600,
-        cost: 200,
-        revenueWithCost: 600,
-        discount: 0,
-      });
+      expect(sum('revenue')).toBe(result.byCampaign.get(SUMMER)!.revenue);
+      expect(sum('orders')).toBe(result.byCampaign.get(SUMMER)!.orders);
     });
 
     it('assigns nothing when the campaign has no ads', () => {

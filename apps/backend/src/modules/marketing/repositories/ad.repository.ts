@@ -195,36 +195,6 @@ export class AdRepository {
     return row !== undefined;
   }
 
-  /**
-   * Forgets what the platform said about an Ad.
-   *
-   * Called when an Ad stops claiming a platform ad, and only then. A synced
-   * state preserved on an Ad that no longer points at anything is a sentence
-   * about somebody else's ad — which is the one case where clearing is more
-   * honest than keeping.
-   */
-  async clearPlatformMirror(
-    adId: string,
-    orgId: string,
-    storeId: string,
-  ): Promise<void> {
-    await this.db
-      .update(ads)
-      .set({
-        platformState: null,
-        placement: null,
-        platformReportedAt: null,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(ads.id, adId),
-          eq(ads.organizationId, orgId),
-          eq(ads.storeId, storeId),
-        ),
-      );
-  }
-
   /** Whether this Campaign already owns the tag. Sibling Campaigns are free to. */
   async tagExists(
     tag: string,

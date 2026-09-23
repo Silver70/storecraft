@@ -1,4 +1,4 @@
-import { toBasisPoints, toCount, toMinorUnits } from './reported-money.util';
+import { toCount, toMinorUnits } from './reported-money.util';
 
 /**
  * The rounding rule, asserted at the values that break the obvious
@@ -46,26 +46,6 @@ describe('reported money', () => {
       // with a cost basis behind it. The sync surfaces the failure instead.
       expect(() => toMinorUnits(Number.NaN)).toThrow(RangeError);
       expect(() => toMinorUnits(Number.POSITIVE_INFINITY)).toThrow(RangeError);
-    });
-  });
-
-  describe('toBasisPoints', () => {
-    it('converts a ratio', () => {
-      expect(toBasisPoints(2.5)).toBe(25000);
-      expect(toBasisPoints(1)).toBe(10000);
-      expect(toBasisPoints(0)).toBe(0);
-      expect(toBasisPoints(0.0001)).toBe(1);
-    });
-
-    it('rounds at the boundary the same way money does', () => {
-      expect(toBasisPoints(1.00005)).toBe(10001);
-      expect(toBasisPoints(1.000049)).toBe(10000);
-    });
-
-    it('tells a ROAS the platform did not state from a ROAS of zero', () => {
-      expect(toBasisPoints(null)).toBeNull();
-      expect(toBasisPoints(undefined)).toBeNull();
-      expect(toBasisPoints(0)).toBe(0);
     });
   });
 

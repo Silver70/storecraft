@@ -162,6 +162,13 @@
       "when": 1789817925608,
       "tag": "0022_reported_attribution_window",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1790143752655,
+      "tag": "0023_strip_the_manual_marketing_system",
+      "breakpoints": true
     }
   ]
 }

@@ -13,12 +13,9 @@ import type {
   CampaignRevenueLine,
   PerformanceFigures,
 } from "~/types/api";
-import { formatFlight, formatPlatform, isBurning } from "../utils";
-import { AdTaggedLink } from "./ad-tagged-link";
+import { formatFlight, formatPlatform } from "../utils";
 import { CampaignStatusBadge } from "./campaign-status-badge";
 import { FigureList } from "./performance-figures";
-import { MeasuredPair } from "./measured-traffic";
-import { ReportedFiguresBlock } from "./reported-figures";
 
 /**
  * The picture a merchant recognises an ad by, since nobody recognises a slug.
@@ -70,15 +67,6 @@ function CreativeTile({
   );
 }
 
-/** Money out and nothing back, said on the card rather than left to be inferred. */
-function NoRevenuePill() {
-  return (
-    <span className="shrink-0 rounded-full border border-destructive/20 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-destructive">
-      No revenue
-    </span>
-  );
-}
-
 /**
  * A campaign, with what the period says about it.
  *
@@ -95,15 +83,8 @@ function CampaignCard({
   line: CampaignRevenueLine | null;
   lookbackDays: number;
 }) {
-  const burning = line ? isBurning(line) : false;
-
   return (
-    <Card
-      className={cn(
-        "gap-0 overflow-hidden py-0",
-        burning && "border-destructive/30 bg-destructive/5",
-      )}
-    >
+    <Card className="gap-0 overflow-hidden py-0">
       <div className="flex flex-wrap items-start justify-between gap-3 px-5 py-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -115,7 +96,6 @@ function CampaignCard({
               {campaign.name}
             </Link>
             <CampaignStatusBadge status={campaign.status} />
-            {burning && <NoRevenuePill />}
           </div>
           <p className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground">
             <code className="font-mono">{campaign.tag}</code>
@@ -142,25 +122,14 @@ function CampaignCard({
 
       <div className="border-t bg-muted/10 px-5 py-4">
         {line ? (
-          <>
-            <FigureList line={line} lookbackDays={lookbackDays} layout="row" />
-            {/* Beneath the five, never among them: this pair comes from the
-                event stream and the rest from orders, and the campaign's own
-                figure is not the sum of its ads' — one person can click two
-                creatives. */}
-            <MeasuredPair
-              measured={line.measured}
-              layout="row"
-              className="mt-4"
-            />
-          </>
+          <FigureList line={line} lookbackDays={lookbackDays} layout="row" />
         ) : (
           // Not a row of zeroes. The report leaves an archived campaign with
           // nothing in the window off the page entirely; showing zeroes here
           // would be making a claim about the period that nothing measured.
           <p className="text-xs text-muted-foreground">
-            No revenue and no spend in this period. Its figures are wherever its
-            orders were placed.
+            No revenue in this period. Its figures are wherever its orders were
+            placed.
           </p>
         )}
       </div>
@@ -170,30 +139,19 @@ function CampaignCard({
 
 /** One creative, with the figures that are its own and not the campaign's. */
 function AdCard({
-  campaignId,
   platform,
   ad,
   lookbackDays,
 }: {
-  campaignId: string;
   platform: CampaignPlatform;
   ad: AdRevenueLine;
   lookbackDays: number;
 }) {
   const archived = ad.status === "archived";
-  const burning = isBurning(ad);
   const flight = formatFlight(ad.startsAt, ad.endsAt);
 
   return (
-    <Card
-      className={cn(
-        "gap-0 overflow-hidden py-0",
-        // An ad that spent money and earned nothing is the most actionable card
-        // in the account. It is tinted rather than merely present, so it is not
-        // read as one that was never funded.
-        burning && "border-destructive/30 bg-destructive/5",
-      )}
-    >
+    <Card className="gap-0 overflow-hidden py-0">
       <div className="flex items-start gap-3 px-4 py-3.5">
         <CreativeTile
           creativeUrl={ad.creativeUrl}
@@ -210,7 +168,6 @@ function AdCard({
             >
               {ad.name}
             </p>
-            {burning && <NoRevenuePill />}
           </div>
           <code className="mt-1 block truncate font-mono text-xs text-muted-foreground">
             {ad.tag}
@@ -226,32 +183,8 @@ function AdCard({
         </div>
       </div>
 
-      <div className="space-y-2.5 border-t px-4 py-3">
+      <div className="border-t px-4 py-3">
         <FigureList line={ad} lookbackDays={lookbackDays} />
-        {/* The figure that separates a creative nobody clicked from one that
-            was clicked and did not convert — which is the only reason this
-            pair is on the card, and why it is not allowed to look as solid as
-            the money above it. */}
-        <MeasuredPair measured={ad.measured} />
-        {/* And what the ad platform says about the same creative, under its own
-            name. The two sets will disagree, often by a factor of two, and that
-            is the reason both are here: our lookback window is printed against
-            our ROAS above and the platform's window against theirs below, so a
-            merchant can see a measurement difference for what it is instead of
-            reading it as a tracking failure. Nothing here is added to anything
-            above it, and nothing here reaches the margin (ADR-0005). Absent
-            entirely for every ad on a platform no sync covers, which is most
-            of them. */}
-        <ReportedFiguresBlock reported={ad.reported} className="pt-0.5" />
-      </div>
-
-      <div className="flex items-center justify-between border-t bg-muted/10 px-2 py-1.5">
-        <AdTaggedLink
-          campaignId={campaignId}
-          platform={platform}
-          adName={ad.name}
-          adTag={ad.tag}
-        />
       </div>
     </Card>
   );
@@ -262,8 +195,7 @@ function share(part: number, whole: number): number {
 }
 
 /**
- * What this campaign earned that none of its ads claimed, and what it cost
- * without naming one.
+ * What this campaign earned that none of its ads claimed.
  *
  * Prominent rather than tidy, and never redistributed across the ads above it.
  * The failure this card exists to make visible has no other symptom: a merchant
@@ -285,11 +217,7 @@ function UnassignedCard({
   lookbackDays: number;
 }) {
   const revenueShare = share(line.revenue, campaignRevenue);
-  // Cost recorded against the push without naming a creative. Read beside an ad
-  // that earned nothing, this is usually the untagged link rather than a
-  // creative that failed — which is a different thing to go and fix.
-  const unsplitSpend = line.spend > 0;
-  const notable = unsplitSpend || revenueShare >= 25;
+  const notable = revenueShare >= 25;
 
   return (
     <Card
@@ -325,14 +253,6 @@ function UnassignedCard({
       <div className="border-t px-4 py-3">
         <FigureList line={line} lookbackDays={lookbackDays} />
       </div>
-
-      {unsplitSpend && (
-        <p className="border-t bg-amber-100/40 px-4 py-2 text-[11px] leading-tight text-amber-700 dark:bg-amber-950/20 dark:text-amber-500">
-          Spend recorded against this campaign without naming an ad. If a
-          creative here looks like it earned nothing, check that its link
-          carries the ad tag.
-        </p>
-      )}
     </Card>
   );
 }
@@ -371,7 +291,6 @@ export function CampaignSection({
           {ads.map((ad) => (
             <AdCard
               key={ad.adId}
-              campaignId={campaign.id}
               platform={campaign.platform}
               ad={ad}
               lookbackDays={lookbackDays}
@@ -393,8 +312,7 @@ export function CampaignSection({
  * touches older than the lookback window.
  *
  * Its own card at the foot of the page, never folded into a campaign, which
- * would flatter it. It carries no spend and no ROAS: nobody bought this
- * traffic.
+ * would flatter it.
  */
 export function UnattributedCard({
   orders,
@@ -412,8 +330,7 @@ export function UnattributedCard({
           <p className="text-sm font-medium leading-none">Unattributed</p>
           <p className="mt-1.5 max-w-prose text-xs leading-relaxed text-muted-foreground">
             No qualifying touch — direct arrivals, untagged links, and touches
-            outside the lookback window. No spend went into this bucket, so
-            there is no ROAS to report for it.
+            outside the lookback window.
           </p>
         </div>
         <div className="flex shrink-0 gap-6">

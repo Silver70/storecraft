@@ -46,7 +46,7 @@ describe('planning what the platform’s view lands on', () => {
   /**
    * The row this whole feature refuses to write. An ad nothing claims has no Ad
    * to put a state on, and inventing one is the thing the stage exists not to
-   * do — its state belongs to an Unlinked Ad the merchant has not answered for.
+   * do.
    */
   it('writes nothing for an ad nothing in the store claims', () => {
     const rows = planPlatformMirror({

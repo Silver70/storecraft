@@ -43,9 +43,8 @@ export interface PlanPlatformMirrorInput {
  *
  * Three decisions are made here and they are the whole of it:
  *
- * An ad nothing claims produces nothing. Its state belongs to an Unlinked Ad
- * the merchant has not answered for yet, and there is no Ad to put it on — a
- * sync inventing one is the thing this entire stage refuses to do.
+ * An ad nothing claims produces nothing. There is no Ad here to put its state
+ * on, and a sync inventing one is the thing this entire stage refuses to do.
  *
  * The platform's latest answer wins for an ad it reported, **including when
  * that answer is nothing.** A platform that has stopped saying an ad is
