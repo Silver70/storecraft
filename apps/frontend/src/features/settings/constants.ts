@@ -33,3 +33,7 @@ export const ROLE_LABELS: Record<AdminRole, string> = {
   product_manager: "Product Manager",
   support_agent: "Support Agent",
 };
+
+// What the Starter Storefront serves, and what a store starts with. The engine
+// is headless, so a merchant who forked it and moved the route says so here.
+export const DEFAULT_PRODUCT_PATH = "/products/{slug}";

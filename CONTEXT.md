@@ -17,6 +17,27 @@ catalog namespace, and the address its storefront is reached at. One
 Organization may own several Stores.
 _Avoid_: Shop, site, channel
 
+**Storefront URL**:
+The absolute address a Store's storefront is served at, set by the merchant.
+The engine is headless, so it cannot know this — until it is set, nothing can
+build a link into the storefront. Stored without a trailing slash, and never
+with a query string or fragment.
+_Avoid_: Domain, site URL, base URL, store URL (which is the Store's slug)
+
+**Product Path Pattern**:
+The shape of a Store's product page paths, carrying `{slug}` where the product
+goes — `/products/{slug}` by default, matching the Starter Storefront. A
+merchant who forked it and moved the route says so here. The all-products page
+is read off the same pattern rather than configured separately.
+_Avoid_: Route, permalink, URL template
+
+**Destination**:
+Where a link points on a Store's own storefront: a product, the all-products
+page, the home page, or a custom path. Anywhere else is refused, because the
+capture script only reads link tags on the Store's own storefront — a
+destination elsewhere is a campaign that cannot be measured.
+_Avoid_: Landing page, target, link URL
+
 **Admin User**:
 A person who signs into the admin dashboard. Distinct from a Customer; they are
 separate identities in separate auth stacks and never share a record.

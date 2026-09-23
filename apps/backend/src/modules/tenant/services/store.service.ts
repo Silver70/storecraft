@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   NotFoundException,
   ConflictException,
@@ -10,6 +11,15 @@ import type { DrizzleClient } from '../../../shared/database/database.module';
 import { stores } from '../../../shared/database/schema';
 import type { Store, NewStore } from '../../../shared/database/schema';
 import { generateSlug } from '../../../shared/utils/slug.util';
+import {
+  DEFAULT_PRODUCT_PATH_PATTERN,
+  StorefrontUrlError,
+  normalizeProductPathPattern,
+  normalizeStorefrontUrl,
+  resolveStorefrontUrl as resolveUrl,
+  storefrontReadiness as readinessOf,
+  type StorefrontDestination,
+} from '../../../shared/utils/storefront-url.util';
 import type { CreateStoreDto, UpdateStoreDto } from '../dto/create-store.dto';
 
 @Injectable()
@@ -70,6 +80,15 @@ export class StoreService {
       isActive: dto.isActive ?? true,
     };
 
+    if (dto.storefrontUrl !== undefined) {
+      values.storefrontUrl = this.readStorefrontUrl(dto.storefrontUrl);
+    }
+    if (dto.productPathPattern !== undefined) {
+      values.productPathPattern = this.readProductPathPattern(
+        dto.productPathPattern,
+      );
+    }
+
     const [row] = await this.db.insert(stores).values(values).returning();
     return row;
   }
@@ -87,6 +106,14 @@ export class StoreService {
     if (dto.currency !== undefined) patch.currency = dto.currency;
     if (dto.timezone !== undefined) patch.timezone = dto.timezone;
     if (dto.isActive !== undefined) patch.isActive = dto.isActive;
+    if (dto.storefrontUrl !== undefined) {
+      patch.storefrontUrl = this.readStorefrontUrl(dto.storefrontUrl);
+    }
+    if (dto.productPathPattern !== undefined) {
+      patch.productPathPattern = this.readProductPathPattern(
+        dto.productPathPattern,
+      );
+    }
 
     const [row] = await this.db
       .update(stores)
@@ -104,6 +131,79 @@ export class StoreService {
       .update(stores)
       .set({ deletedAt: new Date(), isActive: false, updatedAt: new Date() })
       .where(and(eq(stores.id, id), eq(stores.organizationId, orgId)));
+  }
+
+  // ─── Storefront links ───────────────────────────────────────────────────
+
+  /**
+   * The full URL a destination points at, on this Store's own storefront.
+   *
+   * The single entry point for anything that needs to link into a storefront —
+   * an ad's destination, above all. It refuses a destination off the Store's
+   * own storefront, because that is the only place our capture script reads
+   * the link tags, and refuses to build anything at all while the storefront
+   * URL is unset. Both surface as a 400 carrying the reason, so a merchant
+   * reads it on the form rather than discovering it after the money is spent.
+   */
+  async resolveStorefrontUrl(
+    storeId: string,
+    orgId: string,
+    destination: StorefrontDestination,
+  ): Promise<string> {
+    const store = await this.findById(storeId, orgId);
+    if (!store) throw new NotFoundException('Store not found');
+
+    return this.orBadRequest(() => resolveUrl(store, destination));
+  }
+
+  /**
+   * Where this Store's storefront lives, and whether links can be built from
+   * it yet. Both settings are optional right up to the moment something needs
+   * them, so the admin reads this to say what will not work while they are
+   * unset rather than letting a merchant find out on a form they cannot submit.
+   */
+  async storefrontSettings(
+    storeId: string,
+    orgId: string,
+  ): Promise<{
+    storefrontUrl: string | null;
+    productPathPattern: string;
+    canBuildLinks: boolean;
+    missing: string[];
+  }> {
+    const store = await this.findById(storeId, orgId);
+    if (!store) throw new NotFoundException('Store not found');
+    return {
+      storefrontUrl: store.storefrontUrl,
+      productPathPattern: store.productPathPattern,
+      ...readinessOf(store),
+    };
+  }
+
+  /** Empty or null clears the setting; anything else must be a valid address. */
+  private readStorefrontUrl(input: string | null): string | null {
+    if (input === null || input.trim() === '') return null;
+    return this.orBadRequest(() => normalizeStorefrontUrl(input));
+  }
+
+  /**
+   * Empty restores the Starter Storefront's shape rather than storing nothing,
+   * because the column is never null — a Store always has a product path.
+   */
+  private readProductPathPattern(input: string): string {
+    if (input.trim() === '') return DEFAULT_PRODUCT_PATH_PATTERN;
+    return this.orBadRequest(() => normalizeProductPathPattern(input));
+  }
+
+  private orBadRequest<T>(fn: () => T): T {
+    try {
+      return fn();
+    } catch (err) {
+      if (err instanceof StorefrontUrlError) {
+        throw new BadRequestException(err.message);
+      }
+      throw err;
+    }
   }
 
   /**

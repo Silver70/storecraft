@@ -110,6 +110,11 @@ export type Store = {
   slug: string;
   currency: string;
   timezone: string;
+  // Where this store's storefront is served, and the shape of its product page
+  // paths. The engine is headless, so it cannot know either — an ad's
+  // destination can only be built once these are set. Null until then.
+  storefrontUrl: string | null;
+  productPathPattern: string;
   isActive: boolean;
 };
 

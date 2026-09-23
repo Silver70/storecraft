@@ -120,6 +120,10 @@ export const updateStoreServerFn = createServerFn({ method: "POST" })
       name: z.string().min(2, "Store name must be at least 2 characters"),
       currency: z.string().length(3, "Currency must be a 3-letter code"),
       timezone: z.string().min(1, "Timezone is required"),
+      // Both optional: the backend validates and normalizes them, and is the
+      // one place the URL rules live. An empty storefrontUrl clears it.
+      storefrontUrl: z.string().optional(),
+      productPathPattern: z.string().optional(),
     }),
   )
   .handler(async ({ data }) => {

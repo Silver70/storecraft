@@ -6,7 +6,9 @@ import {
   Length,
   Matches,
   MaxLength,
+  ValidateIf,
 } from 'class-validator';
+import { DEFAULT_PRODUCT_PATH_PATTERN } from '../../../shared/utils/storefront-url.util';
 
 export class CreateStoreDto {
   @ApiProperty({ description: 'Display name of the store' })
@@ -41,6 +43,28 @@ export class CreateStoreDto {
   @IsString()
   @MaxLength(100)
   declare timezone?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Absolute address this store’s storefront is served at, with no query string or fragment. Null until the merchant sets it; ad destinations cannot be built without it.',
+    example: 'https://shop.example.com',
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsString()
+  @MaxLength(2048)
+  declare storefrontUrl?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Shape of the storefront’s product page paths. Must contain the {slug} placeholder.',
+    default: DEFAULT_PRODUCT_PATH_PATTERN,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  declare productPathPattern?: string;
 
   @ApiPropertyOptional({ default: true })
   @IsOptional()

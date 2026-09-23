@@ -27,6 +27,22 @@ import { StoreService } from '../services/store.service';
 import { CreateStoreDto, UpdateStoreDto } from '../dto/create-store.dto';
 import { ApiKeyService } from '../../auth/services/api-key.service';
 import { CreateApiKeyDto } from '../dto/create-api-key.dto';
+import { ResolveStorefrontUrlDto } from '../dto/resolve-storefront-url.dto';
+import type { StorefrontDestination } from '../../../shared/utils/storefront-url.util';
+
+/** The wire shape, narrowed to the union the resolver reads. */
+function toDestination(dto: ResolveStorefrontUrlDto): StorefrontDestination {
+  switch (dto.kind) {
+    case 'product':
+      return { kind: 'product', slug: dto.slug ?? '' };
+    case 'custom':
+      return { kind: 'custom', path: dto.path ?? '' };
+    case 'all_products':
+      return { kind: 'all_products' };
+    case 'home':
+      return { kind: 'home' };
+  }
+}
 
 @ApiTags('Stores')
 @ApiBearerAuth()
@@ -84,6 +100,45 @@ export class AdminStoreController {
     @CurrentTenant() tenant: TenantContext,
   ) {
     return this.storeService.softDelete(id, tenant.organizationId);
+  }
+
+  // ─── Storefront links ─────────────────────────────────────────────────────
+
+  @Get(':id/storefront')
+  @RequirePermission('campaigns.write')
+  @ApiOperation({
+    summary:
+      'Read where this store’s storefront lives, and whether links can be built yet',
+  })
+  storefront(
+    @Param('id', ParseUUIDPipe) storeId: string,
+    @CurrentTenant() tenant: TenantContext,
+  ) {
+    return this.storeService.storefrontSettings(storeId, tenant.organizationId);
+  }
+
+  @Post(':id/storefront/resolve')
+  @RequirePermission('campaigns.write')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Resolve a destination to its full URL on this store’s storefront',
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'The storefront URL is unset, or the destination is not on this store’s storefront.',
+  })
+  async resolveStorefrontUrl(
+    @Param('id', ParseUUIDPipe) storeId: string,
+    @Body() dto: ResolveStorefrontUrlDto,
+    @CurrentTenant() tenant: TenantContext,
+  ) {
+    const url = await this.storeService.resolveStorefrontUrl(
+      storeId,
+      tenant.organizationId,
+      toDestination(dto),
+    );
+    return { url };
   }
 
   // ─── API Keys (store-scoped) ──────────────────────────────────────────────
