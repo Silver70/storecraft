@@ -7,27 +7,12 @@ import {
 import { SettingsPage } from "~/features/settings/pages/settings-page";
 
 export const Route = createFileRoute("/admin/settings")({
-  // An ad platform returns the merchant here when they finish approving, so the
-  // page has to be addressable: which panel to open, which platform the trip
-  // was for, and how it ended. The backend redirect is the only thing that sets
-  // the last two, and they are validated here like any other untrusted input.
+  // Addressable so a link can open one panel. Connecting an ad platform used to
+  // land here too; it belongs to the campaigns page now, because it is not a
+  // preference — without it that page has nothing on it at all.
   validateSearch: z.object({
     section: z
-      .enum([
-        "general",
-        "stores",
-        "team",
-        "api-keys",
-        "ad-platforms",
-        "tax-rates",
-        "audit-log",
-      ])
-      .optional(),
-    ad_platform: z
-      .enum(["meta", "google", "tiktok", "linkedin", "pinterest", "x"])
-      .optional(),
-    ad_platform_result: z
-      .enum(["connected", "not_approved", "failed"])
+      .enum(["general", "stores", "team", "api-keys", "tax-rates", "audit-log"])
       .optional(),
   }),
   loader: ({ context }) =>

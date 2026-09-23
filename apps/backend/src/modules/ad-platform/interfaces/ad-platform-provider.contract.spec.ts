@@ -1,51 +1,76 @@
-import { UnconfiguredAdPlatformAdapter } from '../services/unconfigured-ad-platform.adapter';
+import { ZernioAdPlatformAdapter } from '../services/zernio.adapter';
 
 /**
- * The mirror-only rule, asserted rather than remembered.
+ * The seam, asserted rather than remembered.
  *
- * Connecting this integration is supposed to be incapable of costing a merchant
- * money: nothing in it may create, boost, edit, pause or budget an ad. That is
- * enforced by the absence of a method, which is exactly the kind of guarantee
- * that erodes quietly — a future reader adds "just a pause toggle" to the
- * adapter, and the interface follows a week later.
+ * ADR-0006 settles that there is one vendor and no fallback, so this interface
+ * is no longer insurance against losing them. What it still buys is the swap in
+ * the end-to-end suite: the in-memory fake stands where the adapter stands, and
+ * the whole suite drives the real sync, the real database and the real admin
+ * API without a byte leaving the process.
  *
- * So the check is on the adapter's own surface, including the private helpers,
- * and it fails the moment a write verb appears anywhere on it.
+ * That only holds while the two have the same surface. A method the adapter
+ * grows and the fake does not is a code path no test can reach; a method the
+ * services call that the fake answers differently is a test that passes about
+ * nothing. TypeScript catches the fake falling behind the interface, because it
+ * declares `implements`. What it does not catch is the adapter quietly growing
+ * a public method that callers start reaching for, so that is what is checked
+ * here, in both directions.
  *
- * It runs against whichever adapter is bound to the seam. Right now that is the
- * one that refuses everything, which is a thin thing to assert against — but the
- * assertion is about the shape, and the shape is what the next adapter has to
- * arrive matching.
+ * It replaces a test that asserted no write verb appeared on the adapter. That
+ * rule was real — the integration used to be incapable of costing a merchant
+ * money — and ADR-0006 retired it: campaigns are created here now and they
+ * spend. The guarantee that replaced it is not about the shape of this
+ * interface, so it is not asserted from here.
  */
-const WRITE_VERBS =
-  /(create|boost|edit|update|pause|unpause|resume|activate|budget|bid|spend|publish|schedule|launch|delete|archive)/i;
 
 /** The interface, spelled out, so an addition to it is a deliberate edit here. */
 const EXPECTED_SURFACE = [
   'issueStoreCredential',
   'beginConnection',
   'completeConnection',
+  'listAdAccounts',
+  'ensurePixel',
   'disconnect',
   'revokeStoreCredential',
   'fetchAdTree',
   'health',
-];
+].sort();
+
+/**
+ * Helpers the adapter is entitled to, which callers must never see.
+ *
+ * Named one by one rather than matched by a convention, so that adding one is a
+ * line in this file and not a private method that turns out to be reachable.
+ */
+const INTERNALS = ['connectPlatform', 'teamKey', 'baseUrl', 'call'].sort();
 
 describe('the ad-platform provider contract', () => {
   const methods = Object.getOwnPropertyNames(
-    UnconfiguredAdPlatformAdapter.prototype,
+    ZernioAdPlatformAdapter.prototype,
   ).filter((name) => name !== 'constructor');
 
-  it('implements exactly the interface, and nothing has quietly grown on it', () => {
+  it('implements every method the interface promises', () => {
     for (const expected of EXPECTED_SURFACE) {
       expect(methods).toContain(expected);
     }
   });
 
-  it('has no method that could create, boost, edit, pause or budget an ad', () => {
-    // `issueStoreCredential` and `revokeStoreCredential` write at the provider,
-    // and `fetchAdTree` reads one, but nothing here writes to an ad — which is
-    // the promise being kept.
-    expect(methods.filter((name) => WRITE_VERBS.test(name))).toEqual([]);
+  it('has grown nothing the fake does not also have', () => {
+    // Anything here that is not in one of the two lists is a method the fake
+    // cannot stand in for, and therefore a path the end-to-end suite runs past
+    // in production and never once in a test.
+    const unaccounted = methods
+      .filter((name) => !EXPECTED_SURFACE.includes(name))
+      .filter((name) => !INTERNALS.includes(name));
+
+    expect(unaccounted).toEqual([]);
+  });
+
+  it('names the vendor in this file and in the adapter, and nowhere else', () => {
+    // The class is the one place the vendor's name is allowed to appear. If the
+    // name has spread, it spread through a rename that would have had to touch
+    // this line first.
+    expect(ZernioAdPlatformAdapter.name).toBe('ZernioAdPlatformAdapter');
   });
 });

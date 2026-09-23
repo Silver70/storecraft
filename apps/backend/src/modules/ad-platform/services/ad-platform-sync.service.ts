@@ -4,6 +4,7 @@ import type { AdPlatform } from '../../../shared/database/schema';
 import {
   AD_PLATFORM_PROVIDER,
   type AdPlatformProvider,
+  type StoreCredential,
 } from '../interfaces/ad-platform-provider.interface';
 import {
   AdPlatformConnectionRepository,
@@ -207,12 +208,23 @@ export class AdPlatformSyncService {
         });
       }
 
+      // Both are written together when the ad account is chosen, and a
+      // connection only reaches `connected` through that path — so this is a
+      // row that has been tampered with rather than one mid-flow, and asking
+      // the platform about an account nobody picked is not a thing to guess at.
+      if (!connection.providerAccountRef || !connection.externalAccountId) {
+        throw new Error(
+          `connection ${connection.id} is connected without an ad account`,
+        );
+      }
+
       // Read, and not yet written anywhere: turning the tree into Campaigns,
       // Ads and daily figures is the sync's next job. Asking now keeps the
       // window, the backfill and the failure handling exercised end to end.
       await this.provider.fetchAdTree({
         credential,
         platform: connection.platform,
+        providerAccountRef: connection.providerAccountRef,
         externalAccountId: connection.externalAccountId,
         from: window.from,
         to: window.to,
@@ -265,7 +277,7 @@ export class AdPlatformSyncService {
   private async credentialFor(
     connectionId: string,
     scope: { orgId: string; storeId: string },
-  ): Promise<{ providerRef: string; secret: string }> {
+  ): Promise<StoreCredential> {
     const row = await this.credentials.findByStore(scope.orgId, scope.storeId);
     if (!row?.sealedSecret) {
       // The connection outlived its credential, which a disconnect mid-sync
@@ -277,6 +289,7 @@ export class AdPlatformSyncService {
     }
     return {
       providerRef: row.providerRef,
+      providerKeyRef: row.providerKeyRef,
       secret: this.vault.open(row.sealedSecret),
     };
   }

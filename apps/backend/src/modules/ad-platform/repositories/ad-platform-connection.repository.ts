@@ -23,10 +23,13 @@ export interface ConnectionToSync {
   storeTimezone: string;
 }
 
-export interface UpsertConnectionInput {
+/** The ad account a merchant chose, and what came with it. */
+export interface ConnectAccountInput {
   externalAccountId: string;
   accountName: string | null;
   accountCurrency: string | null;
+  /** The ad account's pixel, found or created at the moment of connecting. */
+  pixelId: string | null;
 }
 
 /**
@@ -74,19 +77,23 @@ export class AdPlatformConnectionRepository {
   }
 
   /**
-   * Records what the merchant approved, reconnecting in place if this Store has
-   * connected this platform before.
+   * Records that the merchant approved at the platform, before any ad account
+   * has been chosen.
    *
-   * Reconnecting moves `connectedAt` and clears `disconnectedAt`, because the
-   * merchant is being told when access was last granted. Nothing else about the
-   * row is reset: it keeps its id, which is what figures already pulled point
-   * at, so a reconnect cannot orphan a past report.
+   * The grant is durable rather than held in the browser because the next step
+   * can be refused — an ad account in the wrong currency is offered and turned
+   * down — and a merchant who closes the tab, or picks the wrong account, must
+   * not be sent back through the platform's approval screen to try again.
+   *
+   * It leaves `connectedAt` alone on a row that already exists: nothing has
+   * been granted to this Store yet, and a merchant re-approving must not be
+   * told they connected today when they have not finished connecting at all.
    */
-  async upsertConnected(
+  async upsertGrant(
     orgId: string,
     storeId: string,
     platform: AdPlatform,
-    input: UpsertConnectionInput,
+    providerAccountRef: string,
   ): Promise<AdPlatformConnection> {
     const now = new Date();
     const [row] = await this.db
@@ -95,26 +102,63 @@ export class AdPlatformConnectionRepository {
         organizationId: orgId,
         storeId,
         platform,
-        externalAccountId: input.externalAccountId,
-        accountName: input.accountName,
-        accountCurrency: input.accountCurrency,
-        status: 'connected',
+        providerAccountRef,
+        status: 'awaiting_account',
         connectedAt: now,
       })
       .onConflictDoUpdate({
         target: [adPlatformConnections.storeId, adPlatformConnections.platform],
         set: {
-          externalAccountId: input.externalAccountId,
-          accountName: input.accountName,
-          accountCurrency: input.accountCurrency,
-          status: 'connected',
-          connectedAt: now,
-          disconnectedAt: null,
+          providerAccountRef,
+          status: 'awaiting_account',
           updatedAt: now,
         },
       })
       .returning();
     return row;
+  }
+
+  /**
+   * Records the ad account the merchant chose, and grants access from now.
+   *
+   * Reconnecting moves `connectedAt` and clears `disconnectedAt`, because the
+   * merchant is being told when access was last granted. Nothing else about the
+   * row is reset: it keeps its id, which is what figures already pulled point
+   * at, so a reconnect cannot orphan a past report.
+   *
+   * An update rather than an upsert, and that is the safeguard: a connection
+   * can only reach `connected` through a grant that was written first, so there
+   * is no path by which an ad account is recorded without a merchant having
+   * approved at the platform.
+   */
+  async markConnected(
+    orgId: string,
+    storeId: string,
+    platform: AdPlatform,
+    input: ConnectAccountInput,
+  ): Promise<AdPlatformConnection | null> {
+    const now = new Date();
+    const [row] = await this.db
+      .update(adPlatformConnections)
+      .set({
+        externalAccountId: input.externalAccountId,
+        accountName: input.accountName,
+        accountCurrency: input.accountCurrency,
+        pixelId: input.pixelId,
+        status: 'connected',
+        connectedAt: now,
+        disconnectedAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(adPlatformConnections.organizationId, orgId),
+          eq(adPlatformConnections.storeId, storeId),
+          eq(adPlatformConnections.platform, platform),
+        ),
+      )
+      .returning();
+    return row ?? null;
   }
 
   /**
@@ -145,6 +189,11 @@ export class AdPlatformConnectionRepository {
   /**
    * Whether any platform other than `excluding` still holds this Store's
    * credential open. The answer decides whether the credential is destroyed.
+   *
+   * A connection still waiting for its ad account counts. It has a grant at the
+   * provider that only this credential can finish, and destroying the key under
+   * it would strand the merchant halfway through connecting a platform they
+   * never asked to disconnect.
    */
   async hasOtherConnected(
     orgId: string,
@@ -158,7 +207,7 @@ export class AdPlatformConnectionRepository {
         and(
           eq(adPlatformConnections.organizationId, orgId),
           eq(adPlatformConnections.storeId, storeId),
-          eq(adPlatformConnections.status, 'connected'),
+          ne(adPlatformConnections.status, 'disconnected'),
           ne(adPlatformConnections.platform, excluding),
         ),
       )

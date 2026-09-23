@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { TenantModule } from '../tenant/tenant.module';
 import { AD_PLATFORM_PROVIDER } from './interfaces/ad-platform-provider.interface';
-import { UnconfiguredAdPlatformAdapter } from './services/unconfigured-ad-platform.adapter';
+import { ZernioAdPlatformAdapter } from './services/zernio.adapter';
 import { AdminAdPlatformController } from './controllers/admin-ad-platform.controller';
 import { AdPlatformCallbackController } from './controllers/ad-platform-callback.controller';
 import { AdPlatformConnectionRepository } from './repositories/ad-platform-connection.repository';
@@ -20,19 +20,19 @@ import { CredentialVault } from './services/credential-vault.service';
  * way the payment provider's is swapped. Nothing outside this module imports
  * the adapter, and nothing inside it except the adapter knows the vendor's name.
  *
- * Right now the adapter bound here knows no vendor at all — see
- * `UnconfiguredAdPlatformAdapter`. The one that was here was a vendor nobody
- * chose and it has been deleted rather than ported.
- *
  * `TenantModule` is imported for the Store the credential is issued against,
- * and for the timezone the platform's day is resolved in — the merchant's day,
- * which is the day the platform is reporting.
+ * for the currency an ad account has to match, and for the timezone the
+ * platform's day is resolved in — the merchant's day, which is the day the
+ * platform is reporting.
  *
  * **Nothing here writes a Campaign, an Ad or a figure yet.** The sync reads
  * the ad tree and records how it went; writing what it read — discovered
  * Campaigns and Ads, their status, and each Ad's daily spend, impressions and
  * clicks into `ad_daily_figures` — is the sync's next job, keyed by the
  * platform's own ids rather than by a tag a merchant had to paste correctly.
+ *
+ * A deployment with no integration configured still boots: the adapter reads
+ * its key lazily, so only a merchant who presses Connect is told there is none.
  */
 @Module({
   imports: [AuthModule, TenantModule],
@@ -40,7 +40,7 @@ import { CredentialVault } from './services/credential-vault.service';
   providers: [
     {
       provide: AD_PLATFORM_PROVIDER,
-      useClass: UnconfiguredAdPlatformAdapter,
+      useClass: ZernioAdPlatformAdapter,
     },
     CredentialVault,
     AdPlatformConnectionRepository,

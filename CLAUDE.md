@@ -142,7 +142,14 @@ ADMIN_JWT_SECRET          64+ char secret for self-issued admin dashboard JWTs
 CUSTOMER_JWT_SECRET       64-char secret for storefront customer JWTs
 STRIPE_SECRET_KEY         Stripe secret
 STRIPE_WEBHOOK_SECRET     Stripe webhook signing secret
+ZERNIO_API_KEY            Team key for the ad-platform vendor. Used only to
+                          create and destroy a Store's profile and scoped key;
+                          every other call carries the Store's own scoped key.
+AD_PLATFORM_ENCRYPTION_KEY  Seals a Store's ad-platform credential at rest
 ```
+
+Without `ZERNIO_API_KEY` the app still boots — the key is read lazily, so only a
+merchant who presses Connect Meta is told the integration is not configured.
 
 ## Agent skills
 

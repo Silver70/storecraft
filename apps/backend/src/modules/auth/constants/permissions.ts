@@ -16,10 +16,10 @@ export const PERMISSIONS = {
   'discounts.write': ['super_admin', 'product_manager'],
   'campaigns.read': ['super_admin', 'product_manager'],
   'campaigns.write': ['super_admin', 'product_manager'],
-  'ad_platforms.read': ['super_admin', 'product_manager'],
   // Connecting an ad platform hands a third party standing access to an ad
   // account, which is an owner's decision in the same class as issuing an API
-  // key — not a campaign edit.
+  // key — not a campaign edit. Choosing which ad account a store reports
+  // against is part of the same grant and asks for the same thing.
   'ad_platforms.write': ['super_admin'],
   // Refreshing figures is not granting access. It reads what the platform
   // already holds and changes nothing at the platform, so the person who reads

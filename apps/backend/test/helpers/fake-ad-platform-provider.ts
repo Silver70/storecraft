@@ -2,13 +2,16 @@ import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import type { AdPlatform } from '../../src/shared/database/schema';
 import type {
+  AdAccountOption,
   AdPlatformProvider,
   AdTree,
   BeginConnectionInput,
   BeginConnectionResult,
   CompleteConnectionInput,
-  ConnectedAccount,
+  ConnectionGrant,
+  EnsurePixelInput,
   FetchAdTreeInput,
+  GrantedAccount,
   IssueCredentialInput,
   ProviderHealth,
   StoreCredential,
@@ -28,6 +31,17 @@ interface BegunConnection {
 interface ReleaseRecord {
   providerRef: string;
   platform: AdPlatform;
+  providerAccountRef: string;
+}
+
+/** A pixel this fake was asked to find or make, and what it answered with. */
+export interface PixelRecord {
+  providerAccountRef: string;
+  externalAccountId: string;
+  storeName: string;
+  /** Whether there was one already, or this call created it. */
+  created: boolean;
+  pixelId: string;
 }
 
 /**
@@ -38,9 +52,16 @@ interface ReleaseRecord {
 export interface FetchRecord {
   providerRef: string;
   platform: AdPlatform;
+  providerAccountRef: string;
   externalAccountId: string;
   from: string;
   to: string;
+}
+
+/** What the merchant approved at the platform, and what it can see. */
+interface Approval {
+  providerAccountRef: string;
+  accounts: AdAccountOption[];
 }
 
 /**
@@ -54,12 +75,13 @@ export interface FetchRecord {
  * about this integration is a question about the request rather than the
  * response: that a credential was issued per Store and not once for the
  * Organization, that the merchant was sent to the platform's own approval
- * screen, that a disconnect actually reached the provider — and, above all,
- * that nothing ever asked it to write. There is no write method to record.
+ * screen, that a pixel was looked for before one was created, and that a
+ * disconnect actually reached the provider.
  *
  * `approve` and `deny` let a test say what the merchant did on the platform's
- * screen, which is the one thing a fake has to supply that a real provider
- * would learn from the merchant.
+ * screen, and `approve` also says which ad accounts that login can see — the
+ * one thing a fake has to supply that a real provider would learn from the
+ * merchant's own Meta account.
  */
 @Injectable()
 export class FakeAdPlatformProvider implements AdPlatformProvider {
@@ -67,9 +89,13 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
   readonly begun: BegunConnection[] = [];
   readonly disconnected: ReleaseRecord[] = [];
   readonly revoked: string[] = [];
+  readonly pixels: PixelRecord[] = [];
 
   /** What the merchant will have approved, keyed `providerRef:platform`. */
-  private readonly approvals = new Map<string, ConnectedAccount>();
+  private readonly approvals = new Map<string, Approval>();
+
+  /** Pixels the ad account already had, keyed by ad account id. */
+  private readonly existingPixels = new Map<string, string>();
 
   readonly fetched: FetchRecord[] = [];
 
@@ -89,24 +115,39 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
   reachable = true;
   maxBackfillDays = 365;
 
-  /** Says the merchant approved this account on the platform's own screen. */
+  /**
+   * Says the merchant approved at the platform, and which ad accounts the
+   * login they used can see.
+   *
+   * One usable account by default, because that is the ordinary merchant: a
+   * test that cares about the picker says so by passing several.
+   */
   approve(
     providerRef: string,
     platform: AdPlatform,
-    account: Partial<ConnectedAccount> = {},
-  ): ConnectedAccount {
-    const approved: ConnectedAccount = {
-      externalAccountId: account.externalAccountId ?? `act_${randomUUID()}`,
-      accountName: account.accountName ?? 'Test Ad Account',
-      currency: account.currency ?? 'USD',
+    accounts: Partial<AdAccountOption>[] = [{}],
+  ): Approval {
+    const approval: Approval = {
+      providerAccountRef: `acct_${randomUUID()}`,
+      accounts: accounts.map((account, index) => ({
+        externalAccountId: account.externalAccountId ?? `act_${100 + index}`,
+        name: account.name ?? `Test Ad Account ${index + 1}`,
+        currency: account.currency ?? 'USD',
+        unusableReason: account.unusableReason ?? null,
+      })),
     };
-    this.approvals.set(`${providerRef}:${platform}`, approved);
-    return approved;
+    this.approvals.set(`${providerRef}:${platform}`, approval);
+    return approval;
   }
 
   /** Says the merchant denied, or closed the tab without choosing. */
   deny(providerRef: string, platform: AdPlatform): void {
     this.approvals.delete(`${providerRef}:${platform}`);
+  }
+
+  /** Says this ad account already has a pixel, so none has to be created. */
+  setExistingPixel(externalAccountId: string, pixelId: string): void {
+    this.existingPixels.set(externalAccountId, pixelId);
   }
 
   /** Says what the platform will report for this account. */
@@ -125,7 +166,9 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     this.disconnected.length = 0;
     this.revoked.length = 0;
     this.fetched.length = 0;
+    this.pixels.length = 0;
     this.approvals.clear();
+    this.existingPixels.clear();
     this.trees.clear();
     this.failNext = null;
     this.failAlways = null;
@@ -137,6 +180,7 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     this.maybeFail();
     const credential: IssuedCredential = {
       providerRef: `ref_${randomUUID()}`,
+      providerKeyRef: `key_${randomUUID()}`,
       secret: `secret_${randomUUID()}`,
       storeId: input.storeId,
       storeName: input.storeName,
@@ -152,8 +196,9 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
       returnUrl: input.returnUrl,
       providerRef: input.credential.providerRef,
     });
-    // A stand-in for the platform's hosted approval and account-selection
-    // screens. The return URL rides on it exactly as it would in the real flow.
+    // A stand-in for the platform's hosted approval screen and its Facebook
+    // Page picker. The return URL rides on it exactly as it would in the real
+    // flow.
     return Promise.resolve({
       approvalUrl: `https://approve.test/${input.platform}?return=${encodeURIComponent(input.returnUrl)}`,
     });
@@ -161,18 +206,64 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
 
   completeConnection(
     input: CompleteConnectionInput,
-  ): Promise<ConnectedAccount | null> {
+  ): Promise<ConnectionGrant | null> {
     this.maybeFail();
+    const approval = this.approvalFor(
+      input.credential.providerRef,
+      input.platform,
+    );
     return Promise.resolve(
-      this.approvals.get(`${input.credential.providerRef}:${input.platform}`) ??
-        null,
+      approval ? { providerAccountRef: approval.providerAccountRef } : null,
     );
   }
 
-  disconnect(credential: StoreCredential, platform: AdPlatform): Promise<void> {
+  listAdAccounts(input: GrantedAccount): Promise<readonly AdAccountOption[]> {
     this.maybeFail();
-    this.disconnected.push({ providerRef: credential.providerRef, platform });
-    this.approvals.delete(`${credential.providerRef}:${platform}`);
+    const approval = this.approvalFor(
+      input.credential.providerRef,
+      input.platform,
+    );
+    if (approval?.providerAccountRef !== input.providerAccountRef) {
+      // A grant this login never gave. The real provider answers the same way,
+      // and the distinction matters: it is what stops a stale grant from
+      // reaching an ad account after the merchant revoked it.
+      return Promise.resolve([]);
+    }
+    return Promise.resolve(approval.accounts);
+  }
+
+  /**
+   * Answers with the pixel the account already had, or makes one.
+   *
+   * Both paths are recorded, because "was one created" is the assertion worth
+   * making: creating a pixel is not idempotent at the real platform, so a
+   * connection that created one every time would litter a merchant's ad
+   * account with them.
+   */
+  ensurePixel(input: EnsurePixelInput): Promise<string> {
+    this.maybeFail();
+    const existing = this.existingPixels.get(input.externalAccountId);
+    const pixelId = existing ?? `pixel_${randomUUID()}`;
+    if (!existing) this.existingPixels.set(input.externalAccountId, pixelId);
+
+    this.pixels.push({
+      providerAccountRef: input.providerAccountRef,
+      externalAccountId: input.externalAccountId,
+      storeName: input.storeName,
+      created: !existing,
+      pixelId,
+    });
+    return Promise.resolve(pixelId);
+  }
+
+  disconnect(input: GrantedAccount): Promise<void> {
+    this.maybeFail();
+    this.disconnected.push({
+      providerRef: input.credential.providerRef,
+      platform: input.platform,
+      providerAccountRef: input.providerAccountRef,
+    });
+    this.approvals.delete(`${input.credential.providerRef}:${input.platform}`);
     return Promise.resolve();
   }
 
@@ -193,6 +284,7 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     this.fetched.push({
       providerRef: input.credential.providerRef,
       platform: input.platform,
+      providerAccountRef: input.providerAccountRef,
       externalAccountId: input.externalAccountId,
       from: input.from,
       to: input.to,
@@ -212,6 +304,13 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
       reachable: this.reachable,
       maxBackfillDays: this.maxBackfillDays,
     });
+  }
+
+  private approvalFor(
+    providerRef: string,
+    platform: AdPlatform,
+  ): Approval | undefined {
+    return this.approvals.get(`${providerRef}:${platform}`);
   }
 
   private maybeFail(): void {

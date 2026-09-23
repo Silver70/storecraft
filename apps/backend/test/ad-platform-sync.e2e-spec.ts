@@ -103,7 +103,14 @@ describe('Ad platform sync (e2e)', () => {
 
   // ─── Driving the flow the way a merchant does ───────────────────────────────
 
-  /** The whole connection round trip, ending with an approved ad account. */
+  /**
+   * The whole connection round trip, ending with a chosen ad account.
+   *
+   * One ad account in the store's own currency, so the merchant is never asked
+   * a question with a single answer and the connection settles on the way back.
+   * The picker and the currency refusal are asserted where they belong, in the
+   * connections spec.
+   */
   async function connect(
     client: AdminClient,
     platform: AdPlatform = 'meta',
@@ -118,13 +125,13 @@ describe('Ad platform sync (e2e)', () => {
     );
 
     const { providerRef } = provider.begun[provider.begun.length - 1];
-    const approved = provider.approve(providerRef, platform, account);
+    const approved = provider.approve(providerRef, platform, [account]);
 
     await request(app.getHttpServer())
       .get(`${returnUrl.pathname}${returnUrl.search}`)
       .expect(302);
 
-    return { providerRef, accountId: approved.externalAccountId };
+    return { providerRef, accountId: approved.accounts[0].externalAccountId };
   }
 
   /**

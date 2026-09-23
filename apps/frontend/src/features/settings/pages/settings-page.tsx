@@ -5,7 +5,6 @@ import { GeneralSettings } from "../panels/general-settings";
 import { StoresSettings } from "../panels/stores-settings";
 import { TeamSettings } from "../panels/team-settings";
 import { ApiKeysSettings } from "../panels/api-keys-settings";
-import { AdPlatformsSettings } from "../panels/ad-platforms-settings";
 import { TaxRatesSettings } from "../panels/tax-rates-settings";
 import { AuditLogSettings } from "../panels/audit-log-settings";
 
@@ -16,7 +15,6 @@ type Section =
   | "stores"
   | "team"
   | "api-keys"
-  | "ad-platforms"
   | "tax-rates"
   | "audit-log";
 
@@ -25,7 +23,6 @@ const SETTINGS_NAV: { key: Section; label: string }[] = [
   { key: "stores", label: "Stores" },
   { key: "team", label: "Team" },
   { key: "api-keys", label: "API Keys" },
-  { key: "ad-platforms", label: "Ad Platforms" },
   { key: "tax-rates", label: "Tax Rates" },
   { key: "audit-log", label: "Audit Log" },
 ];
@@ -71,7 +68,6 @@ export function SettingsPage() {
           {section === "stores" && <StoresSettings />}
           {section === "team" && <TeamSettings />}
           {section === "api-keys" && <ApiKeysSettings />}
-          {section === "ad-platforms" && <AdPlatformsSettings />}
           {section === "tax-rates" && <TaxRatesSettings />}
           {section === "audit-log" && <AuditLogSettings />}
         </div>

@@ -3,27 +3,32 @@ import type { AdPlatform } from '../../../shared/database/schema';
 /**
  * The one place this codebase reaches an ad platform, and the second
  * collaborator after `PaymentProvider` that would otherwise reach a third party
- * over the network. It sits behind an interface for the same reason that one
- * does: so it can be swapped, faked in tests, and — the whole premise of this
- * feature — lost without losing the product.
+ * over the network.
  *
  * **The vendor's name does not appear here, and must not.** No service,
  * repository, controller, table, column or domain type in this codebase is
  * named after whoever implements this. One adapter file knows who they are; if
  * that changes, only that file changes.
  *
- * ## There is no write method, and that is the design
+ * ## Why the seam survives a vendor that is not replaceable
  *
- * Nothing here creates, boosts, edits, pauses or budgets an ad. Mirroring is
- * enforced by the absence of the capability rather than by a rule a future
- * reader has to remember — a merchant connecting a read-only integration cannot
- * be charged a penny by anything we call. Adding a write method is a product
- * decision, not an implementation detail, and would start by editing this
- * comment.
+ * ADR-0006 settles that Campaigns *are* the platform's campaigns, reached
+ * through one named vendor, and that there is no fallback. So this interface is
+ * no longer insurance against losing them. It earns its place for one reason:
+ * it is where the in-memory fake is swapped in, so the end-to-end suite drives
+ * the real sync, the real database and the real admin API without anything
+ * reaching the network. Keep the surface small enough that the fake and the
+ * adapter cannot drift, and assert it — see the contract spec beside this file.
  *
- * `fetchAdTree` is the only read of substance, and it is a read: it names a
- * date range and returns what the platform says happened in it. It cannot
- * change anything at the platform, and no call here can.
+ * ## It is not read-only any more
+ *
+ * It was, deliberately: a merchant connecting a mirror could not be charged a
+ * penny by anything we called. That premise is gone with ADR-0006 — a merchant
+ * creates campaigns here and they spend real money — so the guarantee is now
+ * that every write is one the merchant asked for and could review first, rather
+ * than that no write exists. The connection flow already writes: it creates a
+ * scope at the provider, and it creates a pixel on the ad account when there is
+ * none to find.
  */
 export const AD_PLATFORM_PROVIDER = 'AD_PLATFORM_PROVIDER';
 
@@ -33,7 +38,10 @@ export const AD_PLATFORM_PROVIDER = 'AD_PLATFORM_PROVIDER';
  * Passed to every provider call rather than configured once on the adapter,
  * because "which Store is this for" must be impossible to forget. A provider
  * whose account-level key would work for every Store is precisely the failure
- * this shape exists to prevent.
+ * this shape exists to prevent — and this vendor is exactly that provider: its
+ * write endpoints accept any account id the *team* owns, whichever scope the
+ * key belongs to, which is the inverse of the guarantee `TenantScopedRepository`
+ * holds everywhere else.
  *
  * `secret` is plaintext in memory for the duration of one call. It is never
  * returned by a read, never logged, and never serialized into a response.
@@ -41,6 +49,13 @@ export const AD_PLATFORM_PROVIDER = 'AD_PLATFORM_PROVIDER';
 export interface StoreCredential {
   readonly providerRef: string;
   readonly secret: string;
+  /**
+   * The provider's id for the credential itself, where it issues one.
+   *
+   * A secret cannot name itself for deletion, so without this "revoked on
+   * disconnect" would be true of our copy and false of theirs.
+   */
+  readonly providerKeyRef: string | null;
 }
 
 export interface IssueCredentialInput {
@@ -61,10 +76,10 @@ export interface BeginConnectionInput {
 
 export interface BeginConnectionResult {
   /**
-   * The platform's own hosted approval and account-selection screens. We do not
-   * build a per-platform account picker: the merchant approves with their own
-   * credentials, on the platform's screen, seeing what the platform says they
-   * are granting.
+   * The platform's own hosted approval screen, and whatever selection the
+   * platform itself insists on — a Facebook Page, because Meta will not run an
+   * ad without one. We build no screen of our own here: the merchant approves
+   * with their own credentials, seeing what the platform says they are granting.
    */
   readonly approvalUrl: string;
 }
@@ -76,15 +91,60 @@ export interface CompleteConnectionInput {
   readonly callbackParams: Readonly<Record<string, string>>;
 }
 
-/** What the merchant chose on the platform's own account-selection screen. */
-export interface ConnectedAccount {
+/**
+ * What the merchant granted, which is access — not an ad account.
+ *
+ * The distinction is the whole reason connecting takes two steps. The platform
+ * asks the merchant to approve an integration and to pick a Page; it does not
+ * ask which ad account this *Store* reports against, because it has no idea
+ * this Store exists. That choice is ours to offer and ours to refuse, and it
+ * happens after the merchant is already back in the admin.
+ */
+export interface ConnectionGrant {
+  readonly providerAccountRef: string;
+}
+
+/** A grant that has been resolved to one ad account, as later calls name it. */
+export interface GrantedAccount {
+  readonly credential: StoreCredential;
+  readonly platform: AdPlatform;
+  readonly providerAccountRef: string;
+}
+
+/**
+ * One ad account the approved login can see.
+ *
+ * Every one is offered, including the ones that cannot be used: an ad account
+ * missing from a picker is a merchant wondering whether they approved the wrong
+ * login. What it cannot do is arrive without saying why.
+ */
+export interface AdAccountOption {
+  /** The ad account id at the platform, as the platform spells it. */
   readonly externalAccountId: string;
-  readonly accountName: string | null;
+  readonly name: string | null;
   /**
-   * The ad account's own currency, which is allowed to differ from the Store's.
-   * Recorded, never converted (ADR-0005).
+   * The currency the account is billed in.
+   *
+   * It has to match the Store's. Nothing in this feature converts a figure, so
+   * a mismatch is refused rather than reconciled — in the picker, and again on
+   * the way in.
    */
   readonly currency: string | null;
+  /**
+   * The platform's own reason this account cannot be used — unsettled billing,
+   * a closed account — or null when the platform is happy with it.
+   *
+   * Only the platform's reasons appear here. A currency mismatch is ours and is
+   * decided above, against the Store.
+   */
+  readonly unusableReason: string | null;
+}
+
+export interface EnsurePixelInput extends GrantedAccount {
+  /** The ad account the merchant chose, as the platform spells it. */
+  readonly externalAccountId: string;
+  /** What a pixel we have to create is named after. */
+  readonly storeName: string;
 }
 
 /** Whether the platform is answering, and how much history it will answer with. */
@@ -100,10 +160,8 @@ export interface ProviderHealth {
   readonly maxBackfillDays: number;
 }
 
-export interface FetchAdTreeInput {
-  readonly credential: StoreCredential;
-  readonly platform: AdPlatform;
-  /** The ad account the merchant approved, as the platform spells it. */
+export interface FetchAdTreeInput extends GrantedAccount {
+  /** The ad account the merchant chose, as the platform spells it. */
   readonly externalAccountId: string;
   /** Inclusive `YYYY-MM-DD`, already resolved in the Store's timezone. */
   readonly from: string;
@@ -161,9 +219,9 @@ export interface ReportedAd {
 /**
  * What the platform says is running and what it says each ad did.
  *
- * `currency` is the ad account's own and is allowed to differ from the Store's.
- * It is carried here so every figure can be stored as the currency it actually
- * is — no rate is fetched, inferred or hard-coded anywhere in this feature.
+ * `currency` is the ad account's own, and on a connected account it is the
+ * Store's — the connection refuses any other, so nothing downstream ever has a
+ * rate to apply or a mismatch to explain.
  */
 export interface AdTree {
   readonly currency: string;
@@ -182,16 +240,37 @@ export interface AdPlatformProvider {
   /**
    * Resolves what the merchant actually approved.
    *
-   * Returns `null` when they approved nothing — denied, abandoned, or came back
-   * without choosing an account. That is a normal outcome, not an error: the
-   * merchant is returned to a page that says so rather than to a dead end.
+   * Returns `null` when they approved nothing — denied, or closed the tab. That
+   * is a normal outcome, not an error: the merchant is returned to a page that
+   * says so rather than to a dead end. A platform that answers with a failure
+   * throws instead, so the two are told apart on the page.
    */
   completeConnection(
     input: CompleteConnectionInput,
-  ): Promise<ConnectedAccount | null>;
+  ): Promise<ConnectionGrant | null>;
+
+  /**
+   * Every ad account the approved login can see, including the ones it cannot
+   * use, each carrying the platform's own reason where there is one.
+   *
+   * A pure read against a grant. It is asked once on the way back from the
+   * platform and again whenever the merchant reopens the picker, because an ad
+   * account's standing at the platform is not ours to cache.
+   */
+  listAdAccounts(input: GrantedAccount): Promise<readonly AdAccountOption[]>;
+
+  /**
+   * The ad account's pixel: the first one it already has, or a new one named
+   * after the Store.
+   *
+   * Listing first is not an optimisation. Creating a pixel is not idempotent at
+   * the platform — a second call makes a second pixel — so a connection that
+   * created one every time would litter a merchant's ad account with them.
+   */
+  ensurePixel(input: EnsurePixelInput): Promise<string>;
 
   /** Unlinks one platform from a Store's scope, leaving the others alone. */
-  disconnect(credential: StoreCredential, platform: AdPlatform): Promise<void>;
+  disconnect(input: GrantedAccount): Promise<void>;
 
   /**
    * Destroys the Store's scope at the provider. Called when the Store's last

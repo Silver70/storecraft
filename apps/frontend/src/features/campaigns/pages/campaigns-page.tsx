@@ -1,14 +1,27 @@
 import * as React from "react";
 import { useSuspenseQuery } from "@tanstack/react-query";
+import { getRouteApi } from "@tanstack/react-router";
 import { MegaphoneIcon } from "lucide-react";
 
 import { Card } from "~/components/ui/card";
 import type { AttributedRevenueReport, Period } from "~/types/api";
-import { attributedRevenueQueryOptions } from "../queries";
+import {
+  adPlatformConnectionsQueryOptions,
+  attributedRevenueQueryOptions,
+} from "../queries";
 import {
   CampaignSection,
   UnattributedCard,
 } from "../components/campaign-cards";
+import {
+  AdAccountPicker,
+  ConnectMetaEmptyState,
+  ConnectionResultNote,
+  MetaConnectionSummary,
+  metaConnection,
+} from "../components/meta-connection";
+
+const route = getRouteApi("/admin/campaigns_/");
 
 /**
  * Which campaigns are running, and how much money each one made.
@@ -20,6 +33,7 @@ import {
  */
 export function CampaignsPage() {
   const [period, setPeriod] = React.useState<Period>("30d");
+  const search = route.useSearch();
 
   // The selector re-keys the report query, which suspends. Inside a transition
   // React keeps the current figures on screen until the new ones arrive rather
@@ -27,22 +41,56 @@ export function CampaignsPage() {
   // read as the numbers changing, not as the page reloading.
   const [pending, startTransition] = React.useTransition();
 
+  const connection = metaConnection(
+    useSuspenseQuery(adPlatformConnectionsQueryOptions()).data,
+  );
   const report: AttributedRevenueReport = useSuspenseQuery(
     attributedRevenueQueryOptions(period),
   ).data;
+
+  // Before a connection the whole page is one empty state with one button.
+  // There is nothing else here yet that is true: every campaign on this page is
+  // one on an ad account, and there is no ad account.
+  if (!connection) {
+    return (
+      <div className="space-y-6 pb-10">
+        <Header />
+        {search.ad_platform_result && (
+          <ConnectionResultNote result={search.ad_platform_result} />
+        )}
+        <ConnectMetaEmptyState />
+      </div>
+    );
+  }
+
+  // Approved at Meta, but nobody has said which ad account belongs to this
+  // store. That is our question, and it is the only one worth asking until it
+  // is answered.
+  if (connection.status === "awaiting_account") {
+    return (
+      <div className="space-y-6 pb-10">
+        <Header />
+        {search.ad_platform_result && (
+          <ConnectionResultNote result={search.ad_platform_result} />
+        )}
+        <AdAccountPicker />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 pb-10">
       {/* ── Header ────────────────────────────────────────────────────────── */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Campaigns</h1>
-          <p className="max-w-prose text-sm text-muted-foreground">
-            The campaigns on your connected ad account, and what each one
-            earned.
-          </p>
-        </div>
+        <Header />
+
+        {/* Whose account these figures came from, and how fresh they are. */}
+        <MetaConnectionSummary connection={connection} />
       </div>
+
+      {search.ad_platform_result && (
+        <ConnectionResultNote result={search.ad_platform_result} />
+      )}
 
       {/* ── The one period ────────────────────────────────────────────────── */}
       <PeriodTabs
@@ -77,10 +125,10 @@ export function CampaignsPage() {
       </div>
 
       <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">
-        Each order is credited to the latest ad click: the last visit if it
-        came from one of these campaigns, otherwise the first. Revenue counts
-        paid, processing, shipped and delivered orders — the same ones the
-        dashboard and analytics report.
+        Each order is credited to the latest ad click: the last visit if it came
+        from one of these campaigns, otherwise the first. Revenue counts paid,
+        processing, shipped and delivered orders — the same ones the dashboard
+        and analytics report.
       </p>
     </div>
   );
@@ -123,6 +171,18 @@ function PeriodTabs({
           {period.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/** The page's own title, on the screens that have nothing else on them yet. */
+function Header() {
+  return (
+    <div>
+      <h1 className="text-2xl font-semibold">Campaigns</h1>
+      <p className="max-w-prose text-sm text-muted-foreground">
+        The campaigns on your connected ad account, and what each one earned.
+      </p>
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   HttpException,
   Inject,
   Injectable,
@@ -14,12 +15,14 @@ import type {
 import { StoreService } from '../../tenant/services/store.service';
 import {
   AD_PLATFORM_PROVIDER,
+  type AdAccountOption,
   type AdPlatformProvider,
   type StoreCredential,
 } from '../interfaces/ad-platform-provider.interface';
 import { AdPlatformConnectionRepository } from '../repositories/ad-platform-connection.repository';
 import { AdPlatformCredentialRepository } from '../repositories/ad-platform-credential.repository';
 import { CredentialVault } from './credential-vault.service';
+import { currencyRefusal } from '../utils/account-currency.util';
 import {
   HANDOFF_TTL_MS,
   isSafeReturnPath,
@@ -39,11 +42,23 @@ export interface AdPlatformConnectionView {
   id: string;
   platform: AdPlatform;
   status: AdPlatformConnection['status'];
-  /** The ad account the merchant picked on the platform's own screen. */
-  accountId: string;
+  /**
+   * The ad account the merchant picked, or null while they have approved at
+   * the platform but not yet chosen which account this Store reports against.
+   */
+  accountId: string | null;
   accountName: string | null;
-  /** May differ from the Store's currency. Recorded, never converted. */
+  /**
+   * The ad account's currency. On a connected account it is the Store's — the
+   * selection refuses any other — and it is kept so the check is readable
+   * afterwards rather than only having happened.
+   */
   accountCurrency: string | null;
+  /**
+   * The ad account's pixel, found or created when the account was chosen. Not
+   * a secret: it is embedded in the storefront's own pages.
+   */
+  pixelId: string | null;
   connectedAt: Date;
   disconnectedAt: Date | null;
   /**
@@ -68,14 +83,31 @@ export interface AdPlatformConnectionView {
   syncPausedUntil: Date | null;
 }
 
+/**
+ * One ad account as the picker renders it.
+ *
+ * A refused account is listed, disabled, with the reason — never omitted. An
+ * account missing from the list is a merchant wondering whether they approved
+ * with the wrong login, and going back through the platform to find out.
+ */
+export interface AdAccountChoice {
+  accountId: string;
+  name: string | null;
+  currency: string | null;
+  selectable: boolean;
+  /** Why it cannot be picked, or null when it can. */
+  reason: string | null;
+}
+
 /** How a return trip ended, as the admin page needs to read it. */
 export type ConnectionOutcome =
   | { kind: 'connected'; platform: AdPlatform; returnPath: string }
+  | { kind: 'choose_account'; platform: AdPlatform; returnPath: string }
   | { kind: 'not_approved'; platform: AdPlatform; returnPath: string }
   | { kind: 'failed'; platform: AdPlatform | null; returnPath: string };
 
 /** Where a merchant lands if a return trip arrives with nothing readable on it. */
-const FALLBACK_RETURN_PATH = '/admin/settings?section=ad-platforms';
+const FALLBACK_RETURN_PATH = '/admin/campaigns';
 
 @Injectable()
 export class AdPlatformConnectionService {
@@ -153,6 +185,12 @@ export class AdPlatformConnectionService {
    * being down — has to end at a page in the admin that says what happened.
    * Throwing here would hand a merchant a JSON error body at a URL they cannot
    * navigate away from meaningfully.
+   *
+   * What the platform granted is access, not an ad account: it has no idea this
+   * Store exists and cannot be asked which of the merchant's accounts should
+   * report against it. So the grant is recorded and the merchant is sent to the
+   * picker — unless there is exactly one account they can use, in which case
+   * asking would be a question with one answer.
    */
   async complete(
     state: string | undefined,
@@ -175,42 +213,137 @@ export class AdPlatformConnectionService {
     const { organizationId, storeId, platform, returnPath } = handoff;
 
     try {
-      const row = await this.credentials.findByStore(organizationId, storeId);
-      if (!row?.sealedSecret) {
+      const credential = await this.openCredential(organizationId, storeId);
+      if (!credential) {
         // The credential was revoked between starting and finishing — there is
         // nothing to ask the provider with.
         return { kind: 'not_approved', platform, returnPath };
       }
 
-      const account = await this.provider.completeConnection({
-        credential: {
-          providerRef: row.providerRef,
-          secret: this.vault.open(row.sealedSecret),
-        },
+      const grant = await this.provider.completeConnection({
+        credential,
         platform,
         callbackParams,
       });
 
-      if (!account) return { kind: 'not_approved', platform, returnPath };
+      if (!grant) return { kind: 'not_approved', platform, returnPath };
 
-      await this.connections.upsertConnected(
+      await this.connections.upsertGrant(
         organizationId,
         storeId,
         platform,
-        {
-          externalAccountId: account.externalAccountId,
-          accountName: account.accountName,
-          accountCurrency: account.currency,
-        },
+        grant.providerAccountRef,
       );
 
-      return { kind: 'connected', platform, returnPath };
+      const settled = await this.settleSingleAccount(
+        organizationId,
+        storeId,
+        platform,
+      );
+      return {
+        kind: settled ? 'connected' : 'choose_account',
+        platform,
+        returnPath,
+      };
     } catch (error) {
       this.logger.error(
         `Completing a ${platform} connection failed: ${messageOf(error)}`,
       );
       return { kind: 'failed', platform, returnPath };
     }
+  }
+
+  /**
+   * The ad accounts this Store's grant can see, each already judged.
+   *
+   * Asked of the platform every time rather than cached: an ad account's
+   * standing is the platform's to change, and a picker offering an account that
+   * was closed this morning sends a merchant to a failure instead of to a
+   * reason.
+   */
+  async adAccounts(
+    orgId: string,
+    storeId: string,
+    platform: AdPlatform,
+  ): Promise<AdAccountChoice[]> {
+    const { store, connection, credential } = await this.grantFor(
+      orgId,
+      storeId,
+      platform,
+    );
+
+    const options = await this.reachingProvider(() =>
+      this.provider.listAdAccounts({
+        credential,
+        platform,
+        providerAccountRef: connection.providerAccountRef!,
+      }),
+    );
+
+    return options.map((option) => toChoice(option, store.currency));
+  }
+
+  /**
+   * Records which ad account this Store reports against, and finds its pixel.
+   *
+   * The currency check happens here and not only in the picker, because the
+   * picker is a suggestion and this is the door. A mismatched account refused
+   * on screen and accepted by a hand-made request would put spend in one
+   * currency beside revenue in another, and every ROAS on the page would be
+   * wrong by a rate nobody chose — silently, because nothing would look broken.
+   */
+  async selectAccount(
+    orgId: string,
+    storeId: string,
+    platform: AdPlatform,
+    externalAccountId: string,
+  ): Promise<AdPlatformConnectionView> {
+    const { store, connection, credential } = await this.grantFor(
+      orgId,
+      storeId,
+      platform,
+    );
+    const providerAccountRef = connection.providerAccountRef!;
+
+    const options = await this.reachingProvider(() =>
+      this.provider.listAdAccounts({
+        credential,
+        platform,
+        providerAccountRef,
+      }),
+    );
+
+    const chosen = options.find(
+      (option) => option.externalAccountId === externalAccountId,
+    );
+    if (!chosen) {
+      throw new NotFoundException(
+        'That ad account is not one this connection can reach. It may have been removed since you approved.',
+      );
+    }
+
+    const refusal = toChoice(chosen, store.currency).reason;
+    if (refusal) throw new BadRequestException(refusal);
+
+    const pixelId = await this.reachingProvider(() =>
+      this.provider.ensurePixel({
+        credential,
+        platform,
+        providerAccountRef,
+        externalAccountId: chosen.externalAccountId,
+        storeName: store.name,
+      }),
+    );
+
+    const row = await this.connections.markConnected(orgId, storeId, platform, {
+      externalAccountId: chosen.externalAccountId,
+      accountName: chosen.name,
+      accountCurrency: chosen.currency,
+      pixelId,
+    });
+    if (!row) throw new NotFoundException('Connection not found');
+
+    return toView(row);
   }
 
   /**
@@ -241,11 +374,103 @@ export class AdPlatformConnectionService {
     );
     if (!row) throw new NotFoundException('Connection not found');
 
-    await this.releaseAtProvider(orgId, storeId, platform);
+    await this.releaseAtProvider(
+      orgId,
+      storeId,
+      platform,
+      existing.providerAccountRef,
+    );
     return toView(row);
   }
 
   // ─── Internals ──────────────────────────────────────────────────────────────
+
+  /**
+   * Connects without asking when there is nothing to ask.
+   *
+   * One usable ad account is not a choice, and a picker with a single row on it
+   * is a step that exists only because the code has two. A merchant with
+   * several accounts, or with one they cannot use, gets the picker and its
+   * reasons.
+   *
+   * Reaching the provider here is best-effort on purpose: the grant is already
+   * recorded, so a refusal costs the merchant a click on the picker rather than
+   * the trip back through the platform's approval screen.
+   */
+  private async settleSingleAccount(
+    orgId: string,
+    storeId: string,
+    platform: AdPlatform,
+  ): Promise<boolean> {
+    try {
+      const choices = await this.adAccounts(orgId, storeId, platform);
+      const usable = choices.filter((choice) => choice.selectable);
+      if (usable.length !== 1) return false;
+
+      await this.selectAccount(orgId, storeId, platform, usable[0].accountId);
+      return true;
+    } catch (error) {
+      this.logger.warn(
+        `Could not settle the ${platform} ad account for store ${storeId} automatically: ${messageOf(error)}`,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * The Store, its grant and its credential, or the reason there is no flow to
+   * continue.
+   *
+   * Every ad-account call needs all three, and each of them is a different
+   * failure a merchant can act on: a Store that is not theirs, an approval that
+   * was never given, and a key that was destroyed while they were away.
+   */
+  private async grantFor(
+    orgId: string,
+    storeId: string,
+    platform: AdPlatform,
+  ): Promise<{
+    store: { name: string; currency: string };
+    connection: AdPlatformConnection;
+    credential: StoreCredential;
+  }> {
+    const store = await this.stores.findById(storeId, orgId);
+    if (!store) throw new NotFoundException('Store not found');
+
+    const connection = await this.connections.findByPlatform(
+      orgId,
+      storeId,
+      platform,
+    );
+    if (!connection?.providerAccountRef) {
+      throw new NotFoundException(
+        'This store has not approved this platform yet. Start the connection first.',
+      );
+    }
+
+    const credential = await this.openCredential(orgId, storeId);
+    if (!credential) {
+      throw new BadRequestException(
+        'The credential for this store was revoked. Start the connection again.',
+      );
+    }
+
+    return { store, connection, credential };
+  }
+
+  /** The Store's credential in plaintext, or null when it holds none. */
+  private async openCredential(
+    orgId: string,
+    storeId: string,
+  ): Promise<StoreCredential | null> {
+    const row = await this.credentials.findByStore(orgId, storeId);
+    if (!row?.sealedSecret) return null;
+    return {
+      providerRef: row.providerRef,
+      providerKeyRef: row.providerKeyRef,
+      secret: this.vault.open(row.sealedSecret),
+    };
+  }
 
   /**
    * The Store's credential, issued on first use.
@@ -261,24 +486,18 @@ export class AdPlatformConnectionService {
     storeId: string,
     storeName: string,
   ): Promise<StoreCredential> {
-    const existing = await this.credentials.findByStore(orgId, storeId);
-    if (existing?.sealedSecret) {
-      return {
-        providerRef: existing.providerRef,
-        secret: this.vault.open(existing.sealedSecret),
-      };
-    }
+    const existing = await this.openCredential(orgId, storeId);
+    if (existing) return existing;
 
     const issued = await this.provider.issueStoreCredential({
       storeId,
       storeName,
     });
-    await this.credentials.upsert(
-      orgId,
-      storeId,
-      issued.providerRef,
-      this.vault.seal(issued.secret),
-    );
+    await this.credentials.upsert(orgId, storeId, {
+      providerRef: issued.providerRef,
+      providerKeyRef: issued.providerKeyRef,
+      sealedSecret: this.vault.seal(issued.secret),
+    });
     return issued;
   }
 
@@ -296,14 +515,11 @@ export class AdPlatformConnectionService {
     orgId: string,
     storeId: string,
     platform: AdPlatform,
+    providerAccountRef: string | null,
   ): Promise<void> {
-    const row = await this.credentials.findByStore(orgId, storeId);
-    if (!row?.sealedSecret) return;
+    const credential = await this.openCredential(orgId, storeId);
+    if (!credential) return;
 
-    const credential: StoreCredential = {
-      providerRef: row.providerRef,
-      secret: this.vault.open(row.sealedSecret),
-    };
     const lastOne = !(await this.connections.hasOtherConnected(
       orgId,
       storeId,
@@ -311,7 +527,13 @@ export class AdPlatformConnectionService {
     ));
 
     try {
-      await this.provider.disconnect(credential, platform);
+      if (providerAccountRef) {
+        await this.provider.disconnect({
+          credential,
+          platform,
+          providerAccountRef,
+        });
+      }
       if (lastOne) await this.provider.revokeStoreCredential(credential);
     } catch (error) {
       this.logger.error(
@@ -363,6 +585,28 @@ export class AdPlatformConnectionService {
   }
 }
 
+/**
+ * One ad account, judged against the Store.
+ *
+ * The platform's own objection wins when it has one — an account with unsettled
+ * billing cannot be used whatever its currency is, and telling a merchant about
+ * the currency first would send them to fix the wrong thing.
+ */
+function toChoice(
+  option: AdAccountOption,
+  storeCurrency: string,
+): AdAccountChoice {
+  const reason =
+    option.unusableReason ?? currencyRefusal(storeCurrency, option.currency);
+  return {
+    accountId: option.externalAccountId,
+    name: option.name,
+    currency: option.currency,
+    selectable: reason === null,
+    reason,
+  };
+}
+
 function toView(row: AdPlatformConnection): AdPlatformConnectionView {
   return {
     id: row.id,
@@ -371,6 +615,7 @@ function toView(row: AdPlatformConnection): AdPlatformConnectionView {
     accountId: row.externalAccountId,
     accountName: row.accountName,
     accountCurrency: row.accountCurrency,
+    pixelId: row.pixelId,
     connectedAt: row.connectedAt,
     disconnectedAt: row.disconnectedAt,
     lastSyncedAt: row.lastSyncedAt,

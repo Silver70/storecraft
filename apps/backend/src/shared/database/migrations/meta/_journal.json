@@ -183,6 +183,13 @@
       "when": 1790180372278,
       "tag": "0025_store_storefront_url",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1790182730322,
+      "tag": "0026_connect_a_store_to_meta",
+      "breakpoints": true
     }
   ]
 }

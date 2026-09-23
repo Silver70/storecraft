@@ -4,6 +4,7 @@ import { stores } from './stores.schema';
 
 export const AD_PLATFORM_CREDENTIAL_LIMITS = {
   providerRef: 255,
+  providerKeyRef: 255,
 } as const;
 
 /**
@@ -42,6 +43,17 @@ export const adPlatformCredentials = pgTable('ad_platform_credentials', {
   providerRef: varchar('provider_ref', {
     length: AD_PLATFORM_CREDENTIAL_LIMITS.providerRef,
   }).notNull(),
+  /**
+   * The provider's handle for the key itself, so that revoking it is possible.
+   *
+   * A secret cannot be used to name itself for deletion, and destroying our
+   * copy of one leaves it working at the provider. This is the id that makes
+   * "revoked on disconnect" true on their side as well as ours. It is not a
+   * secret and opens nothing on its own.
+   */
+  providerKeyRef: varchar('provider_key_ref', {
+    length: AD_PLATFORM_CREDENTIAL_LIMITS.providerKeyRef,
+  }),
   /** Sealed. Null once revoked — the row outlives the secret it held. */
   sealedSecret: text('sealed_secret'),
   issuedAt: timestamp('issued_at').notNull().defaultNow(),

@@ -13,13 +13,18 @@ import type { TenantContext } from '../../../shared/tenant/tenant-context';
 import { requireStoreContext } from '../../../shared/tenant/tenant.util';
 import {
   AdPlatformConnectionService,
+  type AdAccountChoice,
   type AdPlatformConnectionView,
 } from '../services/ad-platform-connection.service';
 import {
   AdPlatformSyncService,
   type SyncOutcome,
 } from '../services/ad-platform-sync.service';
-import { AdPlatformParamDto, BeginConnectionDto } from '../dto/ad-platform.dto';
+import {
+  AdPlatformParamDto,
+  BeginConnectionDto,
+  SelectAdAccountDto,
+} from '../dto/ad-platform.dto';
 
 /**
  * Connecting a Store to an ad platform, seeing what it is connected to, and
@@ -29,6 +34,16 @@ import { AdPlatformParamDto, BeginConnectionDto } from '../dto/ad-platform.dto';
  * store and a UK store hold separate connections to separate ad accounts, and
  * neither can read the other's. No response on this controller can carry a
  * credential — the view type has no field for one.
+ *
+ * ## Why the read and the write ask for different things
+ *
+ * Granting a third party standing access to an ad account is an owner's
+ * decision, in the same class as issuing an API key — so connecting, choosing
+ * the account and disconnecting all need `super_admin`. Reading which account a
+ * store is connected to is part of reading the campaigns page, so it asks for
+ * exactly what that page asks for: `campaigns.read`. A product manager who can
+ * see every campaign and every figure would otherwise be unable to see which
+ * account produced them.
  */
 @ApiTags('Ad platforms')
 @ApiBearerAuth()
@@ -41,7 +56,7 @@ export class AdminAdPlatformController {
   ) {}
 
   @Get()
-  @RequirePermission('ad_platforms.read')
+  @RequirePermission('campaigns.read')
   @ApiOperation({
     summary: "List a store's ad-platform connections",
     description:
@@ -79,6 +94,73 @@ export class AdminAdPlatformController {
       storeId,
       params.platform,
       dto.returnPath,
+    );
+  }
+
+  /**
+   * The ad accounts the approved login can see, each already judged.
+   *
+   * Every one is listed, including the ones that cannot be used and the reason
+   * why. An account left out of this list is a merchant wondering whether they
+   * approved with the wrong login, and going back through the platform to find
+   * out.
+   */
+  @Get(':platform/ad-accounts')
+  @RequirePermission('ad_platforms.write')
+  @ApiOperation({
+    summary: 'List the ad accounts this store could report against',
+    description:
+      "Read after the merchant comes back from the platform. Accounts billed in a currency other than the store's are listed but cannot be selected, and carry the reason — figures are never converted.",
+  })
+  @ApiResponse({ status: 200 })
+  @ApiResponse({
+    status: 404,
+    description: 'This store has not approved this platform',
+  })
+  async adAccounts(
+    @Param() params: AdPlatformParamDto,
+    @CurrentTenant() tenant: TenantContext,
+  ): Promise<AdAccountChoice[]> {
+    const { organizationId, storeId } = requireStoreContext(tenant);
+    return this.connections.adAccounts(
+      organizationId,
+      storeId,
+      params.platform,
+    );
+  }
+
+  /**
+   * Records which ad account this store reports against.
+   *
+   * The currency check happens here and not only in the picker: a mismatched
+   * account refused on screen and accepted by a hand-made request would put
+   * spend in one currency beside revenue in another, and every ROAS on the page
+   * would be wrong by a rate nobody chose.
+   */
+  @Post(':platform/account')
+  @RequirePermission('ad_platforms.write')
+  @ApiOperation({
+    summary: 'Choose the ad account this store reports against',
+    description:
+      'Completes the connection: the account is recorded with its name and currency, and its pixel is found or created and named after the store. An account in another currency is refused with the reason.',
+  })
+  @ApiResponse({ status: 201 })
+  @ApiResponse({
+    status: 400,
+    description: "The account's currency is not the store's",
+  })
+  @ApiResponse({ status: 404, description: 'No such account on this grant' })
+  async selectAccount(
+    @Param() params: AdPlatformParamDto,
+    @Body() dto: SelectAdAccountDto,
+    @CurrentTenant() tenant: TenantContext,
+  ): Promise<AdPlatformConnectionView> {
+    const { organizationId, storeId } = requireStoreContext(tenant);
+    return this.connections.selectAccount(
+      organizationId,
+      storeId,
+      params.platform,
+      dto.accountId,
     );
   }
 

@@ -42,8 +42,11 @@ export class AdPlatformCredentialRepository {
   async upsert(
     orgId: string,
     storeId: string,
-    providerRef: string,
-    sealedSecret: string,
+    input: {
+      providerRef: string;
+      providerKeyRef: string | null;
+      sealedSecret: string;
+    },
   ): Promise<AdPlatformCredential> {
     const now = new Date();
     const [row] = await this.db
@@ -51,15 +54,17 @@ export class AdPlatformCredentialRepository {
       .values({
         organizationId: orgId,
         storeId,
-        providerRef,
-        sealedSecret,
+        providerRef: input.providerRef,
+        providerKeyRef: input.providerKeyRef,
+        sealedSecret: input.sealedSecret,
         issuedAt: now,
       })
       .onConflictDoUpdate({
         target: adPlatformCredentials.storeId,
         set: {
-          providerRef,
-          sealedSecret,
+          providerRef: input.providerRef,
+          providerKeyRef: input.providerKeyRef,
+          sealedSecret: input.sealedSecret,
           issuedAt: now,
           revokedAt: null,
           updatedAt: now,
@@ -83,7 +88,12 @@ export class AdPlatformCredentialRepository {
     const now = new Date();
     const [row] = await this.db
       .update(adPlatformCredentials)
-      .set({ sealedSecret: null, revokedAt: now, updatedAt: now })
+      .set({
+        sealedSecret: null,
+        providerKeyRef: null,
+        revokedAt: now,
+        updatedAt: now,
+      })
       .where(
         and(
           eq(adPlatformCredentials.organizationId, orgId),

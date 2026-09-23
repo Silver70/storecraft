@@ -192,14 +192,24 @@ deleted on the platform — it still spent money, so it is never hidden). Change
 here only by pausing or resuming through the platform.
 _Avoid_: Platform State, delivery status, review status, archived
 
+**Ad Account**:
+The account at the ad platform that a Store's spend is charged to, and the unit
+a Campaign belongs to. The merchant chooses which of theirs a Store reports
+against, in the admin and not on the platform's screen — the platform has never
+heard of the Store. One billed in a currency other than the Store's is offered
+and refused, with the reason, because nothing here converts a figure.
+_Avoid_: Ad manager, business account, advertiser, profile
+
 **Ad Platform Connection**:
 One Store's link to one ad platform — the ad account a merchant approved on the
 platform's own screen, and when access was last granted. Per Store and never per
 Organization: a US store and a UK store approve separate ad accounts, because
 Campaigns and currency are both Store-scoped. Only an ad account billed in the
 Store's own currency can be connected, so no figure here is ever converted.
-Disconnected, never deleted, so revoking access cannot rewrite the reports it
-produced.
+Approving and choosing an Ad Account are two steps, and the state between them
+is durable: a merchant who closes the tab, or picks an account that is refused,
+does not go back through the platform's approval screen. Disconnected, never
+deleted, so revoking access cannot rewrite the reports it produced.
 _Avoid_: Integration, app, install, linked account
 
 **Ad Platform Provider**:

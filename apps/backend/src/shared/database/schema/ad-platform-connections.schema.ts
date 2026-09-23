@@ -33,14 +33,24 @@ export const adPlatformEnum = pgEnum('ad_platform', [
 export type AdPlatform = (typeof adPlatformEnum.enumValues)[number];
 
 /**
- * Disconnected rather than deleted: figures already pulled belong to the
+ * Where a connection has got to.
+ *
+ * `awaiting_account` is the middle of the flow made durable: the merchant has
+ * approved on the platform's own screen, so we hold a grant, but no ad account
+ * has been chosen for this Store yet. It is a row rather than a value held in
+ * the browser because the choice can be refused — an ad account billed in
+ * another currency than the Store's is offered and turned down — and a merchant
+ * who closes the tab, or picks the wrong one, must not be sent back through
+ * Meta's approval screen to try again.
+ *
+ * `disconnected` rather than deleted: figures already pulled belong to the
  * campaigns that connection produced, and revoking access must not rewrite a
- * past report. A
- * disconnect stops the sync and destroys the credential; it removes nothing.
+ * past report. A disconnect stops the sync and destroys the credential; it
+ * removes nothing.
  */
 export const adPlatformConnectionStatusEnum = pgEnum(
   'ad_platform_connection_status',
-  ['connected', 'disconnected'],
+  ['awaiting_account', 'connected', 'disconnected'],
 );
 
 export type AdPlatformConnectionStatus =
@@ -48,7 +58,9 @@ export type AdPlatformConnectionStatus =
 
 export const AD_PLATFORM_CONNECTION_LIMITS = {
   externalAccountId: 255,
+  providerAccountRef: 255,
   accountName: 255,
+  pixelId: 64,
   /** Wide enough for a sentence a merchant reads, narrow enough to stay one. */
   lastSyncError: 500,
 } as const;
@@ -60,11 +72,12 @@ export const AD_PLATFORM_CONNECTION_LIMITS = {
  * Scoped to the Store and not the Organization, so a US store and a UK store
  * each approve their own ad account and neither can read the other's.
  *
- * `accountCurrency` is denormalized off the platform's ad account rather than
- * read from the Store, because the two are allowed to differ and the
- * difference has to stay visible: ADR-0005 forbids converting one into the
- * other, so a figure in a foreign currency is stored as what it is and no ROAS
- * is computed across the mismatch.
+ * `accountCurrency` is denormalized off the platform's ad account even though a
+ * connected one always matches the Store's, because it is the fact the match
+ * was checked against and it has to stay readable afterwards. The two are not
+ * allowed to differ: an ad account billed in another currency is refused at
+ * selection, in the picker and again server-side, so that no figure in this
+ * feature is ever converted and no conversion logic exists anywhere (ADR-0006).
  */
 export const adPlatformConnections = pgTable(
   'ad_platform_connections',
@@ -77,19 +90,52 @@ export const adPlatformConnections = pgTable(
       .notNull()
       .references(() => stores.id, { onDelete: 'cascade' }),
     platform: adPlatformEnum('platform').notNull(),
-    /** The ad account id at the platform, as the platform spells it. */
+    /**
+     * The provider's handle for the platform login the merchant approved.
+     *
+     * Not a secret and not an ad account: it is the thing every later call
+     * names when it asks the provider to act against this grant — list the ad
+     * accounts it can see, find or create a pixel, read the ad tree. It is
+     * written the moment the merchant comes back from the platform, which is
+     * before an ad account has been chosen, and that is why it is a column of
+     * its own rather than something derived from `external_account_id`.
+     */
+    providerAccountRef: varchar('provider_account_ref', {
+      length: AD_PLATFORM_CONNECTION_LIMITS.providerAccountRef,
+    }),
+    /**
+     * The ad account id at the platform, as the platform spells it. Null only
+     * while the merchant has approved but not yet chosen one.
+     */
     externalAccountId: varchar('external_account_id', {
       length: AD_PLATFORM_CONNECTION_LIMITS.externalAccountId,
-    }).notNull(),
+    }),
     /** What the merchant calls the account on the platform's own screen. */
     accountName: varchar('account_name', {
       length: AD_PLATFORM_CONNECTION_LIMITS.accountName,
     }),
     accountCurrency: varchar('account_currency', { length: 3 }),
+    /**
+     * The ad account's pixel, found at connection or created and named after
+     * the Store.
+     *
+     * Here rather than on the Store because it belongs to the ad account: a
+     * Store that reconnects to a different ad account gets that account's
+     * pixel, and one that disconnects keeps the id beside the figures the
+     * pixel's account produced. The storefront reads it from the public API so
+     * that connecting Meta switches measurement on without a redeploy.
+     */
+    pixelId: varchar('pixel_id', {
+      length: AD_PLATFORM_CONNECTION_LIMITS.pixelId,
+    }),
     status: adPlatformConnectionStatusEnum('status')
       .notNull()
       .default('connected'),
-    /** When access was last granted. A reconnect moves it; a disconnect does not. */
+    /**
+     * When access was granted — the moment the ad account was chosen, not the
+     * moment the merchant came back from the platform. A reconnect moves it; a
+     * disconnect does not.
+     */
     connectedAt: timestamp('connected_at').notNull().defaultNow(),
     disconnectedAt: timestamp('disconnected_at'),
     /**

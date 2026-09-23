@@ -57,12 +57,19 @@ export type AdPlatform = (typeof AD_PLATFORMS)[number];
 export type AdPlatformConnection = {
   id: string;
   platform: AdPlatform;
-  status: "connected" | "disconnected";
-  accountId: string;
+  // `awaiting_account` is the middle of the flow: the merchant approved at the
+  // platform, and has not yet said which of their ad accounts this store
+  // reports against.
+  status: "awaiting_account" | "connected" | "disconnected";
+  accountId: string | null;
   accountName: string | null;
-  // The ad account's own currency, which may differ from the Store's. Shown as
-  // it is; never converted.
+  // The ad account's currency. On a connected account it is the store's — an
+  // account billed in anything else is refused — and it is kept so the check is
+  // readable rather than only having happened.
   accountCurrency: string | null;
+  // The ad account's pixel, found or created at connection. Not a secret: it is
+  // embedded in the storefront's own pages.
+  pixelId: string | null;
   connectedAt: string;
   disconnectedAt: string | null;
   // When a sync last succeeded, or null if none ever has. Shown so a figure
@@ -74,6 +81,21 @@ export type AdPlatformConnection = {
   // Displayed, never thrown: a vendor outage costs freshness, not the page.
   lastSyncError: string | null;
   syncPausedUntil: string | null;
+};
+
+/**
+ * One ad account the approved login can see, already judged against the store.
+ *
+ * Every account is listed, including the ones that cannot be used, because an
+ * account missing from the picker is a merchant wondering whether they approved
+ * with the wrong login. `reason` is what the row says instead of nothing.
+ */
+export type AdAccountChoice = {
+  accountId: string;
+  name: string | null;
+  currency: string | null;
+  selectable: boolean;
+  reason: string | null;
 };
 
 // What a sync did, as the page reports it back. A failure arrives here rather
