@@ -1,44 +1,50 @@
 import { cn } from "~/lib/utils";
 import { formatMoney } from "~/lib/money";
-import type { PerformanceFigures } from "~/types/api";
+import type { RevenueBucket } from "~/types/api";
 
 /**
  * The two figures every line of this page carries, said the same way at every
- * grain — a campaign, one of its ads, or the unassigned residue between them.
+ * grain — a campaign, one of its ads, or the revenue that named no ad.
  *
  * One component rather than one per card, so a campaign and the ads beneath it
  * cannot come to present the same number differently.
  *
- * **There is no cost side any more.** Spend was typed in by hand, and ROAS and
- * contribution margin were arithmetic on top of it — all three were only ever as
- * current as the last day a merchant remembered to enter. They come back when
- * the ad platform reports what it charged. Nothing stands in for them in the
- * meantime: a `$0.00` spend would be a claim, and it would be false.
+ * **Not Tracked is not zero.** When `tracked` is false the ads carry no Link
+ * Tags, so no order could name them: the revenue is unknown, and it is shown as
+ * a dash and the words "Not tracked" rather than as `$0.00`, which would invent
+ * a failure that did not happen.
  *
  * The lookback window rides under the revenue rather than in a legend. It is
- * the reason this figure differs from the ad platform's, and a merchant reading
- * the number will not go looking for it.
+ * one reason this figure differs from the ad platform's.
  */
 export function FigureList({
   line,
   lookbackDays,
+  tracked = true,
   layout = "stack",
   className,
 }: {
-  line: PerformanceFigures;
+  line: RevenueBucket;
   lookbackDays: number;
+  /** False for a Not Tracked campaign or ad. Defaults to tracked. */
+  tracked?: boolean;
   /** `row` for a campaign header, `stack` for a card in the grid. */
   layout?: "row" | "stack";
   className?: string;
 }) {
-  const figures: { label: string; value: string; caveat?: string }[] = [
-    {
-      label: "Revenue",
-      value: formatMoney(line.revenue),
-      caveat: `${lookbackDays}-day window`,
-    },
-    { label: "Purchases", value: line.orders.toLocaleString() },
-  ];
+  const figures: { label: string; value: string; caveat?: string }[] = tracked
+    ? [
+        {
+          label: "Revenue",
+          value: formatMoney(line.revenue),
+          caveat: `${lookbackDays}-day window`,
+        },
+        { label: "Purchases", value: line.orders.toLocaleString() },
+      ]
+    : [
+        { label: "Revenue", value: "—", caveat: "Not tracked" },
+        { label: "Purchases", value: "—", caveat: "Not tracked" },
+      ];
 
   return (
     <dl

@@ -5,9 +5,6 @@ import { DRIZZLE_CLIENT } from '../../../shared/database/database.module';
 import { orders } from '../../../shared/database/schema';
 import type { AttributableOrder } from '../utils/attributed-revenue.util';
 
-/** Which Touch a report credits: the ad that discovered the visitor, or the one that closed them. */
-export type AttributionTouch = 'first' | 'last';
-
 /**
  * The Order statuses that count as realized revenue — the same four the
  * dashboard and the analytics sales reports count, stated here so attributed
@@ -46,34 +43,6 @@ const IS_BOT = sql<boolean>`EXISTS (
     )
 )`;
 
-/**
- * The Touch column group the selected mode reads, as stored on the Order.
- *
- * `utm_content` is read alongside the rest because an Ad is resolved from the
- * same Touch as its Campaign (ADR-0004), and both Touches have carried it since
- * ADR-0001 — which is what makes the split by Ad retroactive rather than
- * something that starts measuring from the day it ships.
- */
-function touchColumns(touch: AttributionTouch) {
-  return touch === 'first'
-    ? {
-        utmSource: orders.firstTouchUtmSource,
-        utmMedium: orders.firstTouchUtmMedium,
-        utmCampaign: orders.firstTouchUtmCampaign,
-        utmContent: orders.firstTouchUtmContent,
-        referrer: orders.firstTouchReferrer,
-        touchedAt: orders.firstTouchAt,
-      }
-    : {
-        utmSource: orders.lastTouchUtmSource,
-        utmMedium: orders.lastTouchUtmMedium,
-        utmCampaign: orders.lastTouchUtmCampaign,
-        utmContent: orders.lastTouchUtmContent,
-        referrer: orders.lastTouchReferrer,
-        touchedAt: orders.lastTouchAt,
-      };
-}
-
 /** The Orders one Store realized in a period. */
 function attributableOrders(
   orgId: string,
@@ -93,17 +62,11 @@ function attributableOrders(
 /**
  * Reads the Orders a period's attributed-revenue report is computed from.
  *
- * Deliberately no aggregation in SQL. Resolving an Order to a Campaign means
- * running the matching rules, which normalize both sides of every comparison —
- * expressible in SQL, but only as something no one could read or unit test. The
- * rows come back raw and the decision happens in `attributed-revenue.util`,
- * where it is exercised without a database.
- *
- * One row per Order and no joins. The line items used to be summed here for a
- * goods basis that Contribution Margin was built on; margin needed Spend, Spend
- * was typed in by hand, and all of it is gone until the ad platform reports the
- * cost itself. What is left is the Order's own total, which is what attributed
- * revenue has always been.
+ * Deliberately no aggregation in SQL. Which Campaign an Order is credited to is
+ * the latest-ad-click rule, and that rule is written once, in
+ * `attributed-revenue.util`, where it is exercised without a database. The rows
+ * come back raw — one per Order, both Touches on it — and the decision happens
+ * there.
  */
 @Injectable()
 export class AttributionRepository {
@@ -112,22 +75,19 @@ export class AttributionRepository {
   async findAttributableOrders(
     orgId: string,
     storeId: string,
-    touch: AttributionTouch,
     start: Date,
     end: Date,
   ): Promise<AttributableOrder[]> {
-    const columns = touchColumns(touch);
-
     const rows = await this.db
       .select({
         total: orders.total,
         placedAt: orders.createdAt,
-        utmSource: columns.utmSource,
-        utmMedium: columns.utmMedium,
-        utmCampaign: columns.utmCampaign,
-        utmContent: columns.utmContent,
-        referrer: columns.referrer,
-        touchedAt: columns.touchedAt,
+        firstUtmCampaign: orders.firstTouchUtmCampaign,
+        firstUtmContent: orders.firstTouchUtmContent,
+        firstAt: orders.firstTouchAt,
+        lastUtmCampaign: orders.lastTouchUtmCampaign,
+        lastUtmContent: orders.lastTouchUtmContent,
+        lastAt: orders.lastTouchAt,
         isBot: IS_BOT,
       })
       .from(orders)
@@ -137,13 +97,15 @@ export class AttributionRepository {
       total: row.total,
       placedAt: row.placedAt,
       isBot: row.isBot === true,
-      touch: {
-        utmSource: row.utmSource,
-        utmMedium: row.utmMedium,
-        utmCampaign: row.utmCampaign,
-        utmContent: row.utmContent,
-        referrer: row.referrer,
-        at: row.touchedAt,
+      firstTouch: {
+        utmCampaign: row.firstUtmCampaign,
+        utmContent: row.firstUtmContent,
+        at: row.firstAt,
+      },
+      lastTouch: {
+        utmCampaign: row.lastUtmCampaign,
+        utmContent: row.lastUtmContent,
+        at: row.lastAt,
       },
     }));
   }

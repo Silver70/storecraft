@@ -14,10 +14,8 @@ import { stores } from './stores.schema';
 /**
  * The ad platforms a Store can be connected to.
  *
- * A deliberate subset of `campaign_platform`, using the same spellings: every
- * value here is a platform that reports an ad tree we can mirror. `email`,
- * `sms`, `affiliate` and `influencer` are absent because nothing can be pulled
- * from them.
+ * Also the vocabulary of `campaigns.platform`: a Campaign is always one on an
+ * ad platform a Store can connect, and nothing else is a Campaign.
  *
  * Named for the platform the merchant approves on, never for the provider we
  * reach it through: the provider is one implementation of an interface and is
@@ -35,9 +33,9 @@ export const adPlatformEnum = pgEnum('ad_platform', [
 export type AdPlatform = (typeof adPlatformEnum.enumValues)[number];
 
 /**
- * Disconnected rather than deleted, for the reason a Campaign is archived
- * rather than deleted: figures already pulled point at the connection that
- * produced them, and revoking access must not rewrite a past report. A
+ * Disconnected rather than deleted: figures already pulled belong to the
+ * campaigns that connection produced, and revoking access must not rewrite a
+ * past report. A
  * disconnect stops the sync and destroys the credential; it removes nothing.
  */
 export const adPlatformConnectionStatusEnum = pgEnum(

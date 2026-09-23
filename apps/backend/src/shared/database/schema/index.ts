@@ -40,7 +40,7 @@ export * from './analytics-events.schema';
 export * from './analytics-daily-metrics.schema';
 export * from './campaigns.schema';
 export * from './ads.schema';
-export * from './campaign-matching-rules.schema';
+export * from './ad-daily-figures.schema';
 export * from './content-slots.schema';
 export * from './ad-platform-credentials.schema';
 export * from './ad-platform-connections.schema';

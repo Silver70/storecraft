@@ -38,9 +38,8 @@ export type ApiKeyWithSecret = ApiKey & {
 
 // ─── Ad platforms ─────────────────────────────────────────────────────────────
 
-// The ad platforms a Store can be connected to. A deliberate subset of the
-// Campaign platforms: email, SMS, affiliate and influencer have no ad tree
-// behind them and stay hand-costed.
+// The ad platforms a Store can be connected to — and the only platforms a
+// Campaign can be on.
 export const AD_PLATFORMS = [
   "meta",
   "google",
@@ -85,13 +84,6 @@ export type AdPlatformSyncOutcome = {
   from: string;
   to: string;
   backfill: boolean;
-  /**
-   * How many ads had the platform's own state and placement recorded beside
-   * their own status. **Never a count of status changes** — a sync writes no
-   * ad's status, ever, which is what lets an ad be active here and rejected
-   * there at the same time.
-   */
-  platformStateWritten: number;
   message: string | null;
 };
 
@@ -382,188 +374,67 @@ export type Coupon = {
 // ─── Campaigns ────────────────────────────────────────────────────────────────
 
 /**
- * Kept in sync with the `campaign_platform` enum in the backend schema. Adding
- * one is an `ALTER TYPE ... ADD VALUE` there and a line here.
+ * A Campaign's platform is always an ad platform a Store can connect — the
+ * backend uses the same enum for both.
  */
-export const CAMPAIGN_PLATFORMS = [
-  "meta",
-  "google",
-  "tiktok",
-  "instagram",
-  "youtube",
-  "x",
-  "linkedin",
-  "pinterest",
-  "email",
-  "sms",
-  "affiliate",
-  "influencer",
-  "other",
-] as const;
+export type CampaignPlatform = AdPlatform;
 
-export type CampaignPlatform = (typeof CAMPAIGN_PLATFORMS)[number];
+/**
+ * What the platform says a Campaign or Ad is doing, collapsed to five answers.
+ * Read from the platform and never set here; `ended` covers a finished schedule
+ * and a campaign deleted on the platform, and is never hidden.
+ */
+export type CampaignStatus =
+  | "active"
+  | "paused"
+  | "in_review"
+  | "needs_attention"
+  | "ended";
 
-/** There is no deleted state — a campaign explains orders already reported. */
-export type CampaignStatus = "active" | "archived";
-
-// Raw campaigns row from backend
+/** One campaign on the Store's connected ad account, keyed by the platform's id. */
 export type Campaign = {
   id: string;
   organizationId: string;
   storeId: string;
-  name: string;
-  /**
-   * The canonical `utm_campaign` value. Assigned at creation, unique within the
-   * store, and unchanged by a rename so links already live keep matching.
-   */
-  tag: string;
   platform: CampaignPlatform;
-  externalId: string | null;
+  /** The platform's campaign id — what `utm_campaign` carries on a click. */
+  externalId: string;
+  name: string;
   status: CampaignStatus;
-  archivedAt: string | null;
+  startsAt: string | null;
+  endsAt: string | null;
+  coverUrl: string | null;
+  /** Tracked when true. When false, revenue is unknown — never show it as zero. */
+  hasLinkTags: boolean;
   createdAt: string;
   updatedAt: string;
 };
 
 // ─── Ads ──────────────────────────────────────────────────────────────────────
 
-/** An ad shares the campaign's status vocabulary, and its lack of a deleted one. */
 export type AdStatus = CampaignStatus;
 
-/**
- * The ad platform's own view of an ad, in the platform's own terms.
- *
- * A separate vocabulary from `AdStatus` because it is a separate fact, decided
- * by somebody else: `active` and `archived` are what the merchant chose here,
- * and these five are what the platform decided there. Neither translates into
- * the other and neither overwrites it — an ad that is active here and
- * `rejected` there is exactly the pairing worth showing, and the merchant
- * learning it from their own dashboard is the point of the whole sync.
- */
-export type AdPlatformState =
-  | "approved"
-  | "rejected"
-  | "in_review"
-  | "delivering"
-  | "paused";
+/** How an ad's creative is built, as the platform classifies it. */
+export type AdFormat = "image" | "video" | "carousel";
 
-/**
- * One creative running under a campaign — the thing a visitor actually sees.
- *
- * A campaign may have none; an ad is a subdivision a merchant opts into, and a
- * campaign without one is not incomplete. There is no `platform`: an ad inherits
- * its campaign's, because funding is per ad account.
- */
+/** One creative under a campaign, keyed by the platform's own ad id. */
 export type Ad = {
   id: string;
   organizationId: string;
   storeId: string;
   campaignId: string;
+  /** The platform's ad id — what `utm_content` carries on a click. */
+  externalId: string;
   name: string;
-  /**
-   * The canonical `utm_content` value. Assigned at creation, unique within the
-   * **campaign** rather than the store — so every campaign is free to run a
-   * `video-a` — and unchanged by a rename so links already live keep matching.
-   */
-  tag: string;
-  externalId: string | null;
-  /**
-   * The creative — the picture a merchant recognises the ad by. Null is a
-   * normal, designed state, not a missing image: most ads have none, and a
-   * campaign on email, SMS, affiliate or influencer never will.
-   */
-  creativeUrl: string | null;
-  /** ISO timestamps. Both optional, and either may be set without the other. */
-  startsAt: string | null;
-  endsAt: string | null;
-  /** The merchant's own status, and the only one the merchant writes. */
+  format: AdFormat | null;
   status: AdStatus;
-  archivedAt: string | null;
-  /**
-   * What the platform says about this ad, written only by the sync and null for
-   * anything never synced — which is every ad on an email, SMS, affiliate or
-   * influencer campaign, and every ad whose platform ad nothing has claimed.
-   *
-   * Displayed beside `status`, never instead of it. An ad paused or rejected at
-   * the platform stays exactly as active here as the merchant left it, with its
-   * card and its history where they were.
-   */
-  platformState: AdPlatformState | null;
-  /**
-   * Where the platform ran the ad, as it names it — "Instagram Stories".
-   *
-   * **A recognition label only.** Nothing is reported by, filtered by or
-   * grouped by it: one ad runs in several placements at once, so a report built
-   * on this would split one ad's spend across values it has no split for. Null
-   * renders no badge rather than an empty one.
-   */
-  placement: string | null;
-  /**
-   * When the platform last said either of the two things above.
-   *
-   * Both are preserved when a platform stops reporting an ad — it drops out of
-   * a sync for reasons that are not facts about the ad — so this is what keeps
-   * the claim honest by dating it.
-   */
-  platformReportedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
-
-/**
- * The attribution field a matching rule compares against. Order matters: when
- * more than one rule could claim a visit, a `utm_campaign` rule wins over
- * `utm_source` or `utm_medium`, which win over `referrer_host`.
- *
- * `utm_content` is deliberately absent. It is a rule field in the backend, but
- * it belongs to an ad and campaign resolution never reads it (ADR-0004) — a
- * campaign rule on it could never match, so it is not offered here.
- */
-export const CAMPAIGN_RULE_FIELDS = [
-  "utm_campaign",
-  "utm_source",
-  "utm_medium",
-  "referrer_host",
-] as const;
-
-export type CampaignRuleField = (typeof CAMPAIGN_RULE_FIELDS)[number];
-
-/** `equals` wins over `starts_with` when both could claim the same visit. */
-export const CAMPAIGN_RULE_OPERATORS = ["equals", "starts_with"] as const;
-
-export type CampaignRuleOperator = (typeof CAMPAIGN_RULE_OPERATORS)[number];
-
-// Raw campaign_matching_rules row from backend
-export type CampaignMatchingRule = {
-  id: string;
-  organizationId: string;
-  storeId: string;
-  campaignId: string;
-  /** Set when the rule belongs to an ad rather than to the campaign itself. */
-  adId: string | null;
-  field: CampaignRuleField;
-  operator: CampaignRuleOperator;
-  /**
-   * Compared with case, hyphens, underscores and spacing ignored, so one rule
-   * covers `summer_sale`, `Summer-Sale` and `summer sale`.
-   */
-  value: string;
-  /**
-   * The rule on the campaign's own tag, created with the campaign. Not
-   * removable — every generated link carries that tag.
-   */
-  isCanonical: boolean;
+  creativeUrl: string | null;
+  hasLinkTags: boolean;
   createdAt: string;
   updatedAt: string;
 };
 
 // ─── Attributed revenue ───────────────────────────────────────────────────────
-
-/**
- * Which touch a report credits: the ad that discovered the visitor, or the one
- * that closed them. Both are stored on every order, so switching is a re-read.
- */
-export type AttributionTouch = "first" | "last";
 
 export type RevenueBucket = {
   orders: number;
@@ -572,76 +443,60 @@ export type RevenueBucket = {
 };
 
 /**
- * The figures every line of this report carries, at whatever grain it is read —
- * a campaign, one of its ads, or the unassigned residue between them.
- *
- * **There is no cost side.** Spend used to be typed in by hand, one day at a
- * time, and ROAS and contribution margin were arithmetic on top of it — so all
- * three were only ever as current as the last day a merchant remembered to
- * enter. They come back when the ad platform reports what it charged. Nothing
- * stands in for them: a zero would be a claim about a period, and it would be
- * false.
+ * What the ad platform measured, summed over the period. Spend is in the
+ * smallest currency unit; clicks are link clicks only.
  */
-export type PerformanceFigures = RevenueBucket;
+export type PlatformFigures = {
+  spend: number;
+  impressions: number;
+  clicks: number;
+};
 
 /**
- * One creative's return, beneath the campaign that funds it.
- *
- * Its revenue is the orders whose `utm_content` resolved onto this ad — a real
- * subdivision of the campaign line above, never an estimate of it.
+ * One creative's line beneath its campaign. Its revenue is the orders whose
+ * credited touch carried this ad's platform id.
  */
-export type AdRevenueLine = PerformanceFigures & {
-  adId: string;
-  name: string;
-  /** The ad's canonical `utm_content` value. Unique within its campaign. */
-  tag: string;
-  status: AdStatus;
-  /**
-   * The creative, so a card can show the picture a merchant recognises the ad
-   * by. Null is the majority state and a designed one — an ad under an email,
-   * SMS, affiliate or influencer campaign has no creative and never will.
-   */
-  creativeUrl: string | null;
-  /** When the creative ran. ISO timestamps; either may be set without the other. */
-  startsAt: string | null;
-  endsAt: string | null;
-};
+export type AdRevenueLine = RevenueBucket &
+  PlatformFigures & {
+    adId: string;
+    externalId: string;
+    name: string;
+    format: AdFormat | null;
+    status: AdStatus;
+    creativeUrl: string | null;
+    hasLinkTags: boolean;
+  };
 
-export type CampaignRevenueLine = PerformanceFigures & {
-  campaignId: string;
-  name: string;
-  tag: string;
-  platform: CampaignPlatform;
-  status: CampaignStatus;
-  /**
-   * How this campaign's revenue divides across its creatives.
-   *
-   * Empty for a campaign nobody has split, which is not an incomplete report:
-   * an ad is a subdivision a merchant opts into, and a campaign without one
-   * reports exactly as it did before ads existed.
-   *
-   * Every figure here plus the one on `unassigned` adds back up to this line.
-   */
-  ads: AdRevenueLine[];
-  /**
-   * The part of the campaign no ad of its explains: revenue that matched the
-   * campaign and none of its ads.
-   *
-   * **Its own visible bucket**, on the same principle that keeps unattributed
-   * visible at the store level — spreading it across whichever creatives happen
-   * to exist would make every one of them look better than it is. It is a
-   * different outcome from unattributed, which has no campaign at all, and the
-   * two are never shown as one thing.
-   */
-  unassigned: PerformanceFigures;
-};
+export type CampaignRevenueLine = RevenueBucket &
+  PlatformFigures & {
+    campaignId: string;
+    externalId: string;
+    name: string;
+    platform: CampaignPlatform;
+    status: CampaignStatus;
+    startsAt: string | null;
+    endsAt: string | null;
+    coverUrl: string | null;
+    /** False means Not Tracked: revenue is unknown, not zero. */
+    hasLinkTags: boolean;
+    /** Every ad of the campaign; with `unassigned` they add up to this line. */
+    ads: AdRevenueLine[];
+    /**
+     * Revenue that named this campaign and none of its ads. Its own line,
+     * never spread across the ads, and never the same as unattributed.
+     */
+    unassigned: RevenueBucket;
+  };
 
+/**
+ * Credit goes to the latest ad click — the last touch if it names a campaign,
+ * otherwise the first — so there is no touch to choose.
+ */
 export type AttributedRevenueReport = {
   period: Period;
-  touch: AttributionTouch;
   /**
-   * The active lookback window in days — why these figures differ from what an
-   * ad platform reports, so it is shown next to them rather than assumed.
+   * The active lookback window in days — one reason these figures differ from
+   * what an ad platform reports.
    */
   lookbackDays: number;
   rangeStart: string;

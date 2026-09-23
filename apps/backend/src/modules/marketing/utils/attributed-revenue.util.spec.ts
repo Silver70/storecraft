@@ -1,410 +1,336 @@
 /**
- * The credit decision and the tally on top of it, as a pure unit.
+ * The credit rule and the tally on top of it, as a pure unit.
  *
- * The matching rules themselves are covered next door in
- * `campaign-matching.util.spec.ts`. What is asserted here is everything wrapped
- * around them: the Lookback Window, the bot exclusion, and that money which
- * qualifies for no Campaign lands in its own bucket while still counting toward
- * the totals a merchant will reconcile against their sales report. No database,
- * no framework, no clock.
+ * `creditFor` is the one place the latest-ad-click rule is written, so it is
+ * asserted here directly: which Touch wins, when the other one is consulted,
+ * that an Ad can only be credited under the Campaign its own Touch named, and
+ * that money qualifying for no Campaign lands in its own bucket while still
+ * counting toward the totals a merchant reconciles against their sales report.
+ * No database, no framework, no clock.
  */
 import {
-  campaignCreditFor,
+  creditFor,
   tallyAttributedRevenue,
   type AttributableOrder,
+  type CreditIndex,
+  type OrderTouch,
 } from './attributed-revenue.util';
-import {
-  createCampaignMatcher,
-  type MatchableRule,
-} from './campaign-matching.util';
-import { createAdMatcher, type MatchableAdRule } from './ad-matching.util';
 import { DEFAULT_ATTRIBUTION_LOOKBACK_DAYS } from '../../../shared/attribution/lookback';
 
+// Platform ids, as Meta writes them into the link at click time.
+const SUMMER_EXT = '120200000000000001';
+const SPRING_EXT = '120200000000000002';
+const SUMMER_VIDEO_EXT = '120210000000000001';
+const SUMMER_STILL_EXT = '120210000000000002';
+const SPRING_VIDEO_EXT = '120210000000000003';
+
+// Our own row ids.
 const SUMMER = 'campaign-summer';
 const SPRING = 'campaign-spring';
+const SUMMER_VIDEO = 'ad-summer-video';
+const SUMMER_STILL = 'ad-summer-still';
+const SPRING_VIDEO = 'ad-spring-video';
 
+const INDEX: CreditIndex = {
+  campaigns: new Map([
+    [SUMMER_EXT, SUMMER],
+    [SPRING_EXT, SPRING],
+  ]),
+  ads: new Map([
+    [SUMMER_VIDEO_EXT, { adId: SUMMER_VIDEO, campaignId: SUMMER }],
+    [SUMMER_STILL_EXT, { adId: SUMMER_STILL, campaignId: SUMMER }],
+    [SPRING_VIDEO_EXT, { adId: SPRING_VIDEO, campaignId: SPRING }],
+  ]),
+};
+
+const EMPTY_INDEX: CreditIndex = { campaigns: new Map(), ads: new Map() };
+
+const LOOKBACK = DEFAULT_ATTRIBUTION_LOOKBACK_DAYS;
 const PLACED_AT = new Date('2026-06-01T12:00:00Z');
 
 const daysBefore = (days: number) =>
   new Date(PLACED_AT.getTime() - days * 24 * 60 * 60 * 1000);
 
-const RULES: MatchableRule[] = [
-  {
-    campaignId: SUMMER,
-    field: 'utm_campaign',
-    operator: 'equals',
-    value: 'summer-sale',
-    campaignCreatedAt: new Date('2026-01-01T00:00:00Z'),
-  },
-  {
-    campaignId: SPRING,
-    field: 'utm_campaign',
-    operator: 'equals',
-    value: 'spring-sale',
-    campaignCreatedAt: new Date('2026-01-02T00:00:00Z'),
-  },
-];
+const NO_TOUCH: OrderTouch = { utmCampaign: null, utmContent: null, at: null };
 
-const matcher = createCampaignMatcher(RULES);
-const noRules = createCampaignMatcher([]);
+function touch(
+  utmCampaign: string | null,
+  utmContent: string | null = null,
+  at: Date = daysBefore(1),
+): OrderTouch {
+  return { utmCampaign, utmContent, at };
+}
 
-const VIDEO_A = 'ad-summer-video-a';
-const STILL_B = 'ad-summer-still-b';
-/** Spring's own `video-a`: the same tag under a different Campaign. */
-const SPRING_VIDEO_A = 'ad-spring-video-a';
-
-const AD_RULES: MatchableAdRule[] = [
-  {
-    adId: VIDEO_A,
-    campaignId: SUMMER,
-    field: 'utm_content',
-    operator: 'equals',
-    value: 'video-a',
-    adCreatedAt: new Date('2026-02-01T00:00:00Z'),
-  },
-  {
-    adId: STILL_B,
-    campaignId: SUMMER,
-    field: 'utm_content',
-    operator: 'equals',
-    value: 'still-b',
-    adCreatedAt: new Date('2026-02-02T00:00:00Z'),
-  },
-  {
-    adId: SPRING_VIDEO_A,
-    campaignId: SPRING,
-    field: 'utm_content',
-    operator: 'equals',
-    value: 'video-a',
-    adCreatedAt: new Date('2026-02-03T00:00:00Z'),
-  },
-];
-
-const adMatcher = createAdMatcher(AD_RULES);
-const noAds = createAdMatcher([]);
-
-function order(overrides: Partial<AttributableOrder> = {}): AttributableOrder {
+function order(
+  touches: { first?: OrderTouch; last?: OrderTouch },
+  overrides: Partial<AttributableOrder> = {},
+): AttributableOrder {
   return {
     total: 3000,
     placedAt: PLACED_AT,
+    firstTouch: touches.first ?? NO_TOUCH,
+    lastTouch: touches.last ?? NO_TOUCH,
     isBot: false,
-    touch: {
-      utmSource: 'instagram',
-      utmMedium: 'paid_social',
-      utmCampaign: 'summer_sale',
-      referrer: 'https://l.instagram.com/',
-      at: daysBefore(1),
-    },
     ...overrides,
   };
 }
 
-const credit = (o: AttributableOrder, m = matcher) =>
-  campaignCreditFor(o, m, DEFAULT_ATTRIBUTION_LOOKBACK_DAYS);
-
-describe('campaignCreditFor', () => {
-  it('credits the campaign whose rule claims the touch', () => {
-    expect(credit(order())).toBe(SUMMER);
-  });
-
-  it('credits nothing when no rule claims the touch', () => {
+describe('creditFor — the latest ad click', () => {
+  it('credits the Campaign and the Ad the last touch names', () => {
     expect(
-      credit(
-        order({ touch: { ...order().touch, utmCampaign: 'winter_sale' } }),
+      creditFor(
+        order({ last: touch(SUMMER_EXT, SUMMER_VIDEO_EXT) }),
+        INDEX,
+        LOOKBACK,
       ),
-    ).toBe(null);
+    ).toEqual({ campaignId: SUMMER, adId: SUMMER_VIDEO });
   });
 
-  it('credits nothing when the order carries no touch at all', () => {
+  it('prefers the last touch when both touches name different Campaigns', () => {
+    const credit = creditFor(
+      order({
+        first: touch(SPRING_EXT, SPRING_VIDEO_EXT, daysBefore(10)),
+        last: touch(SUMMER_EXT, SUMMER_STILL_EXT, daysBefore(1)),
+      }),
+      INDEX,
+      LOOKBACK,
+    );
+    expect(credit).toEqual({ campaignId: SUMMER, adId: SUMMER_STILL });
+  });
+
+  it('falls back to the first touch when the last touch names no Campaign', () => {
+    // An ad click, then a search for the store's name: the search must not
+    // cancel the ad's credit.
+    const credit = creditFor(
+      order({
+        first: touch(SPRING_EXT, SPRING_VIDEO_EXT, daysBefore(5)),
+        last: touch(null, null, daysBefore(1)),
+      }),
+      INDEX,
+      LOOKBACK,
+    );
+    expect(credit).toEqual({ campaignId: SPRING, adId: SPRING_VIDEO });
+  });
+
+  it('falls back to the first touch when the last touch names a value no Campaign has', () => {
+    // A newsletter link tagged by hand is a Touch, but not a Campaign.
+    const credit = creditFor(
+      order({
+        first: touch(SPRING_EXT, null, daysBefore(5)),
+        last: touch('newsletter', 'footer-link', daysBefore(1)),
+      }),
+      INDEX,
+      LOOKBACK,
+    );
+    expect(credit).toEqual({ campaignId: SPRING, adId: null });
+  });
+
+  it('falls back to the first touch when the order carries no last touch at all', () => {
     expect(
-      credit(
-        order({
-          touch: {
-            utmSource: null,
-            utmMedium: null,
-            utmCampaign: null,
-            referrer: null,
-            at: null,
-          },
-        }),
+      creditFor(order({ first: touch(SUMMER_EXT) }), INDEX, LOOKBACK),
+    ).toEqual({ campaignId: SUMMER, adId: null });
+  });
+
+  it('is Unattributed when neither touch names a Campaign', () => {
+    expect(
+      creditFor(
+        order({ first: touch('newsletter'), last: touch(null) }),
+        INDEX,
+        LOOKBACK,
       ),
-    ).toBe(null);
+    ).toBeNull();
+    expect(creditFor(order({}), INDEX, LOOKBACK)).toBeNull();
   });
 
-  it('credits nothing when an empty rule set could match anything', () => {
-    expect(credit(order(), noRules)).toBe(null);
+  it('matches only exact platform ids — no normalization', () => {
+    // A leading space or a different id is simply not that campaign.
+    expect(
+      creditFor(order({ last: touch(` ${SUMMER_EXT}`) }), INDEX, LOOKBACK),
+    ).toBeNull();
   });
 
-  describe('the lookback window', () => {
-    it('credits a touch inside the window', () => {
-      expect(
-        credit(order({ touch: { ...order().touch, at: daysBefore(29) } })),
-      ).toBe(SUMMER);
-    });
+  it('matches nothing against another store’s index', () => {
+    expect(
+      creditFor(order({ last: touch(SUMMER_EXT) }), EMPTY_INDEX, LOOKBACK),
+    ).toBeNull();
+  });
 
-    it('credits a touch exactly at the edge of the window', () => {
+  describe('the Ad', () => {
+    it('is Unassigned when the touch names the Campaign but none of its Ads', () => {
       expect(
-        credit(
-          order({
-            touch: { ...order().touch, at: daysBefore(30) },
-          }),
+        creditFor(
+          order({ last: touch(SUMMER_EXT, '999999') }),
+          INDEX,
+          LOOKBACK,
         ),
-      ).toBe(SUMMER);
+      ).toEqual({ campaignId: SUMMER, adId: null });
     });
 
-    it('credits nothing for a touch older than the window', () => {
-      // The visit happened. It just did not drive this sale, and saying so is
-      // the difference between an honest report and one that flatters an ad
-      // someone stopped running months ago.
+    it('is Unassigned when the touch carries no utm_content', () => {
       expect(
-        credit(order({ touch: { ...order().touch, at: daysBefore(31) } })),
-      ).toBe(null);
+        creditFor(order({ last: touch(SUMMER_EXT, null) }), INDEX, LOOKBACK),
+      ).toEqual({ campaignId: SUMMER, adId: null });
     });
 
-    it('measures the window against the order, not the clock', () => {
-      // An order placed a year ago with a touch the day before it must still
-      // report the same campaign today, or every report would decay over time.
-      const longAgo = new Date('2025-06-01T12:00:00Z');
+    it('never credits an Ad running under a different Campaign', () => {
+      // A hand-edited link naming Summer's campaign and Spring's ad.
       expect(
-        credit(
-          order({
-            placedAt: longAgo,
-            touch: {
-              ...order().touch,
-              at: new Date(longAgo.getTime() - 24 * 60 * 60 * 1000),
-            },
-          }),
+        creditFor(
+          order({ last: touch(SUMMER_EXT, SPRING_VIDEO_EXT) }),
+          INDEX,
+          LOOKBACK,
         ),
-      ).toBe(SUMMER);
+      ).toEqual({ campaignId: SUMMER, adId: null });
     });
 
-    it('still credits a touch timestamped after its order', () => {
-      // Clock skew between a storefront and the server, not a stale visit.
+    it('is read from the same touch that named the Campaign', () => {
+      // The last touch names no campaign but carries an ad id of Summer's; the
+      // first touch names Spring. Credit is Spring's, and the ad is the first
+      // touch's — never a mix of the two touches.
       expect(
-        credit(
+        creditFor(
           order({
-            touch: {
-              ...order().touch,
-              at: new Date(PLACED_AT.getTime() + 60_000),
-            },
+            first: touch(SPRING_EXT, SPRING_VIDEO_EXT, daysBefore(4)),
+            last: touch(null, SUMMER_VIDEO_EXT, daysBefore(1)),
           }),
+          INDEX,
+          LOOKBACK,
         ),
-      ).toBe(SUMMER);
+      ).toEqual({ campaignId: SPRING, adId: SPRING_VIDEO });
     });
   });
 
-  it('credits nothing to a visitor the event log called a bot', () => {
-    expect(credit(order({ isBot: true }))).toBe(null);
+  describe('the Lookback Window', () => {
+    it('credits a touch exactly at the window edge', () => {
+      expect(
+        creditFor(
+          order({ last: touch(SUMMER_EXT, null, daysBefore(LOOKBACK)) }),
+          INDEX,
+          LOOKBACK,
+        ),
+      ).toEqual({ campaignId: SUMMER, adId: null });
+    });
+
+    it('denies a last touch older than the window, and falls back to nothing older still', () => {
+      expect(
+        creditFor(
+          order({
+            first: touch(SPRING_EXT, null, daysBefore(LOOKBACK + 20)),
+            last: touch(SUMMER_EXT, null, daysBefore(LOOKBACK + 1)),
+          }),
+          INDEX,
+          LOOKBACK,
+        ),
+      ).toBeNull();
+    });
+
+    it('treats a touch dated after the order as clock skew, not as stale', () => {
+      const later = new Date(PLACED_AT.getTime() + 60 * 1000);
+      expect(
+        creditFor(
+          order({ last: touch(SUMMER_EXT, null, later) }),
+          INDEX,
+          LOOKBACK,
+        ),
+      ).toEqual({ campaignId: SUMMER, adId: null });
+    });
+
+    it('ignores a touch with no timestamp', () => {
+      expect(
+        creditFor(
+          order({
+            last: { utmCampaign: SUMMER_EXT, utmContent: null, at: null },
+          }),
+          INDEX,
+          LOOKBACK,
+        ),
+      ).toBeNull();
+    });
+  });
+
+  it('never credits a bot', () => {
+    expect(
+      creditFor(
+        order({ last: touch(SUMMER_EXT, SUMMER_VIDEO_EXT) }, { isBot: true }),
+        INDEX,
+        LOOKBACK,
+      ),
+    ).toBeNull();
   });
 });
 
 describe('tallyAttributedRevenue', () => {
-  const tally = (orders: AttributableOrder[], m = matcher, a = noAds) =>
-    tallyAttributedRevenue(orders, m, a, DEFAULT_ATTRIBUTION_LOOKBACK_DAYS);
+  it('sums Campaigns, their Ads and the Unassigned residue from one pass', () => {
+    const tally = tallyAttributedRevenue(
+      [
+        order({ last: touch(SUMMER_EXT, SUMMER_VIDEO_EXT) }, { total: 1000 }),
+        order({ last: touch(SUMMER_EXT, SUMMER_VIDEO_EXT) }, { total: 2000 }),
+        order({ last: touch(SUMMER_EXT, SUMMER_STILL_EXT) }, { total: 500 }),
+        order({ last: touch(SUMMER_EXT, 'hand-edited') }, { total: 700 }),
+        order({ first: touch(SPRING_EXT) }, { total: 300 }),
+        order({}, { total: 4000 }),
+      ],
+      INDEX,
+      LOOKBACK,
+    );
 
-  it('sums revenue and order count per campaign', () => {
-    const result = tally([
-      order({ total: 3000 }),
-      order({ total: 1250 }),
-      order({
-        total: 900,
-        touch: { ...order().touch, utmCampaign: 'Spring-Sale' },
+    expect(tally.byCampaign.get(SUMMER)).toEqual({ orders: 4, revenue: 4200 });
+    expect(tally.byCampaign.get(SPRING)).toEqual({ orders: 1, revenue: 300 });
+
+    const summerAds = tally.adsByCampaign.get(SUMMER)!;
+    expect(summerAds.byAd.get(SUMMER_VIDEO)).toEqual({
+      orders: 2,
+      revenue: 3000,
+    });
+    expect(summerAds.byAd.get(SUMMER_STILL)).toEqual({
+      orders: 1,
+      revenue: 500,
+    });
+    expect(summerAds.unassigned).toEqual({ orders: 1, revenue: 700 });
+
+    expect(tally.unattributed).toEqual({ orders: 1, revenue: 4000 });
+    expect(tally.totals).toEqual({ orders: 6, revenue: 8500 });
+  });
+
+  it('adds every Ad and the Unassigned line back up to the Campaign exactly', () => {
+    const tally = tallyAttributedRevenue(
+      [
+        order({ last: touch(SUMMER_EXT, SUMMER_VIDEO_EXT) }, { total: 1234 }),
+        order({ last: touch(SUMMER_EXT, SUMMER_STILL_EXT) }, { total: 999 }),
+        order({ last: touch(SUMMER_EXT, SPRING_VIDEO_EXT) }, { total: 1 }),
+        order(
+          {
+            first: touch(SUMMER_EXT, SUMMER_STILL_EXT, daysBefore(3)),
+            last: touch(null),
+          },
+          { total: 77 },
+        ),
+      ],
+      INDEX,
+      LOOKBACK,
+    );
+
+    const campaign = tally.byCampaign.get(SUMMER)!;
+    const ads = tally.adsByCampaign.get(SUMMER)!;
+    const adSum = [...ads.byAd.values()].reduce(
+      (sum, b) => ({
+        orders: sum.orders + b.orders,
+        revenue: sum.revenue + b.revenue,
       }),
-    ]);
-
-    expect(result.byCampaign.get(SUMMER)).toEqual({ orders: 2, revenue: 4250 });
-    expect(result.byCampaign.get(SPRING)).toEqual({ orders: 1, revenue: 900 });
-  });
-
-  it('leaves a campaign that earned nothing out of the map entirely', () => {
-    const result = tally([order()]);
-    expect(result.byCampaign.has(SPRING)).toBe(false);
-  });
-
-  it('keeps unattributed revenue in its own bucket', () => {
-    const result = tally([
-      order({ total: 3000 }),
-      order({ total: 2000, isBot: true }),
-      order({ total: 500, touch: { ...order().touch, at: daysBefore(90) } }),
-    ]);
-
-    expect(result.byCampaign.get(SUMMER)).toEqual({ orders: 1, revenue: 3000 });
-    expect(result.unattributed).toEqual({ orders: 2, revenue: 2500 });
-  });
-
-  it('never spreads unattributed revenue across campaigns', () => {
-    const result = tally(
-      [order({ total: 3000 }), order({ total: 7000 })],
-      noRules,
+      ads.unassigned,
     );
-
-    expect(result.byCampaign.size).toBe(0);
-    expect(result.unattributed).toEqual({ orders: 2, revenue: 10000 });
+    expect(adSum).toEqual(campaign);
   });
 
-  it('counts every order in the totals, credited or not', () => {
-    // This is what reconciles the report with the sales figures for the same
-    // period: disqualifying a touch withholds a campaign, never the revenue.
-    const orders = [
-      order({ total: 3000 }),
-      order({ total: 2000, isBot: true }),
-      order({ total: 500, touch: { ...order().touch, at: null } }),
-    ];
-    const result = tally(orders);
-
-    const attributed = [...result.byCampaign.values()].reduce(
-      (sum, bucket) => sum + bucket.revenue,
-      0,
+  it('counts an unattributed order in the totals and nowhere else', () => {
+    const tally = tallyAttributedRevenue(
+      [order({ last: touch('newsletter') }, { total: 2500 })],
+      INDEX,
+      LOOKBACK,
     );
-
-    expect(result.totals).toEqual({ orders: 3, revenue: 5500 });
-    expect(attributed + result.unattributed.revenue).toBe(
-      result.totals.revenue,
-    );
-  });
-
-  it('returns empty buckets for a period with no orders', () => {
-    const result = tally([]);
-
-    expect(result.byCampaign.size).toBe(0);
-    expect(result.unattributed).toEqual({ orders: 0, revenue: 0 });
-    expect(result.totals).toEqual({ orders: 0, revenue: 0 });
-  });
-
-  // ─── The split by ad ────────────────────────────────────────────────────────
-
-  describe('the split by ad', () => {
-    /** The same order, arriving through a creative's link. */
-    const via = (
-      utmContent: string | null,
-      overrides: Partial<AttributableOrder> = {},
-    ) =>
-      order({
-        ...overrides,
-        touch: { ...order().touch, ...overrides.touch, utmContent },
-      });
-
-    const split = (orders: AttributableOrder[]) =>
-      tally(orders, matcher, adMatcher);
-
-    it('credits each ad the orders its tag claimed', () => {
-      const result = split([
-        via('video-a', { total: 3000 }),
-        via('video-a', { total: 1000 }),
-        via('still-b', { total: 500 }),
-      ]);
-
-      const ads = result.adsByCampaign.get(SUMMER)!;
-      expect(ads.byAd.get(VIDEO_A)).toEqual({ orders: 2, revenue: 4000 });
-      expect(ads.byAd.get(STILL_B)).toEqual({ orders: 1, revenue: 500 });
-    });
-
-    it('keeps an order that matched no ad of the campaign unassigned', () => {
-      const result = split([
-        via('video-a', { total: 3000 }),
-        via('carousel-c', { total: 700 }),
-        via(null, { total: 300 }),
-      ]);
-
-      const ads = result.adsByCampaign.get(SUMMER)!;
-      expect(ads.byAd.get(VIDEO_A)).toEqual({ orders: 1, revenue: 3000 });
-      // Its own bucket. Never spread across the ads that do exist, which would
-      // make both of them look better than they are.
-      expect(ads.unassigned).toEqual({ orders: 2, revenue: 1000 });
-      expect(ads.byAd.has(STILL_B)).toBe(false);
-    });
-
-    it('never folds unassigned into unattributed', () => {
-      // Two different outcomes: one order has a campaign and no ad, the other
-      // has no campaign at all.
-      const result = split([
-        via('carousel-c', { total: 700 }),
-        via('video-a', {
-          total: 900,
-          touch: { ...order().touch, utmCampaign: 'nothing-owns-this' },
-        }),
-      ]);
-
-      expect(result.adsByCampaign.get(SUMMER)!.unassigned).toEqual({
-        orders: 1,
-        revenue: 700,
-      });
-      expect(result.unattributed).toEqual({ orders: 1, revenue: 900 });
-      expect(result.adsByCampaign.has(SPRING)).toBe(false);
-    });
-
-    it('resolves two campaigns owning the same ad tag independently', () => {
-      const result = split([
-        via('video-a', { total: 3000 }),
-        via('Video_A', {
-          total: 900,
-          touch: { ...order().touch, utmCampaign: 'Spring-Sale' },
-        }),
-      ]);
-
-      expect(result.adsByCampaign.get(SUMMER)!.byAd.get(VIDEO_A)).toEqual({
-        orders: 1,
-        revenue: 3000,
-      });
-      expect(
-        result.adsByCampaign.get(SPRING)!.byAd.get(SPRING_VIDEO_A),
-      ).toEqual({ orders: 1, revenue: 900 });
-      // Neither campaign's tally has heard of the other's creative.
-      expect(result.adsByCampaign.get(SUMMER)!.byAd.has(SPRING_VIDEO_A)).toBe(
-        false,
-      );
-      expect(result.adsByCampaign.get(SPRING)!.byAd.has(VIDEO_A)).toBe(false);
-    });
-
-    it('offers an uncredited order to no ad at all', () => {
-      // The second pass only ever runs on an order a campaign already claimed.
-      const result = split([
-        via('video-a', { total: 3000, isBot: true }),
-        via('video-a', { total: 500, touch: { ...order().touch, at: null } }),
-      ]);
-
-      expect(result.adsByCampaign.size).toBe(0);
-      expect(result.unattributed).toEqual({ orders: 2, revenue: 3500 });
-    });
-
-    it('leaves a campaign’s own totals unchanged by the split', () => {
-      // The figure a merchant already trusted must not move because the report
-      // learned to divide it.
-      const orders = [
-        via('video-a', { total: 3000 }),
-        via('still-b', { total: 1000 }),
-        via('carousel-c', { total: 700 }),
-      ];
-
-      expect(split(orders).byCampaign.get(SUMMER)).toEqual(
-        tally(orders).byCampaign.get(SUMMER),
-      );
-    });
-
-    it('reconciles the ads plus unassigned back to the campaign line', () => {
-      const orders = [
-        via('video-a', { total: 3000 }),
-        via('still-b', { total: 1000 }),
-        via('carousel-c', { total: 700 }),
-      ];
-      const result = split(orders);
-      const ads = result.adsByCampaign.get(SUMMER)!;
-
-      const buckets = [...ads.byAd.values(), ads.unassigned];
-      const sum = (key: 'revenue' | 'orders') =>
-        buckets.reduce((total, bucket) => total + bucket[key], 0);
-
-      expect(sum('revenue')).toBe(result.byCampaign.get(SUMMER)!.revenue);
-      expect(sum('orders')).toBe(result.byCampaign.get(SUMMER)!.orders);
-    });
-
-    it('assigns nothing when the campaign has no ads', () => {
-      // A campaign nobody split reports exactly as it did before ads existed.
-      const result = tally([via('video-a', { total: 3000 })], matcher, noAds);
-      const ads = result.adsByCampaign.get(SUMMER)!;
-
-      expect(ads.byAd.size).toBe(0);
-      expect(ads.unassigned).toEqual({ orders: 1, revenue: 3000 });
-    });
+    expect(tally.byCampaign.size).toBe(0);
+    expect(tally.adsByCampaign.size).toBe(0);
+    expect(tally.unattributed).toEqual({ orders: 1, revenue: 2500 });
+    expect(tally.totals).toEqual({ orders: 1, revenue: 2500 });
   });
 });

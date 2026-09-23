@@ -169,6 +169,13 @@
       "when": 1790143752655,
       "tag": "0023_strip_the_manual_marketing_system",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1790152743028,
+      "tag": "0024_campaigns_keyed_by_the_platform",
+      "breakpoints": true
     }
   ]
 }

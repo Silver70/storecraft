@@ -19,7 +19,7 @@ import { AttributedRevenueQueryDto } from '../dto/attributed-revenue.dto';
 
 /**
  * Marketing reporting. Separate from `admin/campaigns` on purpose: that
- * controller is CRUD over one resource, this is a read across all of them, and
+ * controller reads one resource, this is a read across all of them, and
  * a `revenue` path segment sitting beside `:id` is a route conflict waiting for
  * someone to reorder the file.
  */
@@ -33,9 +33,9 @@ export class AdminAttributionController {
   @Get('attributed-revenue')
   @RequirePermission('campaigns.read')
   @ApiOperation({
-    summary: 'Attributed revenue and order counts by campaign',
+    summary: 'Attributed revenue, orders and platform figures by campaign',
     description:
-      "Resolves each order in the period to a campaign by running the store's matching rules against the touch it froze at checkout, so a campaign created after its ads ran still claims them and a corrected rule repairs history. Unattributed is its own bucket and is never spread across campaigns. Touches older than the returned lookback window, and visitors the event log classified as bots, receive no credit but still count in the totals — which reconcile with the dashboard and analytics sales figures for the same period. Revenue is the order total (tax and shipping in, discounts already netted out) in the smallest currency unit. A campaign appears if it is active or earned revenue in the period. Each campaign line also carries `ads` — the same figures per creative, resolved in a second pass from `utm_content` over that campaign's own ads alone, so an ad can never claim a sale whose `utm_campaign` names a different campaign and two campaigns are each free to run a `video-a` — and `unassigned`, the revenue this campaign earned that no ad of its claimed. Unassigned is its own visible bucket, is never spread across the ads that exist, and is a different outcome from unattributed, which has no campaign at all. The split comes from the same read as the campaign line, so every ad's revenue plus the unassigned figure reconciles to the campaign above them; a campaign with no ads returns an empty list. **There is no cost side.** Spend, ROAS and contribution margin are not returned: spend was recorded by hand and every figure built on it was only as current as the last day a merchant remembered to enter. They return when the ad platform reports the spend itself, and nothing here stands a zero in for them in the meantime.",
+      "Credits each order in the period to the latest ad click: the last touch if its utm_campaign is the platform id of one of this store's campaigns, otherwise the first touch if that is. The ad is the one whose platform id the same touch carries in utm_content, and only among that campaign's own ads. An order naming the campaign and none of its ads is counted in the campaign and reported on its `unassigned` line, never spread across the ads; every ad's revenue and orders plus `unassigned` add up to the campaign exactly. Orders naming no campaign are `unattributed` and still count in `totals`, which reconcile with the dashboard and analytics sales figures for the same period. Touches older than the returned lookback window, and visitors the event log classified as bots, receive no credit. Spend, impressions and clicks are the ad platform's own measurements summed per ad per day; a campaign's are its ads' summed. All money is in the smallest currency unit. A campaign with `hasLinkTags` false is Not Tracked: its revenue is unknown, not zero.",
   })
   @ApiResponse({ status: 200 })
   async attributedRevenue(
@@ -43,11 +43,6 @@ export class AdminAttributionController {
     @CurrentTenant() tenant: TenantContext,
   ): Promise<AttributedRevenueReport> {
     const { organizationId, storeId } = requireStoreContext(tenant);
-    return this.revenue.byCampaign(
-      organizationId,
-      storeId,
-      query.period,
-      query.touch ?? 'last',
-    );
+    return this.revenue.byCampaign(organizationId, storeId, query.period);
   }
 }

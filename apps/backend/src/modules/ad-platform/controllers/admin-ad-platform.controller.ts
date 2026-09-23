@@ -116,7 +116,7 @@ export class AdminAdPlatformController {
   @ApiOperation({
     summary: "Pull this store's figures from every connected ad platform now",
     description:
-      "Runs the same sync the schedule runs, immediately. A failure is reported in the response and recorded on the connection; nothing already recorded is changed by one. The outcome names the range that was asked for and how many claimed ads had the platform's own state and placement written beside their own status — never over it, so an ad rejected at the platform keeps the status the merchant gave it here.",
+      'Runs the same sync the schedule runs, immediately. A failure is reported in the response and recorded on the connection; nothing already recorded is changed by one. The outcome names the range that was asked for.',
   })
   @ApiResponse({ status: 201 })
   async syncAll(

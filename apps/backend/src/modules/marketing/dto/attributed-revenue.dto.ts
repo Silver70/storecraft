@@ -1,25 +1,16 @@
-import { IsEnum, IsOptional } from 'class-validator';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import type { AttributionTouch } from '../services/attributed-revenue.service';
+import { IsEnum } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
 import {
   ATTRIBUTION_PERIODS,
   type AttributionPeriod,
 } from '../utils/attribution-period.util';
 
-const PERIODS = ATTRIBUTION_PERIODS;
-const TOUCHES = ['first', 'last'] as const;
-
+/**
+ * A period and nothing else. There is no touch selector: credit follows the
+ * latest ad click, one rule, so there is no second answer to switch to.
+ */
 export class AttributedRevenueQueryDto {
-  @ApiProperty({ enum: PERIODS })
-  @IsEnum(PERIODS)
+  @ApiProperty({ enum: ATTRIBUTION_PERIODS })
+  @IsEnum(ATTRIBUTION_PERIODS)
   declare period: AttributionPeriod;
-
-  @ApiPropertyOptional({
-    enum: TOUCHES,
-    description:
-      'Which touch to credit. Defaults to last — the ad that closed the sale. Switching is a re-read, not a migration: both touches are stored on every order.',
-  })
-  @IsOptional()
-  @IsEnum(TOUCHES)
-  declare touch?: AttributionTouch;
 }

@@ -4,17 +4,12 @@ import type { AdPlatform } from '../../../shared/database/schema';
 import {
   AD_PLATFORM_PROVIDER,
   type AdPlatformProvider,
-  type AdTree,
 } from '../interfaces/ad-platform-provider.interface';
 import {
   AdPlatformConnectionRepository,
   type ConnectionToSync,
 } from '../repositories/ad-platform-connection.repository';
 import { AdPlatformCredentialRepository } from '../repositories/ad-platform-credential.repository';
-import {
-  PlatformMirrorService,
-  type PlatformAdMirror,
-} from '../../marketing/services/platform-mirror.service';
 import { CredentialVault } from './credential-vault.service';
 import {
   DEFAULT_BACKFILL_DAYS,
@@ -32,15 +27,6 @@ export interface SyncOutcome {
   to: string;
   /** Whether this was a first connection's backfill. */
   backfill: boolean;
-  /**
-   * How many claimed Ads had the platform's own state and placement recorded
-   * beside their own status.
-   *
-   * **Never a count of status changes — that number is zero on every sync ever
-   * run.** What the platform thinks of an ad and what the merchant decided
-   * about it are two facts, and this one only ever writes the platform's.
-   */
-  platformStateWritten: number;
   /**
    * Why it failed, in words a merchant can act on, or null on success. Never a
    * stack trace, and never a sentence that blames their own account.
@@ -68,24 +54,12 @@ const UNREADABLE_FIGURE =
  *
  * ## What this service is allowed to write
  *
- * The sync state on the connection it ran for, and — through
- * `PlatformMirrorService` and nothing else — the **platform's own state and
- * placement** on an Ad.
- *
- * **It writes no figure at all.** It used to write three: the platform's spend
- * into the merchant's own hand-kept book, the platform's revenue, conversions
- * and ROAS into a table of their own to be printed beside ours, and a queue of
- * the platform's ads that nothing here claimed. All three are gone. What the
- * platform reports will come back as the figures on the page rather than as a
- * second opinion on them, and it will arrive keyed by the platform's own ids
- * rather than by a tag a merchant had to paste correctly.
- *
- * **It does not write `ads.status`, and there is no code path here by which it
- * could.** The platform's view of an ad and the merchant's own status are two
- * independent facts stored side by side: an ad rejected or paused at the
- * platform must keep its card and its revenue on the merchant's active list,
- * because "Active here, rejected there" is the thing a merchant needs to see
- * and the thing a single column could never say.
+ * The sync state on the connection it ran for, and nothing else — yet. It reads
+ * the ad tree over the window a sync owes and records how that went. Writing
+ * what it read — the Campaigns and Ads it finds, keyed by the platform's own
+ * ids, and each Ad's daily spend, impressions and clicks into
+ * `ad_daily_figures` — is this service's next job, and nothing else will ever
+ * write those.
  *
  * ## Why nothing here throws at a merchant
  *
@@ -110,7 +84,6 @@ export class AdPlatformSyncService {
     private readonly provider: AdPlatformProvider,
     private readonly connections: AdPlatformConnectionRepository,
     private readonly credentials: AdPlatformCredentialRepository,
-    private readonly platformMirror: PlatformMirrorService,
     private readonly vault: CredentialVault,
   ) {}
 
@@ -234,7 +207,10 @@ export class AdPlatformSyncService {
         });
       }
 
-      const tree = await this.provider.fetchAdTree({
+      // Read, and not yet written anywhere: turning the tree into Campaigns,
+      // Ads and daily figures is the sync's next job. Asking now keeps the
+      // window, the backfill and the failure handling exercised end to end.
+      await this.provider.fetchAdTree({
         credential,
         platform: connection.platform,
         externalAccountId: connection.externalAccountId,
@@ -242,29 +218,12 @@ export class AdPlatformSyncService {
         to: window.to,
       });
 
-      // What the platform thinks of each ad, onto the Ads that claim them.
-      // Beside their own status and never over it: an ad rejected or paused at
-      // the platform stays exactly as active here as the merchant left it, with
-      // its card and its history where they were, and the card that reads
-      // "Active · rejected at the platform" is the one this sync is for.
-      const mirrored = await this.platformMirror.apply(
-        {
-          organizationId: connection.organizationId,
-          storeId: connection.storeId,
-          ads: mirrorsFrom(tree),
-        },
-        now,
-      );
-
       await this.connections.recordSyncSuccess(connection.id, now);
 
       this.logger.log(
         `Synced ${connection.platform} for store ${connection.storeId} over ` +
           `${window.from}…${window.to}` +
-          (window.backfill ? ' (backfill)' : '') +
-          (mirrored.written
-            ? `, platform state on ${mirrored.written} ad(s)`
-            : ''),
+          (window.backfill ? ' (backfill)' : ''),
       );
 
       return {
@@ -273,7 +232,6 @@ export class AdPlatformSyncService {
         from: window.from,
         to: window.to,
         backfill: window.backfill,
-        platformStateWritten: mirrored.written,
         message: null,
       };
     } catch (error) {
@@ -297,7 +255,6 @@ export class AdPlatformSyncService {
         from: window.from,
         to: window.to,
         backfill: window.backfill,
-        platformStateWritten: 0,
         message,
       };
     }
@@ -323,21 +280,6 @@ export class AdPlatformSyncService {
       secret: this.vault.open(row.sealedSecret),
     };
   }
-}
-
-/**
- * The tree as what the platform says about each ad, with no figures on it and
- * — the point — no status of ours anywhere in the shape.
- *
- * Every ad is carried, claimed or not: which of them there is an Ad to write
- * against is decided one layer down, where the Ads are already loaded.
- */
-function mirrorsFrom(tree: AdTree): PlatformAdMirror[] {
-  return tree.ads.map((ad) => ({
-    externalAdId: ad.externalAdId,
-    platformState: ad.platformState,
-    placement: ad.placement,
-  }));
 }
 
 /**

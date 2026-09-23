@@ -1,35 +1,39 @@
 /**
- * Attributed revenue by Campaign, end to end — the question the whole
- * attribution feature exists to answer.
+ * Campaigns keyed by the ad platform, and the revenue credited to them, end to
+ * end.
  *
- * The seam runs the full length of the claim: a sale arrives through the public
- * storefront GraphQL API carrying the UTM tags a visitor landed with, and the
- * merchant reads the money back through the admin REST API, resolved onto the
- * Campaign that earned it. Everything between is the real application against a
- * local Postgres database.
+ * Nothing syncs yet and nothing can be created yet, so Campaigns, Ads and the
+ * platform's daily figures are seeded as rows — the shape the sync will write —
+ * and everything else is real: a sale arrives through the public storefront
+ * GraphQL API carrying the Link Tags a visitor clicked through with, and the
+ * merchant reads the money back through the admin REST API. Every figure is
+ * worked out by hand from the seeded prices rather than recomputed by the test.
  *
- * Attribution is resolved at read time (ADR-0001), and most of what is asserted
- * here is what that buys: a Campaign created after its ads already ran claims
- * their Orders, a matching rule added today repairs yesterday's report, and
- * switching between First and Last Touch is a different answer from the same
- * rows rather than a migration.
- *
- * The report is also a cost report. Spend is recorded through the admin API the
- * way a merchant records it, and what is asserted is what they would read off
- * the screen: the ratio between the two halves, the absence of a ratio where
- * there was no cost, and the Campaign that spent money and earned nothing being
- * on the page at all.
- *
- * And it is a profit report. Cost prices are set on the catalog the same way,
- * and the Contribution Margin is checked against a figure worked out by hand
- * from the seeded prices rather than recomputed by the test — including the
- * case that matters most, where nobody has entered a cost price yet and the
- * margin has to be withheld instead of invented.
+ * What is proven here is the join and the credit rule where they are hardest to
+ * fake: an Order finds its Campaign and Ad by the platform's own ids, credit
+ * goes to the latest ad click, an Order naming a Campaign and none of its Ads
+ * stays on its own line, the Ads add up to their Campaign, and no Organization
+ * ever reads another's Campaigns or figures. The rule itself is unit-tested in
+ * `attributed-revenue.util.spec.ts`.
  */
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import type { App } from 'supertest/types';
+import {
+  DRIZZLE_CLIENT,
+  type DrizzleClient,
+} from '../src/shared/database/database.module';
+import {
+  adDailyFigures,
+  ads,
+  campaigns,
+  stores,
+  type AdFormat,
+  type CampaignStatus,
+} from '../src/shared/database/schema';
+import type { AttributedRevenueReport } from '../src/modules/marketing/services/attributed-revenue.service';
 import { createTestApp } from './helpers/test-app';
+import { AdminClient } from './helpers/admin-client';
 import {
   createAdminUser,
   destroyAdminUsers,
@@ -52,14 +56,6 @@ const CREATE_CART = /* GraphQL */ `
 const ADD_TO_CART = /* GraphQL */ `
   mutation AddToCart($cartId: ID!, $variantId: ID!, $quantity: Int!) {
     addToCart(cartId: $cartId, variantId: $variantId, quantity: $quantity) {
-      id
-    }
-  }
-`;
-
-const APPLY_COUPON = /* GraphQL */ `
-  mutation ApplyCoupon($cartId: ID!, $code: String!) {
-    applyCoupon(cartId: $cartId, code: $code) {
       id
     }
   }
@@ -91,34 +87,19 @@ const ORDER_TOTAL = VARIANT_PRICE + SHIPPING_PRICE;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const daysAgo = (days: number) =>
   new Date(Date.now() - days * DAY_MS).toISOString();
+/** The fixture Store is in UTC, so its calendar day is the UTC one. */
+const dayAgo = (days: number) => daysAgo(days).slice(0, 10);
 
 /** A user agent the ingest classifier recognises as a crawler. */
 const CRAWLER_UA =
   'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)';
 
-interface RevenueBucket {
-  orders: number;
-  revenue: number;
-}
-
-interface CampaignRevenueLine extends RevenueBucket {
-  campaignId: string;
-  name: string;
-  tag: string;
-  status: string;
-}
-
-interface AttributedRevenueReport {
-  period: string;
-  touch: 'first' | 'last';
-  lookbackDays: number;
-  rangeStart: string;
-  rangeEnd: string;
-  campaigns: CampaignRevenueLine[];
-  blended: RevenueBucket;
-  unattributed: RevenueBucket;
-  totals: RevenueBucket;
-}
+// Platform ids, as Meta writes them into a link at the moment of the click.
+const SUMMER_EXT = '120200000000000001';
+const SPRING_EXT = '120200000000000002';
+const SUMMER_VIDEO_EXT = '120210000000000001';
+const SUMMER_STILL_EXT = '120210000000000002';
+const SPRING_VIDEO_EXT = '120210000000000003';
 
 interface Touch {
   utmSource?: string;
@@ -130,13 +111,35 @@ interface Touch {
   occurredAt?: string;
 }
 
-describe('Attributed revenue by campaign (e2e)', () => {
+/** A Touch as the Link Tags write it on a click through a Meta ad. */
+const adClick = (
+  campaignExt: string,
+  adExt?: string,
+  occurredAt = daysAgo(1),
+): Touch => ({
+  utmSource: 'meta',
+  utmMedium: 'paid',
+  utmCampaign: campaignExt,
+  ...(adExt ? { utmContent: adExt } : {}),
+  occurredAt,
+});
+
+interface SeededCampaign {
+  id: string;
+  externalId: string;
+  /** Ad ids by platform ad id. */
+  ads: Record<string, string>;
+}
+
+describe('Campaigns keyed by the platform (e2e)', () => {
   let app: INestApplication<App>;
+  let db: DrizzleClient;
   let fixture: StorefrontFixture;
   let admin: AdminUserFixture;
 
   beforeAll(async () => {
     ({ app } = await createTestApp());
+    db = app.get<DrizzleClient>(DRIZZLE_CLIENT);
   });
 
   afterAll(async () => {
@@ -158,15 +161,81 @@ describe('Attributed revenue by campaign (e2e)', () => {
     await destroyAdminUsers(app, [admin.id]);
   });
 
+  // ─── Seeding what the sync will write ───────────────────────────────────────
+
+  /**
+   * One platform campaign and its ads, as rows — exactly what the sync will
+   * insert once it exists.
+   */
+  async function seedCampaign(
+    externalId: string,
+    adExternalIds: string[] = [],
+    opts: {
+      at?: StorefrontFixture;
+      name?: string;
+      status?: CampaignStatus;
+      hasLinkTags?: boolean;
+      format?: AdFormat;
+    } = {},
+  ): Promise<SeededCampaign> {
+    const at = opts.at ?? fixture;
+    const [campaign] = await db
+      .insert(campaigns)
+      .values({
+        organizationId: at.organizationId,
+        storeId: at.storeId,
+        platform: 'meta',
+        externalId,
+        name: opts.name ?? `Campaign ${externalId}`,
+        status: opts.status ?? 'active',
+        hasLinkTags: opts.hasLinkTags ?? true,
+      })
+      .returning();
+
+    const seededAds: Record<string, string> = {};
+    for (const adExt of adExternalIds) {
+      const [ad] = await db
+        .insert(ads)
+        .values({
+          organizationId: at.organizationId,
+          storeId: at.storeId,
+          campaignId: campaign.id,
+          externalId: adExt,
+          name: `Ad ${adExt}`,
+          format: opts.format ?? 'image',
+          status: opts.status ?? 'active',
+          hasLinkTags: opts.hasLinkTags ?? true,
+        })
+        .returning();
+      seededAds[adExt] = ad.id;
+    }
+
+    return { id: campaign.id, externalId, ads: seededAds };
+  }
+
+  async function seedFigures(
+    adId: string,
+    day: string,
+    figures: { spend: number; impressions: number; clicks: number },
+    at: StorefrontFixture = fixture,
+  ): Promise<void> {
+    await db.insert(adDailyFigures).values({
+      organizationId: at.organizationId,
+      storeId: at.storeId,
+      adId,
+      day,
+      ...figures,
+    });
+  }
+
   // ─── Driving the real APIs ──────────────────────────────────────────────────
 
   /**
    * Places one realized sale: cart → item → checkout → paid.
    *
-   * The order is advanced through the admin status endpoint rather than written
-   * directly, because `pending` is not revenue — the report has to count the
-   * same four statuses the sales reports do, and a test that skipped the
-   * transition would never notice if it stopped.
+   * Advanced through the admin status endpoint rather than written directly,
+   * because `pending` is not revenue and the report has to count the same
+   * statuses the sales reports do.
    */
   async function placeOrder(
     attribution?: {
@@ -177,7 +246,6 @@ describe('Attributed revenue by campaign (e2e)', () => {
     },
     at: StorefrontFixture = fixture,
     as: AdminUserFixture = admin,
-    opts: { couponCode?: string; variantId?: string } = {},
   ): Promise<string> {
     const { createCart: cart } = await at.storefront.query<{
       createCart: { id: string };
@@ -185,16 +253,9 @@ describe('Attributed revenue by campaign (e2e)', () => {
 
     await at.storefront.query(ADD_TO_CART, {
       cartId: cart.id,
-      variantId: opts.variantId ?? at.variantId,
+      variantId: at.variantId,
       quantity: 1,
     });
-
-    if (opts.couponCode) {
-      await at.storefront.query(APPLY_COUPON, {
-        cartId: cart.id,
-        code: opts.couponCode,
-      });
-    }
 
     const { checkout: result } = await at.storefront.query<{
       checkout: { orderId: string };
@@ -214,22 +275,11 @@ describe('Attributed revenue by campaign (e2e)', () => {
     return result.orderId;
   }
 
-  async function createCampaign(
-    name: string,
-    as: AdminUserFixture = admin,
-  ): Promise<{ id: string; tag: string; name: string }> {
-    const res = await as.client
-      .post('/campaigns', { name, platform: 'meta' })
-      .expect(201);
-    return res.body as { id: string; tag: string; name: string };
-  }
-
   async function readReport(
-    touch: 'first' | 'last' = 'last',
     as: AdminUserFixture = admin,
   ): Promise<AttributedRevenueReport> {
     const res = await as.client
-      .get(`/marketing/attributed-revenue?period=30d&touch=${touch}`)
+      .get('/marketing/attributed-revenue?period=30d')
       .expect(200);
     return res.body as AttributedRevenueReport;
   }
@@ -237,7 +287,12 @@ describe('Attributed revenue by campaign (e2e)', () => {
   const lineFor = (report: AttributedRevenueReport, campaignId: string) =>
     report.campaigns.find((c) => c.campaignId === campaignId);
 
-  /** Sends one event through the public ingest API under the given user agent. */
+  const adLineFor = (
+    report: AttributedRevenueReport,
+    campaignId: string,
+    adId: string,
+  ) => lineFor(report, campaignId)?.ads.find((ad) => ad.adId === adId);
+
   async function trackEvent(
     sessionId: string,
     userAgent: string,
@@ -250,254 +305,563 @@ describe('Attributed revenue by campaign (e2e)', () => {
       .expect(202);
   }
 
-  // ─── The report ─────────────────────────────────────────────────────────────
+  // ─── The credit rule ────────────────────────────────────────────────────────
 
-  it('reports revenue and order count per campaign, with unattributed on its own line', async () => {
-    const summer = await createCampaign('Summer Sale');
+  describe('crediting the latest ad click', () => {
+    it('credits the Campaign and the Ad the last touch names', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [
+        SUMMER_VIDEO_EXT,
+        SUMMER_STILL_EXT,
+      ]);
 
-    // Two sales from the campaign's own tag, spelled the way a hand-tagged
-    // link often is, plus one visitor who arrived with nothing.
-    await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
-    await placeOrder({
-      lastTouch: { utmCampaign: summer.tag.replace(/-/g, '_').toUpperCase() },
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT) });
+
+      const report = await readReport();
+      expect(lineFor(report, summer.id)).toMatchObject({
+        orders: 1,
+        revenue: ORDER_TOTAL,
+        unassigned: { orders: 0, revenue: 0 },
+      });
+      expect(
+        adLineFor(report, summer.id, summer.ads[SUMMER_VIDEO_EXT]),
+      ).toMatchObject({ orders: 1, revenue: ORDER_TOTAL });
+      expect(
+        adLineFor(report, summer.id, summer.ads[SUMMER_STILL_EXT]),
+      ).toMatchObject({ orders: 0, revenue: 0 });
+      expect(report.unattributed).toEqual({ orders: 0, revenue: 0 });
     });
-    await placeOrder();
 
-    const report = await readReport();
+    it('credits the first touch’s Campaign when the last touch names none', async () => {
+      const spring = await seedCampaign(SPRING_EXT, [SPRING_VIDEO_EXT]);
 
-    expect(lineFor(report, summer.id)).toMatchObject({
-      name: 'Summer Sale',
-      tag: summer.tag,
-      orders: 2,
-      revenue: ORDER_TOTAL * 2,
+      // An ad click, then a search for the store's name. The search must not
+      // cancel the ad's credit.
+      await placeOrder({
+        firstTouch: adClick(SPRING_EXT, SPRING_VIDEO_EXT, daysAgo(5)),
+        lastTouch: {
+          utmSource: 'google',
+          utmMedium: 'organic',
+          referrer: 'https://www.google.com/',
+          occurredAt: daysAgo(1),
+        },
+      });
+
+      const report = await readReport();
+      expect(lineFor(report, spring.id)).toMatchObject({
+        orders: 1,
+        revenue: ORDER_TOTAL,
+      });
+      expect(
+        adLineFor(report, spring.id, spring.ads[SPRING_VIDEO_EXT]),
+      ).toMatchObject({ orders: 1, revenue: ORDER_TOTAL });
     });
 
-    // Its own line, never folded into the campaign above it.
-    expect(report.unattributed).toEqual({ orders: 1, revenue: ORDER_TOTAL });
-    expect(report.totals).toEqual({ orders: 3, revenue: ORDER_TOTAL * 3 });
+    it('credits the last touch when both touches name different Campaigns', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+      const spring = await seedCampaign(SPRING_EXT, [SPRING_VIDEO_EXT]);
 
-    // Revenue is the smallest currency unit, unformatted — no symbol, no
-    // decimal point, nothing a caller would have to parse back.
-    const revenue = lineFor(report, summer.id)!.revenue;
-    expect(typeof revenue).toBe('number');
-    expect(Number.isInteger(revenue)).toBe(true);
+      await placeOrder({
+        firstTouch: adClick(SPRING_EXT, SPRING_VIDEO_EXT, daysAgo(7)),
+        lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT, daysAgo(1)),
+      });
+
+      const report = await readReport();
+      expect(lineFor(report, summer.id)).toMatchObject({ orders: 1 });
+      expect(lineFor(report, spring.id)).toMatchObject({ orders: 0 });
+    });
+
+    it('leaves an order naming no Campaign Unattributed, and still counts it', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+
+      await placeOrder({
+        lastTouch: {
+          utmSource: 'newsletter',
+          utmCampaign: 'july-digest',
+          occurredAt: daysAgo(1),
+        },
+      });
+      await placeOrder();
+
+      const report = await readReport();
+      expect(lineFor(report, summer.id)).toMatchObject({ orders: 0 });
+      expect(report.unattributed).toEqual({
+        orders: 2,
+        revenue: ORDER_TOTAL * 2,
+      });
+      expect(report.totals).toEqual({ orders: 2, revenue: ORDER_TOTAL * 2 });
+    });
+
+    it('lets a campaign discovered after its orders claim them', async () => {
+      // The ad ran and sold before the sync ever saw its campaign. The Order
+      // kept the platform's ids; the Campaign row arriving later claims it.
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT) });
+      expect((await readReport()).unattributed.orders).toBe(1);
+
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+      const after = await readReport();
+
+      expect(
+        adLineFor(after, summer.id, summer.ads[SUMMER_VIDEO_EXT]),
+      ).toMatchObject({ orders: 1, revenue: ORDER_TOTAL });
+      expect(after.unattributed.orders).toBe(0);
+    });
+
+    it('denies credit to a touch older than the lookback window', async () => {
+      const summer = await seedCampaign(SUMMER_EXT);
+
+      await placeOrder({
+        lastTouch: adClick(SUMMER_EXT, undefined, daysAgo(60)),
+      });
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT, undefined) });
+
+      const report = await readReport();
+      expect(report.lookbackDays).toBe(30);
+      expect(lineFor(report, summer.id)).toMatchObject({ orders: 1 });
+      expect(report.unattributed).toEqual({ orders: 1, revenue: ORDER_TOTAL });
+    });
+
+    it('never lets bot traffic appear to have driven a sale', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+      const botSession = 'session-crawler';
+
+      await placeOrder({
+        lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT),
+        sessionId: botSession,
+      });
+      await trackEvent(botSession, CRAWLER_UA);
+
+      const report = await readReport();
+      expect(lineFor(report, summer.id)).toMatchObject({ orders: 0 });
+      expect(report.unattributed).toEqual({ orders: 1, revenue: ORDER_TOTAL });
+    });
   });
 
-  it('shows the active lookback window alongside the figures', async () => {
-    const report = await readReport();
+  // ─── The split by Ad ────────────────────────────────────────────────────────
 
-    // The reason these numbers differ from what an ad platform reports.
-    expect(report.lookbackDays).toBe(30);
-    expect(new Date(report.rangeEnd).getTime()).toBeGreaterThan(
-      new Date(report.rangeStart).getTime(),
-    );
+  describe('the split by Ad', () => {
+    it('keeps an order naming the Campaign but none of its Ads on its own line', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [
+        SUMMER_VIDEO_EXT,
+        SUMMER_STILL_EXT,
+      ]);
+
+      // A hand-edited link: the campaign id survived, the ad id did not.
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT, 'not-an-ad') });
+
+      const report = await readReport();
+      const line = lineFor(report, summer.id)!;
+      expect(line).toMatchObject({ orders: 1, revenue: ORDER_TOTAL });
+      expect(line.unassigned).toEqual({ orders: 1, revenue: ORDER_TOTAL });
+      // Never spread across the Ads that happen to exist.
+      expect(line.ads.every((ad) => ad.orders === 0 && ad.revenue === 0)).toBe(
+        true,
+      );
+      // And never folded into Unattributed: it has a Campaign.
+      expect(report.unattributed).toEqual({ orders: 0, revenue: 0 });
+    });
+
+    it('never credits an Ad of a sibling Campaign', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+      const spring = await seedCampaign(SPRING_EXT, [SPRING_VIDEO_EXT]);
+
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT, SPRING_VIDEO_EXT) });
+
+      const report = await readReport();
+      expect(lineFor(report, summer.id)!.unassigned.orders).toBe(1);
+      expect(
+        adLineFor(report, spring.id, spring.ads[SPRING_VIDEO_EXT]),
+      ).toMatchObject({ orders: 0 });
+    });
+
+    it('adds the Ads and the unassigned line up to the Campaign exactly', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [
+        SUMMER_VIDEO_EXT,
+        SUMMER_STILL_EXT,
+      ]);
+
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT) });
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT) });
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT, SUMMER_STILL_EXT) });
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT) });
+      await placeOrder({
+        firstTouch: adClick(SUMMER_EXT, SUMMER_STILL_EXT, daysAgo(3)),
+        lastTouch: { utmSource: 'direct-mail', occurredAt: daysAgo(1) },
+      });
+
+      const line = lineFor(await readReport(), summer.id)!;
+      expect(line).toMatchObject({ orders: 5, revenue: ORDER_TOTAL * 5 });
+
+      const summed = line.ads.reduce(
+        (sum, ad) => ({
+          orders: sum.orders + ad.orders,
+          revenue: sum.revenue + ad.revenue,
+        }),
+        line.unassigned,
+      );
+      expect(summed).toEqual({ orders: line.orders, revenue: line.revenue });
+    });
   });
 
-  it('switches between first and last touch without touching any data', async () => {
-    const discovery = await createCampaign('Discovery Push');
-    const closer = await createCampaign('Retargeting Push');
+  // ─── The platform's figures ─────────────────────────────────────────────────
 
-    await placeOrder({
-      firstTouch: { utmCampaign: discovery.tag, occurredAt: daysAgo(7) },
-      lastTouch: { utmCampaign: closer.tag, occurredAt: daysAgo(1) },
+  describe('the platform’s daily figures', () => {
+    it('sums each Ad’s days in the period, and the Campaign as its Ads’ sum', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [
+        SUMMER_VIDEO_EXT,
+        SUMMER_STILL_EXT,
+      ]);
+      const video = summer.ads[SUMMER_VIDEO_EXT];
+      const still = summer.ads[SUMMER_STILL_EXT];
+
+      await seedFigures(video, dayAgo(2), {
+        spend: 12_34,
+        impressions: 1000,
+        clicks: 40,
+      });
+      await seedFigures(video, dayAgo(1), {
+        spend: 5_00,
+        impressions: 300,
+        clicks: 10,
+      });
+      await seedFigures(still, dayAgo(1), {
+        spend: 7_66,
+        impressions: 700,
+        clicks: 25,
+      });
+      // Outside the 30-day period: not part of this read.
+      await seedFigures(still, dayAgo(45), {
+        spend: 99_99,
+        impressions: 9999,
+        clicks: 999,
+      });
+
+      const report = await readReport();
+      expect(adLineFor(report, summer.id, video)).toMatchObject({
+        spend: 17_34,
+        impressions: 1300,
+        clicks: 50,
+      });
+      expect(adLineFor(report, summer.id, still)).toMatchObject({
+        spend: 7_66,
+        impressions: 700,
+        clicks: 25,
+      });
+      expect(lineFor(report, summer.id)).toMatchObject({
+        spend: 25_00,
+        impressions: 2000,
+        clicks: 75,
+      });
     });
 
-    const byFirst = await readReport('first');
-    expect(lineFor(byFirst, discovery.id)).toMatchObject({
-      orders: 1,
-      revenue: ORDER_TOTAL,
-    });
-    expect(lineFor(byFirst, closer.id)).toMatchObject({ orders: 0 });
+    it('reports zero figures for an Ad with no rows yet, as integers', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
 
-    // Same order, same row, no migration between the two reads.
-    const byLast = await readReport('last');
-    expect(lineFor(byLast, closer.id)).toMatchObject({
-      orders: 1,
-      revenue: ORDER_TOTAL,
+      const line = lineFor(await readReport(), summer.id)!;
+      expect(line).toMatchObject({ spend: 0, impressions: 0, clicks: 0 });
+      expect(line.ads[0]).toMatchObject({
+        spend: 0,
+        impressions: 0,
+        clicks: 0,
+      });
     });
-    expect(lineFor(byLast, discovery.id)).toMatchObject({ orders: 0 });
+
+    it('keeps one Ad’s day unique', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+      const video = summer.ads[SUMMER_VIDEO_EXT];
+      const figures = { spend: 100, impressions: 10, clicks: 1 };
+
+      await seedFigures(video, dayAgo(1), figures);
+      await expect(seedFigures(video, dayAgo(1), figures)).rejects.toThrow();
+    });
   });
 
-  it('lets a campaign created after its orders claim them', async () => {
-    // The merchant ran the ad first and set the campaign up afterwards, which
-    // is the ordinary case and must not lose the revenue.
-    await placeOrder({ lastTouch: { utmCampaign: 'flash_friday' } });
+  // ─── What a Campaign is ─────────────────────────────────────────────────────
 
-    const before = await readReport();
-    expect(before.unattributed).toEqual({ orders: 1, revenue: ORDER_TOTAL });
+  describe('the Campaign as the platform describes it', () => {
+    it('carries the platform id, platform, status, schedule and cover, and its Ads theirs', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT], {
+        name: 'Summer Sale 2026',
+        status: 'paused',
+        format: 'video',
+      });
 
-    const flash = await createCampaign('Flash Friday');
-    const after = await readReport();
+      const campaign = await admin.client
+        .get(`/campaigns/${summer.id}`)
+        .expect(200);
+      expect(campaign.body).toMatchObject({
+        id: summer.id,
+        externalId: SUMMER_EXT,
+        platform: 'meta',
+        name: 'Summer Sale 2026',
+        status: 'paused',
+        startsAt: null,
+        endsAt: null,
+        coverUrl: null,
+        hasLinkTags: true,
+      });
 
-    expect(lineFor(after, flash.id)).toMatchObject({
-      orders: 1,
-      revenue: ORDER_TOTAL,
+      const adList = await admin.client
+        .get(`/campaigns/${summer.id}/ads`)
+        .expect(200);
+      expect(adList.body).toEqual([
+        expect.objectContaining({
+          id: summer.ads[SUMMER_VIDEO_EXT],
+          externalId: SUMMER_VIDEO_EXT,
+          campaignId: summer.id,
+          format: 'video',
+          status: 'paused',
+          creativeUrl: null,
+          hasLinkTags: true,
+        }),
+      ]);
     });
-    expect(after.unattributed).toEqual({ orders: 0, revenue: 0 });
+
+    it('defaults the link-tags flag to absent', async () => {
+      const [row] = await db
+        .insert(campaigns)
+        .values({
+          organizationId: fixture.organizationId,
+          storeId: fixture.storeId,
+          platform: 'meta',
+          externalId: SPRING_EXT,
+          name: 'Discovered in Ads Manager',
+          status: 'active',
+        })
+        .returning();
+      const [ad] = await db
+        .insert(ads)
+        .values({
+          organizationId: fixture.organizationId,
+          storeId: fixture.storeId,
+          campaignId: row.id,
+          externalId: SPRING_VIDEO_EXT,
+          name: 'Discovered ad',
+          status: 'active',
+        })
+        .returning();
+
+      expect(row.hasLinkTags).toBe(false);
+      expect(ad.hasLinkTags).toBe(false);
+
+      const line = lineFor(await readReport(), row.id)!;
+      expect(line.hasLinkTags).toBe(false);
+    });
+
+    it('keeps the platform campaign id unique within a store, but not across stores', async () => {
+      await seedCampaign(SUMMER_EXT);
+      await expect(seedCampaign(SUMMER_EXT)).rejects.toThrow();
+
+      const other = await seedStorefront(app);
+      try {
+        await expect(
+          seedCampaign(SUMMER_EXT, [], { at: other }),
+        ).resolves.toBeDefined();
+      } finally {
+        await destroyStorefront(app, other.organizationId);
+      }
+    });
+
+    it('keeps the platform ad id unique within a store', async () => {
+      await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+      await expect(
+        seedCampaign(SPRING_EXT, [SUMMER_VIDEO_EXT]),
+      ).rejects.toThrow();
+    });
+
+    it('offers no way to create, archive or delete a campaign or an ad here', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+      const adId = summer.ads[SUMMER_VIDEO_EXT];
+
+      await admin.client
+        .post('/campaigns', { name: 'x', platform: 'meta' })
+        .expect(404);
+      await admin.client.post(`/campaigns/${summer.id}/archive`).expect(404);
+      await admin.client.delete(`/campaigns/${summer.id}`).expect(404);
+      await admin.client.get(`/campaigns/${summer.id}/rules`).expect(404);
+      await admin.client
+        .post(`/campaigns/${summer.id}/ads/${adId}/archive`)
+        .expect(404);
+    });
   });
 
-  it('repairs historical figures when a matching rule is added', async () => {
-    const summer = await createCampaign('Summer Sale');
+  // ─── Reconciliation ─────────────────────────────────────────────────────────
 
-    // Links that went out tagged with a spelling the canonical tag does not
-    // cover — no separator at all, so normalization alone cannot reach it.
-    await placeOrder({ lastTouch: { utmCampaign: 'summersale' } });
-
-    const before = await readReport();
-    expect(lineFor(before, summer.id)).toMatchObject({ orders: 0, revenue: 0 });
-    expect(before.unattributed.orders).toBe(1);
-
-    await admin.client
-      .post(`/campaigns/${summer.id}/rules`, {
-        field: 'utm_campaign',
-        operator: 'equals',
-        value: 'summersale',
-      })
-      .expect(201);
-
-    // The order is not rewritten; the report simply reads it differently.
-    const after = await readReport();
-    expect(lineFor(after, summer.id)).toMatchObject({
-      orders: 1,
-      revenue: ORDER_TOTAL,
-    });
-    expect(after.unattributed).toEqual({ orders: 0, revenue: 0 });
-  });
-
-  it('denies credit to a touch older than the lookback window', async () => {
-    const summer = await createCampaign('Summer Sale');
-
-    await placeOrder({
-      lastTouch: { utmCampaign: summer.tag, occurredAt: daysAgo(60) },
-    });
-    await placeOrder({
-      lastTouch: { utmCampaign: summer.tag, occurredAt: daysAgo(2) },
-    });
-
-    const report = await readReport();
-
-    // The old visit happened; it did not drive today's sale.
-    expect(lineFor(report, summer.id)).toMatchObject({
-      orders: 1,
-      revenue: ORDER_TOTAL,
-    });
-    expect(report.unattributed).toEqual({ orders: 1, revenue: ORDER_TOTAL });
-    expect(report.totals.orders).toBe(2);
-  });
-
-  it('never lets bot traffic appear to have driven a sale', async () => {
-    const summer = await createCampaign('Summer Sale');
-    const botSession = 'session-crawler';
-
-    await placeOrder({
-      lastTouch: { utmCampaign: summer.tag },
-      sessionId: botSession,
-    });
-    // The crawler's own visit, classified server-side from its user agent
-    // exactly as every other event is.
-    await trackEvent(botSession, CRAWLER_UA);
-
-    const report = await readReport();
-
-    expect(lineFor(report, summer.id)).toMatchObject({ orders: 0, revenue: 0 });
-    // The money is still real and still counted — it just has no campaign.
-    expect(report.unattributed).toEqual({ orders: 1, revenue: ORDER_TOTAL });
-    expect(report.totals).toEqual({ orders: 1, revenue: ORDER_TOTAL });
+  it('never fails a checkout over Link Tags it cannot resolve', async () => {
+    await expect(
+      placeOrder({ lastTouch: adClick('---', '{{ad.id}}') }),
+    ).resolves.toEqual(expect.any(String));
+    expect((await readReport()).unattributed.orders).toBe(1);
   });
 
   it('reconciles with the sales reporting for the same period', async () => {
-    const summer = await createCampaign('Summer Sale');
+    const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
 
-    await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
+    await placeOrder({ lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT) });
     await placeOrder();
-    // A cart that never becomes revenue: checked out but left pending, so it
-    // must not appear in either report.
-    const { createCart: pendingCart } = await fixture.storefront.query<{
-      createCart: { id: string };
-    }>(CREATE_CART, {});
-    await fixture.storefront.query(ADD_TO_CART, {
-      cartId: pendingCart.id,
-      variantId: fixture.variantId,
-      quantity: 1,
-    });
-    await fixture.storefront.query(CHECKOUT, {
-      cartId: pendingCart.id,
-      input: {
-        shippingMethodId: fixture.shippingMethodId,
-        shippingAddress: SHIPPING_ADDRESS,
-        email: 'ada@example.test',
-      },
-    });
 
     const report = await readReport();
-
     const stats = await admin.client
       .get('/dashboard/stats?period=30d')
       .expect(200);
     const { revenue } = stats.body as { revenue: { current: number } };
 
-    // The dashboard's own order metric counts orders *placed*, pending ones
-    // included; analytics counts the realized ones, which is what revenue is
-    // made of and what this report has to agree with.
-    const traffic = await admin.client
-      .get('/analytics/traffic?period=30d')
-      .expect(200);
-    const { orders: realizedOrders } = traffic.body as { orders: number };
-
+    expect(report.totals).toEqual({ orders: 2, revenue: ORDER_TOTAL * 2 });
     expect(report.totals.revenue).toBe(revenue.current);
-    expect(report.totals.orders).toBe(realizedOrders);
-    expect(report.totals.orders).toBe(2);
-
-    const attributed = report.campaigns.reduce((sum, c) => sum + c.revenue, 0);
-    expect(attributed + report.unattributed.revenue).toBe(
-      report.totals.revenue,
-    );
+    expect(
+      lineFor(report, summer.id)!.revenue + report.unattributed.revenue,
+    ).toBe(report.totals.revenue);
+    expect(report.blended).toEqual({ orders: 1, revenue: ORDER_TOTAL });
   });
 
-  it('never credits one organization traffic from another', async () => {
-    const summer = await createCampaign('Summer Sale');
+  // ─── Tenancy ────────────────────────────────────────────────────────────────
 
-    // A second merchant running a campaign of the same name, whose links carry
-    // the same tag. Neither report may show the other's revenue.
-    const other = await seedStorefront(app, {
-      variantPrice: VARIANT_PRICE,
-      shippingPrice: SHIPPING_PRICE,
-    });
-    const otherAdmin = await createAdminUser(
-      app,
-      other.organizationId,
-      other.storeId,
-    );
+  describe('tenancy', () => {
+    it('never credits one organization’s orders to another’s campaign with the same platform id', async () => {
+      const mine = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
 
-    try {
-      const otherSummer = await createCampaign('Summer Sale', otherAdmin);
-      expect(otherSummer.tag).toBe(summer.tag);
-
-      await placeOrder({ lastTouch: { utmCampaign: summer.tag } });
-      await placeOrder(
-        { lastTouch: { utmCampaign: otherSummer.tag } },
-        other,
-        otherAdmin,
+      const other = await seedStorefront(app, {
+        variantPrice: VARIANT_PRICE,
+        shippingPrice: SHIPPING_PRICE,
+      });
+      const otherAdmin = await createAdminUser(
+        app,
+        other.organizationId,
+        other.storeId,
       );
 
-      const mine = await readReport();
-      expect(lineFor(mine, summer.id)).toMatchObject({
-        orders: 1,
-        revenue: ORDER_TOTAL,
-      });
-      expect(lineFor(mine, otherSummer.id)).toBeUndefined();
-      expect(mine.totals).toEqual({ orders: 1, revenue: ORDER_TOTAL });
+      try {
+        const theirs = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT], {
+          at: other,
+        });
 
-      const theirs = await readReport('last', otherAdmin);
-      expect(lineFor(theirs, otherSummer.id)).toMatchObject({
-        orders: 1,
-        revenue: ORDER_TOTAL,
+        await placeOrder({ lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT) });
+        await placeOrder(
+          { lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT) },
+          other,
+          otherAdmin,
+        );
+        await placeOrder(
+          { lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT) },
+          other,
+          otherAdmin,
+        );
+
+        const myReport = await readReport();
+        expect(lineFor(myReport, mine.id)).toMatchObject({ orders: 1 });
+        expect(lineFor(myReport, theirs.id)).toBeUndefined();
+        expect(myReport.totals.orders).toBe(1);
+
+        const theirReport = await readReport(otherAdmin);
+        expect(lineFor(theirReport, theirs.id)).toMatchObject({ orders: 2 });
+        expect(lineFor(theirReport, mine.id)).toBeUndefined();
+      } finally {
+        await destroyStorefront(app, other.organizationId);
+        await destroyAdminUsers(app, [otherAdmin.id]);
+      }
+    });
+
+    it('makes another organization’s campaign, ads and figures unreadable', async () => {
+      const other = await seedStorefront(app);
+      try {
+        const theirs = await seedCampaign(SPRING_EXT, [SPRING_VIDEO_EXT], {
+          at: other,
+        });
+        const theirAd = theirs.ads[SPRING_VIDEO_EXT];
+        await seedFigures(
+          theirAd,
+          dayAgo(1),
+          { spend: 50_00, impressions: 500, clicks: 5 },
+          other,
+        );
+
+        await admin.client.get(`/campaigns/${theirs.id}`).expect(404);
+        await admin.client.get(`/campaigns/${theirs.id}/ads`).expect(404);
+        await admin.client
+          .get(`/campaigns/${theirs.id}/ads/${theirAd}`)
+          .expect(404);
+
+        const list = await admin.client.get('/campaigns').expect(200);
+        expect(list.body).toEqual([]);
+
+        const report = await readReport();
+        expect(report.campaigns).toEqual([]);
+      } finally {
+        await destroyStorefront(app, other.organizationId);
+      }
+    });
+
+    it('scopes a campaign and its figures to the store, not just the organization', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+      await seedFigures(summer.ads[SUMMER_VIDEO_EXT], dayAgo(1), {
+        spend: 10_00,
+        impressions: 100,
+        clicks: 3,
       });
-      expect(lineFor(theirs, summer.id)).toBeUndefined();
-      expect(theirs.totals).toEqual({ orders: 1, revenue: ORDER_TOTAL });
-    } finally {
-      await destroyStorefront(app, other.organizationId);
-      await destroyAdminUsers(app, [otherAdmin.id]);
-    }
+
+      // A second store in the same organization, reached by the same admin.
+      const [secondStore] = await db
+        .insert(stores)
+        .values({
+          organizationId: fixture.organizationId,
+          name: 'Second store',
+          slug: `second-${Date.now()}`,
+        })
+        .returning();
+      const secondClient = new AdminClient(
+        app,
+        admin.accessToken,
+        secondStore.id,
+      );
+
+      await secondClient.get(`/campaigns/${summer.id}`).expect(404);
+      const res = await secondClient
+        .get('/marketing/attributed-revenue?period=30d')
+        .expect(200);
+      expect((res.body as AttributedRevenueReport).campaigns).toEqual([]);
+    });
+  });
+
+  // ─── Permissions ────────────────────────────────────────────────────────────
+
+  describe('permissions', () => {
+    it('lets a product manager read campaigns and the report', async () => {
+      const summer = await seedCampaign(SUMMER_EXT);
+      const pm = await createAdminUser(
+        app,
+        fixture.organizationId,
+        fixture.storeId,
+        'product_manager',
+      );
+      try {
+        await pm.client.get(`/campaigns/${summer.id}`).expect(200);
+        await readReport(pm);
+      } finally {
+        await destroyAdminUsers(app, [pm.id]);
+      }
+    });
+
+    it('refuses a support agent, who has no marketing permission', async () => {
+      const agent = await createAdminUser(
+        app,
+        fixture.organizationId,
+        fixture.storeId,
+        'support_agent',
+      );
+      try {
+        await agent.client.get('/campaigns').expect(403);
+        await agent.client
+          .get('/marketing/attributed-revenue?period=30d')
+          .expect(403);
+      } finally {
+        await destroyAdminUsers(app, [agent.id]);
+      }
+    });
+
+    it('rejects a request carrying no admin token', async () => {
+      await request(app.getHttpServer())
+        .get('/api/admin/campaigns')
+        .set('X-Store-Id', fixture.storeId)
+        .expect(401);
+    });
   });
 });

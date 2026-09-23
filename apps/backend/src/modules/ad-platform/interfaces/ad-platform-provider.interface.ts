@@ -1,7 +1,4 @@
-import type {
-  AdPlatform,
-  AdPlatformState,
-} from '../../../shared/database/schema';
+import type { AdPlatform } from '../../../shared/database/schema';
 
 /**
  * The one place this codebase reaches an ad platform, and the second
@@ -158,30 +155,6 @@ export interface ReportedAd {
    */
   readonly startsAt: Date | null;
   readonly endsAt: Date | null;
-  /**
-   * What the platform says about the ad right now — approved, rejected, in
-   * review, delivering, paused — or null where it says nothing.
-   *
-   * This is the platform's fact and it is stored beside ours, never instead of
-   * it: nothing downstream of here may write `ads.status` from this value. The
-   * merchant learning from their own dashboard that an ad was rejected is the
-   * whole point, and it only works because an Ad that is active here stays
-   * active here when this says `rejected`.
-   *
-   * Null is an ordinary answer. A platform that does not report a review state
-   * reports none, and an Ad simply carries no platform state.
-   */
-  readonly platformState: AdPlatformState | null;
-  /**
-   * Where the ad ran, as a label the merchant will recognise — "Instagram
-   * Stories". Null where the platform names none.
-   *
-   * **A label, not a dimension.** One ad runs in several placements at once, so
-   * an adapter with several to report joins them into one readable label rather
-   * than returning a list: nothing above reports by, filters by or groups by
-   * this, and a list would be an invitation to start.
-   */
-  readonly placement: string | null;
   readonly days: readonly ReportedAdDay[];
 }
 

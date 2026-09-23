@@ -138,25 +138,17 @@ export function AdPlatformsSettings() {
       syncAdPlatformServerFn({ data: { platform } }),
     onSuccess: (outcomes) => {
       const failure = outcomes.find((outcome) => outcome.status === "failed");
-      const mirrored = outcomes.reduce(
-        (sum, o) => sum + o.platformStateWritten,
-        0,
-      );
       setSyncNote(
         failure?.message ??
           (outcomes.length === 0
             ? "Nothing to sync — this platform is not connected."
-            : mirrored > 0
-              ? `Up to date. The platform's own state is recorded on ${mirrored} ad${mirrored === 1 ? "" : "s"}.`
-              : "Up to date."),
+            : "Up to date."),
       );
       void queryClient.invalidateQueries({
         queryKey: ["settings", "ad-platforms"],
       });
-      // A sync also writes what the platform says about each claimed ad —
-      // beside its own status, never over it — so the cards showing that are
-      // now behind. None of their own statuses can have changed; a sync does
-      // not write one.
+      // The campaigns and their figures come from the platform, so anything
+      // showing them may now be behind.
       void queryClient.invalidateQueries({ queryKey: ["campaigns"] });
     },
     onError: (err: Error) => setError(err.message),

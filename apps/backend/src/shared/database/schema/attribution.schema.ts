@@ -35,9 +35,10 @@ export const ATTRIBUTION_LIMITS = {
  *
  * Per ADR-0001 these are the immutable fact: the raw UTM tuple, the referrer,
  * and the landing path of the first and last non-direct Touch. No `campaign_id`
- * is recorded — a Campaign is an interpretation resolved from these values by
- * matching rules at read time, so a Campaign created (or corrected) after the
- * fact still claims its history.
+ * is recorded — the Campaign and Ad are resolved from these values at read
+ * time, by the platform ids the Link Tags wrote into `utm_campaign` and
+ * `utm_content`, so a Campaign discovered after the fact still claims its
+ * history.
  *
  * On a Cart the first-touch group is write-once and the last-touch group
  * advances; at checkout the whole group is copied to the Order and frozen.
