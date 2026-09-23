@@ -66,6 +66,15 @@ export class CreateStoreDto {
   @MaxLength(255)
   declare productPathPattern?: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Whether the storefront must ask a visitor before it measures anything. Off by default, so a store selling where consent is not required shows no banner.',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  declare requiresMeasurementConsent?: boolean;
+
   @ApiPropertyOptional({ default: true })
   @IsOptional()
   @IsBoolean()

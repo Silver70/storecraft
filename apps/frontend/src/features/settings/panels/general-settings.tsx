@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Separator } from "~/components/ui/separator";
+import { Switch } from "~/components/ui/switch";
 import { CurrencyCombobox } from "~/components/currency-combobox";
 import { TimezoneCombobox } from "~/components/timezone-combobox";
 import { updateStoreServerFn } from "~/server/stores";
@@ -35,6 +36,9 @@ export function GeneralSettings() {
   const [productPath, setProductPath] = React.useState(
     store?.productPathPattern ?? DEFAULT_PRODUCT_PATH,
   );
+  const [consentRequired, setConsentRequired] = React.useState(
+    store?.requiresMeasurementConsent ?? false,
+  );
   const [orgName, setOrgName] = React.useState(org?.name ?? "");
 
   React.useEffect(() => {
@@ -44,6 +48,7 @@ export function GeneralSettings() {
       setTimezone(store.timezone);
       setStorefrontUrl(store.storefrontUrl ?? "");
       setProductPath(store.productPathPattern ?? DEFAULT_PRODUCT_PATH);
+      setConsentRequired(store.requiresMeasurementConsent ?? false);
     }
   }, [store?.id]);
 
@@ -61,6 +66,7 @@ export function GeneralSettings() {
           timezone,
           storefrontUrl: storefrontUrl.trim(),
           productPathPattern: productPath.trim(),
+          requiresMeasurementConsent: consentRequired,
         },
       }),
     onSuccess: () => {
@@ -222,6 +228,33 @@ export function GeneralSettings() {
               </p>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="border-b pb-4">
+          <CardTitle className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Measurement
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-5 pt-5">
+          <div className="flex items-start justify-between gap-6">
+            <div className="space-y-1.5">
+              <Label htmlFor="g-consent">Ask visitors for consent</Label>
+              <p className="max-w-xl text-xs text-muted-foreground">
+                Turn this on if you sell where consent is required. Your
+                storefront then shows a banner and measures nothing — no ad
+                pixel, no analytics, no purchases reported — until a visitor
+                accepts. Leave it off and no banner appears anywhere.
+              </p>
+            </div>
+            <Switch
+              id="g-consent"
+              checked={consentRequired}
+              onCheckedChange={setConsentRequired}
+              className="mt-1 shrink-0"
+            />
+          </div>
         </CardContent>
       </Card>
 

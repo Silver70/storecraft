@@ -259,3 +259,93 @@ describe('pickAttribution', () => {
     expect(pickAttribution({})).toEqual(emptyAttribution());
   });
 });
+
+/**
+ * The measurement half of the same declaration: the ad platform's browser
+ * identifiers, and whether the visitor agreed to be measured at all. Frozen onto
+ * the Order by the same copy as the touches, and asserted here because a wrong
+ * answer here is a Purchase Event reported about somebody who said no.
+ */
+describe('declared measurement', () => {
+  it('records the browser identifiers and the consent answer', () => {
+    const patch = applyDeclaredAttribution(
+      null,
+      {
+        metaBrowserId: 'fb.1.1757000000000.1234567890',
+        metaClickId: 'fb.1.1757000000000.AbCdEf',
+        measurementConsent: 'granted',
+      },
+      NOW,
+    );
+
+    expect(patch).toEqual({
+      metaBrowserId: 'fb.1.1757000000000.1234567890',
+      metaClickId: 'fb.1.1757000000000.AbCdEf',
+      measurementConsent: 'granted',
+    });
+  });
+
+  it('does not make a cart attributed: a browser id is not a touch', () => {
+    const patch = applyDeclaredAttribution(
+      null,
+      { metaBrowserId: 'fb.1.1757000000000.1234567890' },
+      NOW,
+    );
+
+    expect(patch.attributionSource).toBeUndefined();
+    expect(patch.firstTouchAt).toBeUndefined();
+  });
+
+  it('takes the newest reading and leaves an omitted one alone', () => {
+    const current = snapshotWith({
+      metaBrowserId: 'fb.1.1757000000000.1111111111',
+      metaClickId: 'fb.1.1757000000000.OldClick',
+      measurementConsent: 'granted',
+    });
+
+    const patch = applyDeclaredAttribution(
+      current,
+      { metaClickId: 'fb.1.1757900000000.NewClick' },
+      NOW,
+    );
+
+    expect(patch).toEqual({ metaClickId: 'fb.1.1757900000000.NewClick' });
+  });
+
+  it('records a refusal, which is the answer that has to survive', () => {
+    const patch = applyDeclaredAttribution(
+      null,
+      { measurementConsent: 'denied' },
+      NOW,
+    );
+
+    expect(patch.measurementConsent).toBe('denied');
+  });
+
+  it('ignores an answer it does not recognise rather than storing a third', () => {
+    const patch = applyDeclaredAttribution(
+      null,
+      { measurementConsent: 'maybe', metaBrowserId: '   ' },
+      NOW,
+    );
+
+    expect(patch).toEqual({});
+  });
+
+  it('carries them onto the order with the rest of the group', () => {
+    const row = {
+      id: 'cart-1',
+      metaBrowserId: 'fb.1.1757000000000.1234567890',
+      metaClickId: 'fb.1.1757000000000.AbCdEf',
+      measurementConsent: 'denied' as const,
+    };
+
+    expect(pickAttribution(row)).toEqual(
+      snapshotWith({
+        metaBrowserId: 'fb.1.1757000000000.1234567890',
+        metaClickId: 'fb.1.1757000000000.AbCdEf',
+        measurementConsent: 'denied',
+      }),
+    );
+  });
+});

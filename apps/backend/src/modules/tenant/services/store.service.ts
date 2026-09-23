@@ -88,6 +88,9 @@ export class StoreService {
         dto.productPathPattern,
       );
     }
+    if (dto.requiresMeasurementConsent !== undefined) {
+      values.requiresMeasurementConsent = dto.requiresMeasurementConsent;
+    }
 
     const [row] = await this.db.insert(stores).values(values).returning();
     return row;
@@ -113,6 +116,9 @@ export class StoreService {
       patch.productPathPattern = this.readProductPathPattern(
         dto.productPathPattern,
       );
+    }
+    if (dto.requiresMeasurementConsent !== undefined) {
+      patch.requiresMeasurementConsent = dto.requiresMeasurementConsent;
     }
 
     const [row] = await this.db

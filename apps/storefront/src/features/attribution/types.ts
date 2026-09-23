@@ -39,6 +39,12 @@ export interface DeclaredAttribution {
   visitorId?: string;
   /** Anonymous, rotates after 30 minutes idle. Shared with the tracking script. */
   sessionId?: string;
+  /** Meta's `_fbp`. Present only where the visitor may be measured. */
+  metaBrowserId?: string;
+  /** Meta's `_fbc`, from the `fbclid` they landed with. Same condition. */
+  metaClickId?: string;
+  /** Their answer to the consent banner, on a store that shows one. */
+  measurementConsent?: "granted" | "denied";
 }
 
 /** A touch as held in storage, with the bookkeeping only capture needs. */

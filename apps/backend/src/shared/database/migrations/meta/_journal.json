@@ -190,6 +190,13 @@
       "when": 1790182730322,
       "tag": "0026_connect_a_store_to_meta",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1790184243649,
+      "tag": "0027_pixel_in_the_starter_storefront",
+      "breakpoints": true
     }
   ]
 }

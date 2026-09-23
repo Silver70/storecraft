@@ -17,6 +17,10 @@ import { storeConfig } from "~/config/store.config";
 import { CartUiProvider } from "~/features/cart/cart-ui";
 import { trackingScript } from "~/features/attribution/config";
 import { useAttributionCapture } from "~/features/attribution/hooks";
+import { ConsentBanner } from "~/features/measurement/components/consent-banner";
+import { measurementPermitted } from "~/features/measurement/consent";
+import { useMeasurementCapture } from "~/features/measurement/hooks";
+import { measurementQueryOptions } from "~/features/measurement/queries";
 import { useInlineEdit } from "~/features/inline-edit/use-inline-edit";
 import appCss from "~/styles/app.css?url";
 import { seo } from "~/utils/seo";
@@ -24,7 +28,15 @@ import { seo } from "~/utils/seo";
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
 }>()({
-  head: () => ({
+  // What this store measures, asked of the commerce API rather than configured
+  // here, so that connecting an ad platform switches the pixel on and
+  // disconnecting switches it off — neither being a deploy of this app. Loaded
+  // rather than fetched from the component because the answer decides what goes
+  // in the document's head, and because a visitor who declined should never
+  // receive a tracking script at all.
+  loader: ({ context }) =>
+    context.queryClient.ensureQueryData(measurementQueryOptions()),
+  head: ({ loaderData }) => ({
     meta: [
       {
         charSet: "utf-8",
@@ -68,16 +80,28 @@ export const Route = createRootRouteWithContext<{
     // The drop-in behavioral tracker. `defer` keeps it off the critical path,
     // and it boots before hydration, so the visitor and session ids it mints
     // are the ones attribution capture then declares to the commerce API.
-    scripts: trackingScript
-      ? [
-          {
-            src: trackingScript.src,
-            defer: true,
-            "data-key": trackingScript.key,
-            "data-autocapture": trackingScript.autocapture,
-          },
-        ]
-      : [],
+    //
+    // Left out entirely while a store that asks for consent has not been given
+    // it — a script that is not in the document cannot measure anyone, which is
+    // a stronger promise than one that is there and asked not to. Accepting
+    // injects it without waiting for the next page.
+    // Unknown settings count as not permitted, never as permitted: the effect
+    // adds the script as soon as the answer arrives, so erring this way costs
+    // a moment of events, and erring the other way ships a tracking script to
+    // someone who was never asked.
+    scripts:
+      trackingScript &&
+      loaderData !== undefined &&
+      measurementPermitted(loaderData.consentRequired, loaderData.consent)
+        ? [
+            {
+              src: trackingScript.src,
+              defer: true,
+              "data-key": trackingScript.key,
+              "data-autocapture": trackingScript.autocapture,
+            },
+          ]
+        : [],
   }),
   errorComponent: (props) => {
     return (
@@ -95,6 +119,9 @@ function RootComponent() {
   // navigation. Local, synchronous, and run from an effect — nothing here is
   // on the path between a click and what the shopper sees.
   useAttributionCapture();
+  // Loads the pixel and mints the ad platform's browser identifiers, but only
+  // where the store has a connection and the visitor has not said no.
+  useMeasurementCapture();
   useInlineEdit();
 
   return (
@@ -109,6 +136,7 @@ function RootComponent() {
           </main>
           <Footer />
         </div>
+        <ConsentBanner />
       </CartUiProvider>
     </RootDocument>
   );

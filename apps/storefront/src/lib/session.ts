@@ -14,6 +14,8 @@ import {
 import { gqlFetch } from "./gql-client";
 import { CREATE_CART_MUTATION } from "~/features/attribution/graphql";
 import type { DeclaredAttributionInput } from "~/features/attribution/schema";
+import { CONSENT_COOKIE, parseConsent } from "~/features/measurement/consent";
+import type { ConsentAnswer } from "~/features/measurement/types";
 
 const CART_COOKIE = "cartId";
 const CUSTOMER_ACCESS_COOKIE = "customerAccessToken";
@@ -85,6 +87,18 @@ async function mintCartId(
     maxAge: THIRTY_DAYS,
   });
   return createCart.id;
+}
+
+/**
+ * The visitor's answer to the consent banner, as this request carries it.
+ *
+ * Here beside the cart id because it is read on the same path and for the same
+ * reason: what a Store may later report to an ad platform about a purchase is
+ * decided by what the person buying said, so the answer has to be readable
+ * where the purchase is made, not only in the browser that gave it.
+ */
+export function getVisitorConsent(): ConsentAnswer {
+  return parseConsent(getCookie(CONSENT_COOKIE));
 }
 
 /** Read the current cart id without creating one (undefined when absent). */

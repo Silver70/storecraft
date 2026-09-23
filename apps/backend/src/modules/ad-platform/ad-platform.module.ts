@@ -10,6 +10,8 @@ import { AdPlatformCredentialRepository } from './repositories/ad-platform-crede
 import { AdPlatformConnectionService } from './services/ad-platform-connection.service';
 import { AdPlatformSyncService } from './services/ad-platform-sync.service';
 import { CredentialVault } from './services/credential-vault.service';
+import { MeasurementService } from './services/measurement.service';
+import { MeasurementResolver } from './resolvers/measurement.resolver';
 
 /**
  * A Store's access to the ad platforms it advertises on.
@@ -47,6 +49,8 @@ import { CredentialVault } from './services/credential-vault.service';
     AdPlatformCredentialRepository,
     AdPlatformConnectionService,
     AdPlatformSyncService,
+    MeasurementService,
+    MeasurementResolver,
   ],
   exports: [
     AD_PLATFORM_PROVIDER,
@@ -55,6 +59,7 @@ import { CredentialVault } from './services/credential-vault.service';
     AdPlatformConnectionService,
     AdPlatformSyncService,
     CredentialVault,
+    MeasurementService,
   ],
 })
 export class AdPlatformModule {}

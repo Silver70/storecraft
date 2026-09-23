@@ -137,6 +137,10 @@ export type Store = {
   // destination can only be built once these are set. Null until then.
   storefrontUrl: string | null;
   productPathPattern: string;
+  // Whether the storefront must ask a visitor before it measures anything.
+  // Off by default: a store selling only where consent is not required should
+  // not be made worse by a banner nobody needed.
+  requiresMeasurementConsent: boolean;
   isActive: boolean;
 };
 

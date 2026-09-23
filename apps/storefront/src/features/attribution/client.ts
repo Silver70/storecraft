@@ -10,6 +10,8 @@
  * values come from the merchant's own ad links, the referrer is reduced to
  * origin + path, and the landing path drops its query string.
  */
+import { readBrowserIds } from "~/features/measurement/browser-ids";
+import { readConsentFrom } from "~/features/measurement/consent";
 import { emptyAttribution, foldArrival, readTouch, toDeclared } from "./touch";
 import type { DeclaredAttribution, StoredAttribution } from "./types";
 
@@ -168,11 +170,29 @@ export function captureArrival(): boolean {
  * What to declare to the commerce API right now, or `undefined` when there is
  * nothing to say. Called from the browser at cart-creation time, so the cart
  * carries the first touch even when that touch happened days ago.
+ *
+ * The ad platform's browser identifiers and the visitor's consent answer ride
+ * along with it, because they describe the same arrival and are frozen onto the
+ * order by the same copy. A visitor who was never permitted to be measured
+ * carries neither: nothing was ever written for them to read.
  */
 export function readDeclaredAttribution(): DeclaredAttribution | undefined {
   if (typeof window === "undefined") return undefined;
   try {
-    return toDeclared(load(), identity());
+    const declared = toDeclared(load(), identity());
+    const measurement = {
+      ...readBrowserIds(),
+      measurementConsent: readConsentFrom(document.cookie) ?? undefined,
+    };
+    if (
+      !declared &&
+      !measurement.metaBrowserId &&
+      !measurement.metaClickId &&
+      !measurement.measurementConsent
+    ) {
+      return undefined;
+    }
+    return { ...declared, ...measurement };
   } catch {
     return undefined;
   }

@@ -18,6 +18,21 @@ export type AttributionSource =
   (typeof attributionSourceEnum.enumValues)[number];
 
 /**
+ * Whether a visitor agreed to be measured, on a Store that asks.
+ *
+ * Null is not a third answer — it means the question was never put, because the
+ * Store does not require consent or because the visitor arrived before it did.
+ * A Store that requires consent treats anything other than `granted` as no.
+ */
+export const measurementConsentEnum = pgEnum('measurement_consent', [
+  'granted',
+  'denied',
+]);
+
+export type MeasurementConsent =
+  (typeof measurementConsentEnum.enumValues)[number];
+
+/**
  * Column-length budget, shared with the normalizer so an over-long referrer
  * from a storefront is truncated rather than failing the write. Matches
  * `analytics_events`, which stores the same shapes of value.
@@ -28,6 +43,10 @@ export const ATTRIBUTION_LIMITS = {
   landingPath: 1024,
   visitorId: 128,
   sessionId: 128,
+  /** `_fbp` — short and fixed in shape. */
+  browserId: 255,
+  /** `_fbc` carries the whole click id, which the platform does not bound. */
+  clickId: 512,
 } as const;
 
 /**
@@ -42,6 +61,12 @@ export const ATTRIBUTION_LIMITS = {
  *
  * On a Cart the first-touch group is write-once and the last-touch group
  * advances; at checkout the whole group is copied to the Order and frozen.
+ *
+ * The group also carries what measurement needs about the same arrival: the ad
+ * platform's own browser identifiers, and whether the visitor agreed to be
+ * measured at all. They live here rather than in a table of their own for the
+ * reason the touches do — they are worthless collected late, and the one moment
+ * they can be frozen is the moment the Cart becomes an Order.
  */
 export const attributionColumns = () => ({
   attributionSource: attributionSourceEnum('attribution_source')
@@ -91,4 +116,27 @@ export const attributionColumns = () => ({
     length: ATTRIBUTION_LIMITS.landingPath,
   }),
   lastTouchAt: timestamp('last_touch_at'),
+
+  /**
+   * Meta's browser identifier (`_fbp`) for this visitor, as the storefront read
+   * it. Raises how many of our server-side Purchase Events the platform can
+   * match to a person, which is the whole reason it is carried.
+   */
+  metaBrowserId: varchar('meta_browser_id', {
+    length: ATTRIBUTION_LIMITS.browserId,
+  }),
+  /**
+   * Meta's click identifier (`_fbc`), derived from the `fbclid` on the link the
+   * visitor arrived through. Only ever set at landing: the parameter is gone
+   * from the URL by the next page, so a value collected later is no value.
+   */
+  metaClickId: varchar('meta_click_id', {
+    length: ATTRIBUTION_LIMITS.clickId,
+  }),
+  /**
+   * The visitor's answer to the Store's consent banner, or null where they were
+   * never asked. Frozen with the rest so a Purchase Event dispatched days after
+   * checkout honours the answer that was given at the time.
+   */
+  measurementConsent: measurementConsentEnum('measurement_consent'),
 });

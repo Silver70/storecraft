@@ -1,7 +1,10 @@
 import { InputType, ObjectType, Field } from '@nestjs/graphql';
-import { IsOptional, IsString, IsDate, MaxLength } from 'class-validator';
+import { IsOptional, IsString, IsDate, IsIn, MaxLength } from 'class-validator';
 import { Type } from 'class-transformer';
-import { ATTRIBUTION_LIMITS } from '../../../shared/database/schema';
+import {
+  ATTRIBUTION_LIMITS,
+  measurementConsentEnum,
+} from '../../../shared/database/schema';
 import type { AttributionSnapshot } from '../../../shared/attribution/attribution.types';
 
 /**
@@ -106,6 +109,40 @@ export class CartAttributionInput {
   @IsString()
   @MaxLength(ATTRIBUTION_LIMITS.sessionId)
   declare sessionId?: string;
+
+  @Field(() => String, {
+    nullable: true,
+    description:
+      'Meta’s browser id (`_fbp`) as the storefront read it. Raises how many ' +
+      'Purchase Events the platform can match, and is worthless collected late.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(ATTRIBUTION_LIMITS.browserId)
+  declare metaBrowserId?: string;
+
+  @Field(() => String, {
+    nullable: true,
+    description:
+      'Meta’s click id (`_fbc`), derived from the `fbclid` the visitor landed ' +
+      'with. Only ever captured on landing — the parameter is gone by the ' +
+      'next page.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(ATTRIBUTION_LIMITS.clickId)
+  declare metaClickId?: string;
+
+  @Field(() => String, {
+    nullable: true,
+    description:
+      'The visitor’s answer to the store’s consent banner: granted | denied. ' +
+      'Omitted where the store does not ask. Anything else is ignored rather ' +
+      'than stored as a third answer.',
+  })
+  @IsOptional()
+  @IsIn([...measurementConsentEnum.enumValues])
+  declare measurementConsent?: string;
 }
 
 @ObjectType()

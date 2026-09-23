@@ -1,4 +1,4 @@
-import type { AttributionSource } from '../database/schema';
+import type { AttributionSource, MeasurementConsent } from '../database/schema';
 
 /**
  * One arrival, as a storefront describes it: the UTM tuple it landed with, the
@@ -28,6 +28,15 @@ export interface DeclaredAttributionInput {
   lastTouch?: TouchInput | null;
   visitorId?: string | null;
   sessionId?: string | null;
+  /** Meta's `_fbp`, as the storefront read it from the browser. */
+  metaBrowserId?: string | null;
+  /** Meta's `_fbc`, derived from the `fbclid` the visitor landed with. */
+  metaClickId?: string | null;
+  /**
+   * The visitor's answer to the Store's consent banner. Anything that is not
+   * one of the two answers is ignored rather than stored as a third.
+   */
+  measurementConsent?: string | null;
 }
 
 /**
@@ -52,6 +61,9 @@ export interface AttributionSnapshot {
   lastTouchReferrer: string | null;
   lastTouchLandingPath: string | null;
   lastTouchAt: Date | null;
+  metaBrowserId: string | null;
+  metaClickId: string | null;
+  measurementConsent: MeasurementConsent | null;
 }
 
 /** The columns a write changes. Absent keys are left exactly as they are. */

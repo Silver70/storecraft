@@ -9,7 +9,11 @@
  * Nothing here touches a database or throws: a reporting concern must never be
  * able to cost a sale, so every input shape has a defined, boring outcome.
  */
-import { ATTRIBUTION_LIMITS } from '../database/schema';
+import {
+  ATTRIBUTION_LIMITS,
+  measurementConsentEnum,
+  type MeasurementConsent,
+} from '../database/schema';
 import type {
   AttributionPatch,
   AttributionSnapshot,
@@ -48,6 +52,9 @@ export function emptyAttribution(): AttributionSnapshot {
     lastTouchReferrer: null,
     lastTouchLandingPath: null,
     lastTouchAt: null,
+    metaBrowserId: null,
+    metaClickId: null,
+    measurementConsent: null,
   };
 }
 
@@ -78,6 +85,9 @@ export function pickAttribution(
     lastTouchReferrer: row.lastTouchReferrer ?? null,
     lastTouchLandingPath: row.lastTouchLandingPath ?? null,
     lastTouchAt: row.lastTouchAt ?? null,
+    metaBrowserId: row.metaBrowserId ?? null,
+    metaClickId: row.metaClickId ?? null,
+    measurementConsent: row.measurementConsent ?? null,
   };
 }
 
@@ -145,6 +155,24 @@ function applyTouches(
     ATTRIBUTION_LIMITS.sessionId,
   );
   if (sessionId) patch.sessionId = sessionId;
+
+  // Measurement rides along with the same declaration, and on the same terms:
+  // the browser is the only place these values exist, so the newest reading
+  // wins and a declaration that omits one leaves what is already stored alone.
+  // None of it makes a Cart attributed — a visitor carrying `_fbp` and nothing
+  // else arrived direct, and `attributionSource` stays where the touches put it.
+  const metaBrowserId = normalizeText(
+    input.metaBrowserId,
+    ATTRIBUTION_LIMITS.browserId,
+  );
+  if (metaBrowserId) patch.metaBrowserId = metaBrowserId;
+  const metaClickId = normalizeText(
+    input.metaClickId,
+    ATTRIBUTION_LIMITS.clickId,
+  );
+  if (metaClickId) patch.metaClickId = metaClickId;
+  const consent = normalizeConsent(input.measurementConsent);
+  if (consent) patch.measurementConsent = consent;
 
   let hasFirstTouch = current?.firstTouchAt != null;
   let lastTouchAt = current?.lastTouchAt ?? null;
@@ -232,6 +260,19 @@ function normalizeText(
   const trimmed = value.trim();
   if (trimmed === '') return null;
   return trimmed.slice(0, maxLength);
+}
+
+/**
+ * A consent answer we recognise, or null. An unknown string is dropped rather
+ * than stored: a value nothing can interpret would be read as neither yes nor
+ * no by whatever has to decide whether to dispatch a Purchase Event.
+ */
+function normalizeConsent(
+  value: string | null | undefined,
+): MeasurementConsent | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim().toLowerCase();
+  return measurementConsentEnum.enumValues.find((v) => v === trimmed) ?? null;
 }
 
 /** A missing, unparseable, or future timestamp becomes now. */

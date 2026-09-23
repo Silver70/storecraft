@@ -124,6 +124,9 @@ export const updateStoreServerFn = createServerFn({ method: "POST" })
       // one place the URL rules live. An empty storefrontUrl clears it.
       storefrontUrl: z.string().optional(),
       productPathPattern: z.string().optional(),
+      // The consent switch. Optional like the two above, so a caller that does
+      // not manage it cannot accidentally turn it off.
+      requiresMeasurementConsent: z.boolean().optional(),
     }),
   )
   .handler(async ({ data }) => {

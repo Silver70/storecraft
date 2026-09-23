@@ -126,6 +126,9 @@ _Avoid_: Click, visit, hit, touchpoint
 The record of which Campaign an Order is credited to. Captured as an immutable
 snapshot on the Order at checkout, in the same spirit as line-item snapshots —
 it reflects acquisition conditions at purchase time and never changes afterward.
+The snapshot carries the measurement evidence for the same arrival: the Browser
+Identifiers and the visitor's Measurement Consent, frozen by the same copy and
+for the same reason.
 _Avoid_: Source, tracking, origin
 
 **Declared Attribution** / **Correlated Attribution**:
@@ -236,6 +239,25 @@ once by the server, carrying the Order's id so the platform counts it once; the
 server's is the one that survives an ad-blocker. Sent for every paid Order, not
 only credited ones, because the platform does its own attribution.
 _Avoid_: Conversion, conversion event, CAPI event, sale
+
+**Measurement Consent**:
+A visitor's answer to whether they may be measured, and the Store switch that
+decides whether they are asked. The switch is off unless a merchant turns it on,
+so a Store selling only where consent is not required shows no banner. With it
+on, the storefront loads no Pixel, runs no tracking script and captures no
+Browser Identifier until the visitor accepts, and declining is one click, the
+same as accepting. The answer is frozen onto the Order with the rest of the
+Attribution Snapshot, because what may be reported about a purchase is decided
+by what the person buying said and has to still be readable days later.
+_Avoid_: Cookie banner, GDPR flag, opt-in, tracking preference
+
+**Browser Identifier**:
+The ad platform's own ids for the browser a visit came from — the one it keeps
+for the browser, and the one it derives from the click that brought them. Read
+at landing, because the click's id is gone from the URL by the next page, and
+frozen onto the Order so a Purchase Event sent later can still be matched to a
+person. Captured only where Measurement Consent allows it.
+_Avoid_: Cookie id, fbp/fbc (in copy), tracking id, device id
 
 **ROAS**:
 Attributed revenue ÷ Spend for a Campaign or one of its Ads over a period.

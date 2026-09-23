@@ -6,6 +6,8 @@ import { Badge } from "~/components/ui/badge";
 import { useCartUi } from "~/features/cart/cart-ui";
 import { useAddToCart } from "~/features/cart/hooks";
 import { useInlineEditSession } from "~/features/inline-edit/use-inline-edit";
+import { trackViewContent } from "~/features/measurement/pixel";
+import { storeConfig } from "~/config/store.config";
 import { formatMoney } from "~/lib/money";
 import type { Product } from "~/types/api";
 import { AddToCartButton } from "../components/add-to-cart-button";
@@ -62,6 +64,18 @@ function ProductDetail({ product }: { product: Product }) {
 
     // Drop the confirmation when the shopper changes their selection.
     React.useEffect(() => setJustAdded(false), [selectedVariant?.id]);
+
+    // A product viewed, told to the ad platform once per product rather than
+    // once per variant click. Runs after paint and reports nothing at all until
+    // the pixel is both connected and permitted.
+    React.useEffect(() => {
+        trackViewContent({
+            id: product.id,
+            name: product.name,
+            price: product.minPrice,
+            currency: storeConfig.currency,
+        });
+    }, [product.id]);
 
     const handleAdd = () => {
         if (!selectedVariant) return;

@@ -2,6 +2,8 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Cart } from "~/types/api";
 import { readDeclaredAttribution } from "~/features/attribution/client";
+import { trackAddToCart } from "~/features/measurement/pixel";
+import { storeConfig } from "~/config/store.config";
 import { CART_QUERY_KEY, cartQueryOptions } from "./queries";
 import {
   addToCartServerFn,
@@ -57,9 +59,19 @@ export function useAddToCart() {
       queryClient.setQueryData(CART_QUERY_KEY, optimisticAdd(previous, line));
       return { previous, seq: ++newest.current };
     },
-    onSuccess: (cart, _line, ctx) => {
+    onSuccess: (cart, line, ctx) => {
       if (ctx.seq === newest.current)
         queryClient.setQueryData(CART_QUERY_KEY, cart);
+      // On the server's confirmation, never on the optimistic patch: a cart
+      // started is what the ad platform is being told about, and a rolled-back
+      // add started nothing. Silent, and never awaited.
+      trackAddToCart({
+        variantId: line.variantId,
+        productName: line.productName,
+        quantity: line.quantity,
+        unitPrice: line.unitPrice,
+        currency: storeConfig.currency,
+      });
     },
     onError: (_err, _line, ctx) => {
       if (!ctx || ctx.seq !== newest.current) return;

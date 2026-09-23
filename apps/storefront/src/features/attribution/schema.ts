@@ -23,6 +23,11 @@ export const declaredAttributionSchema = z.object({
   lastTouch: touchSchema.optional(),
   visitorId: z.string().max(128).optional(),
   sessionId: z.string().max(128).optional(),
+  // What the ad platform needs about the same arrival. Present only where the
+  // visitor is permitted to be measured, because they only exist at all then.
+  metaBrowserId: z.string().max(255).optional(),
+  metaClickId: z.string().max(512).optional(),
+  measurementConsent: z.enum(["granted", "denied"]).optional(),
 });
 
 export type DeclaredAttributionInput = z.infer<

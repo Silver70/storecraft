@@ -5,9 +5,11 @@ import {
   clearCartId,
   getCartId,
   getPendingOrder,
+  getVisitorConsent,
   setPendingOrder,
 } from "~/lib/session";
 import type { CheckoutResult, Order, ShippingRate } from "~/types/api";
+import { RECORD_CART_ATTRIBUTION_MUTATION } from "~/features/attribution/graphql";
 import {
   CHECKOUT_MUTATION,
   ORDER_STATUS_QUERY,
@@ -55,6 +57,8 @@ export const createCheckoutServerFn = createServerFn({ method: "POST" })
     const cartId = getCartId();
     if (!cartId) throw new Error("No active cart");
 
+    await recordConsent(cartId);
+
     const res = await gqlFetch<{ checkout: CheckoutResult }>(
       CHECKOUT_MUTATION,
       {
@@ -80,6 +84,34 @@ export const createCheckoutServerFn = createServerFn({ method: "POST" })
 
     return res.checkout;
   });
+
+/**
+ * Writes the visitor's consent answer onto the cart a moment before it becomes
+ * an order.
+ *
+ * Checkout is the last point at which the answer can still be corrected: from
+ * here it is frozen on the order and is what decides, days later, whether a
+ * Purchase Event may be reported about this person at all. The browser already
+ * declares it on each add and when the banner is answered, so this is the
+ * backstop for the one that did not land — a store that asks for consent gets
+ * one small mutation, a store that does not gets none, because a visitor who
+ * was never asked has no answer to send.
+ *
+ * Never throws: a reporting concern must not be able to stop a sale.
+ */
+async function recordConsent(cartId: string): Promise<void> {
+  const measurementConsent = getVisitorConsent();
+  if (!measurementConsent) return;
+  try {
+    await gqlFetch(RECORD_CART_ATTRIBUTION_MUTATION, {
+      cartId,
+      attribution: { measurementConsent },
+    });
+  } catch {
+    // The cart keeps whatever it was last told, which is the answer the
+    // shopper gave — just possibly an older reading of it.
+  }
+}
 
 export const getOrderStatusServerFn = createServerFn({ method: "GET" })
   .inputValidator(

@@ -31,6 +31,20 @@ export const stores = pgTable(
       .notNull()
       .default(DEFAULT_PRODUCT_PATH_PATTERN),
 
+    /**
+     * Whether this Store's storefront must ask a visitor before it measures
+     * anything.
+     *
+     * Off by default, and that is a decision rather than a convenience: a Store
+     * selling only where consent is not required should not be made worse by a
+     * banner nobody needed. A merchant who sells where it is required turns it
+     * on, and from then on the storefront loads no Pixel and reports nothing
+     * until the visitor accepts.
+     */
+    requiresMeasurementConsent: boolean('requires_measurement_consent')
+      .notNull()
+      .default(false),
+
     isActive: boolean('is_active').notNull().default(true),
     deletedAt: timestamp('deleted_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
