@@ -228,6 +228,73 @@ export interface AdTree {
   readonly ads: readonly ReportedAd[];
 }
 
+/**
+ * A purchase, as the platform is told about it from our server.
+ *
+ * The other direction of the integration: everything above reads what the
+ * platform did, and this tells it what happened afterwards. It is what lets a
+ * campaign be optimised for sales rather than for cheap clicks, and it is the
+ * copy that survives an ad blocker — the storefront's Pixel reports the same
+ * purchase from the browser, and both carry the Order's id as `eventId` so the
+ * platform counts one purchase rather than two.
+ *
+ * **`value` is minor units**, like every other amount in this codebase. The
+ * platform takes decimals; the conversion is the adapter's, at the edge, in the
+ * same file and by the same rule that converts its figures on the way in.
+ *
+ * The contact fields are the customer's own, in plaintext, and this is the one
+ * shape in this codebase that carries them across a network boundary. Everything
+ * that reaches the platform is hashed — that is Meta's requirement, not a
+ * courtesy — and the hashing is done by whoever implements this, because a value
+ * we hashed ourselves would be hashed again there and match nobody. An adapter
+ * that cannot promise that must not implement this method.
+ */
+export interface PurchaseEvent {
+  /**
+   * The Order's id, used verbatim as the platform's event id.
+   *
+   * Not a dispatch id and not a random one: the browser's copy of the same
+   * purchase carries this value too, and the platform's deduplication is the
+   * only reason one sale does not become two.
+   */
+  readonly eventId: string;
+  /** When the purchase happened, which is when the Order was placed. */
+  readonly occurredAt: Date;
+  /** The Order total, in minor units. */
+  readonly value: number;
+  readonly currency: string;
+  /** The customer's own address and number, unhashed. Either may be absent. */
+  readonly email: string | null;
+  readonly phone: string | null;
+  /**
+   * The ad platform's browser identifiers, frozen onto the Order at checkout —
+   * `_fbp` for the browser and `_fbc` for the ad click that brought it. They are
+   * the highest-signal match keys a web purchase has, and they are worthless
+   * collected later, which is why they travel with the cart.
+   */
+  readonly browserId: string | null;
+  readonly clickId: string | null;
+  /**
+   * Where the purchase happened. The Store's storefront, where it has told us
+   * one; null on a Store that never did, and on an Order that was not a web sale.
+   */
+  readonly sourceUrl: string | null;
+  /**
+   * Whether this was a shopper on the storefront or an Order somebody keyed in.
+   *
+   * The platform records the two differently, and a phone sale reported as a
+   * website purchase is a lie that costs match quality rather than one anybody
+   * notices.
+   */
+  readonly origin: 'storefront' | 'internal';
+}
+
+export interface SendPurchaseInput extends GrantedAccount {
+  /** The ad account's Pixel, as the connection recorded it. */
+  readonly pixelId: string;
+  readonly event: PurchaseEvent;
+}
+
 export interface AdPlatformProvider {
   /**
    * Issues a credential scoped to one Store, creating the provider-side scope
@@ -290,6 +357,23 @@ export interface AdPlatformProvider {
    * idempotency that makes it safe is enforced above, in the write.
    */
   fetchAdTree(input: FetchAdTreeInput): Promise<AdTree>;
+
+  /**
+   * Reports one purchase to the ad account's Pixel.
+   *
+   * Resolves only when the platform has accepted it. Anything else throws —
+   * unreachable, refused, or accepted-but-rejected-per-event, which some
+   * platforms answer with a `200` — because the caller's whole job is to tell a
+   * purchase that landed from one that is still owed, and a method that
+   * swallowed a per-event rejection would have it record a success.
+   *
+   * Safe to call twice with the same `eventId` and it is never a second
+   * purchase: the platform deduplicates on that id, which is also how the
+   * browser's copy of this event and this one collapse into one. The bookkeeping
+   * that stops us calling twice in the first place is above this line, in the
+   * dispatch row.
+   */
+  sendPurchase(input: SendPurchaseInput): Promise<void>;
 
   /**
    * Whether the provider is answering, and how much history it offers.

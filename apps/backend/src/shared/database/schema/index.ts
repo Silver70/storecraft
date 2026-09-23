@@ -44,3 +44,4 @@ export * from './ad-daily-figures.schema';
 export * from './content-slots.schema';
 export * from './ad-platform-credentials.schema';
 export * from './ad-platform-connections.schema';
+export * from './purchase-event-dispatches.schema';

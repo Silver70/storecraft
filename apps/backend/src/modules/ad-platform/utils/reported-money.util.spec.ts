@@ -1,4 +1,4 @@
-import { toCount, toMinorUnits } from './reported-money.util';
+import { toCount, toDecimalAmount, toMinorUnits } from './reported-money.util';
 
 /**
  * The rounding rule, asserted at the values that break the obvious
@@ -46,6 +46,30 @@ describe('reported money', () => {
       // with a cost basis behind it. The sync surfaces the failure instead.
       expect(() => toMinorUnits(Number.NaN)).toThrow(RangeError);
       expect(() => toMinorUnits(Number.POSITIVE_INFINITY)).toThrow(RangeError);
+    });
+  });
+
+  describe('toDecimalAmount', () => {
+    it('states an amount the way the platform expects it', () => {
+      expect(toDecimalAmount(2599)).toBe(25.99);
+      expect(toDecimalAmount(0)).toBe(0);
+      expect(toDecimalAmount(5)).toBe(0.05);
+      expect(toDecimalAmount(100)).toBe(1);
+      expect(toDecimalAmount(-2599)).toBe(-25.99);
+    });
+
+    it('round-trips every amount a money column could hold', () => {
+      // The direction that needs a rounding rule is the other one. Dividing by a
+      // hundred is exact for an integer, which is why a total leaves here as the
+      // figure the merchant will see on their receipt and not a cent beside it.
+      for (const cents of [1, 7, 99, 1234, 99999, 2147483647]) {
+        expect(toMinorUnits(toDecimalAmount(cents))).toBe(cents);
+      }
+    });
+
+    it('refuses a fraction of a cent, which is a float that got into a total', () => {
+      expect(() => toDecimalAmount(25.5)).toThrow(RangeError);
+      expect(() => toDecimalAmount(Number.NaN)).toThrow(RangeError);
     });
   });
 

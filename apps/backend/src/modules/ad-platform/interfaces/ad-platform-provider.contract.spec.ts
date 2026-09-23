@@ -34,6 +34,7 @@ const EXPECTED_SURFACE = [
   'disconnect',
   'revokeStoreCredential',
   'fetchAdTree',
+  'sendPurchase',
   'health',
 ].sort();
 

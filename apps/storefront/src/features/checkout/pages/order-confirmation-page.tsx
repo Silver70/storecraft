@@ -6,6 +6,7 @@ import type { Order } from "~/types/api";
 import { formatMoney } from "~/lib/money";
 import { Button } from "~/components/ui/button";
 import { Separator } from "~/components/ui/separator";
+import { useReportPurchase } from "~/features/measurement/hooks";
 import { orderStatusQueryOptions } from "../queries";
 
 const route = getRouteApi("/order/confirmation");
@@ -27,6 +28,11 @@ export function OrderConfirmationPage() {
       return 3000;
     },
   });
+
+  // Told to the ad platform from here as well as from the server, both under the
+  // Order's id, so the platform counts one purchase. Only once the order is
+  // confirmed: a pending one has not been paid for.
+  useReportPurchase(order && order.status !== "pending" ? order : null);
 
   if (!orderNumber) {
     return <Centered message="No order specified." />;

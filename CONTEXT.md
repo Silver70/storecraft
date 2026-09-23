@@ -237,8 +237,21 @@ What the ad platform is told about a paid Order, so it can learn who buys and
 optimise a Campaign for sales. Sent twice, once by the storefront's Pixel and
 once by the server, carrying the Order's id so the platform counts it once; the
 server's is the one that survives an ad-blocker. Sent for every paid Order, not
-only credited ones, because the platform does its own attribution.
+only credited ones, because the platform does its own attribution. Carries the
+Order's total and currency and whatever identifies the buyer — their contact
+details and the Browser Identifiers frozen at checkout — and never a refund: the
+platform has no retraction, so a refunded Order is reported and left reported.
 _Avoid_: Conversion, conversion event, CAPI event, sale
+
+**Purchase Dispatch**:
+One Order's Purchase Event as a thing with a state: owed, sent, withheld because
+the buyer did not agree to be measured, or expired because the platform can no
+longer attribute it. It exists because reporting must never be able to fail a
+sale, which means the send happens after the payment and can therefore be owed at
+a moment nobody is watching — the record is what lets a refusal be retried
+without a success being reported twice. Nothing a merchant reads shows it; a
+purchase being slow to reach an ad platform is not a thing a merchant can act on.
+_Avoid_: Conversion queue, event log, outbox, retry
 
 **Measurement Consent**:
 A visitor's answer to whether they may be measured, and the Store switch that

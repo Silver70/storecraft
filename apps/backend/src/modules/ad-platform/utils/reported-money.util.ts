@@ -74,6 +74,28 @@ export function toMinorUnits(amount: number): number {
 }
 
 /**
+ * Minor units as the decimal amount the platform expects — `268` becomes `2.68`.
+ *
+ * The one place this codebase sends money *out* as a decimal, and it is the last
+ * line before the network: the caller hands over an Order total in cents, the
+ * platform is told `25.99`, and nothing in between holds a float. Exact for every
+ * integer a money column can hold — a division by 100 is representable where the
+ * multiplication is not, which is why this direction needs no rounding rule and
+ * the other one does.
+ */
+export function toDecimalAmount(minorUnits: number): number {
+  if (!Number.isInteger(minorUnits)) {
+    // A non-integer here means a float got into a money column or a caller
+    // divided early. Either way the amount is already wrong, and sending it
+    // would put a wrong figure in a merchant's ad account rather than in a log.
+    throw new RangeError(
+      `Expected an integer amount in minor units, received ${String(minorUnits)}`,
+    );
+  }
+  return minorUnits / MINOR_UNITS_PER_MAJOR;
+}
+
+/**
  * A count the platform reported, as a whole number.
  *
  * Platforms return fractional impressions and clicks — apportioned figures

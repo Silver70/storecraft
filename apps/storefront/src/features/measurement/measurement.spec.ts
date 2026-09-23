@@ -11,6 +11,7 @@
 import { describe, expect, it } from "vitest";
 import { buildClickId, readCookie } from "./browser-ids";
 import { measurementPermitted, parseConsent, readConsentFrom } from "./consent";
+import { purchaseEventParams } from "./pixel";
 
 describe("measurementPermitted", () => {
   it("allows everything on a store that does not ask", () => {
@@ -76,5 +77,37 @@ describe("buildClickId", () => {
     expect(buildClickId("IwAR0abc", 1_757_000_000_000)).toBe(
       "fb.1.1757000000000.IwAR0abc",
     );
+  });
+});
+
+describe("purchaseEventParams", () => {
+  const order = {
+    id: "8f1c6b2e-0d4a-4f7b-9a21-3c5e7d9b1a44",
+    total: 2599,
+    currency: "USD",
+    lineItems: [
+      { sku: "TEE-BLK-M", quantity: 2 },
+      { sku: null, quantity: 1 },
+    ],
+  };
+
+  it("uses the Order's id as the event id, which is what dedupes the two copies", () => {
+    // The commerce engine reports the same purchase from its server under this
+    // same value. Anything else here — the order number, a generated id — and the
+    // platform counts one sale twice.
+    expect(purchaseEventParams(order).eventId).toBe(order.id);
+  });
+
+  it("states the total the way the platform's events do", () => {
+    expect(purchaseEventParams(order).params).toMatchObject({
+      value: 25.99,
+      currency: "USD",
+    });
+  });
+
+  it("sends catalog ids only for the lines that have one", () => {
+    expect(purchaseEventParams(order).params.contents).toEqual([
+      { id: "TEE-BLK-M", quantity: 2 },
+    ]);
   });
 });

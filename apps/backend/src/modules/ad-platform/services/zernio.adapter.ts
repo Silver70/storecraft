@@ -20,9 +20,14 @@ import type {
   ProviderHealth,
   ReportedAd,
   ReportedAdDay,
+  SendPurchaseInput,
   StoreCredential,
 } from '../interfaces/ad-platform-provider.interface';
-import { toCount, toMinorUnits } from '../utils/reported-money.util';
+import {
+  toCount,
+  toDecimalAmount,
+  toMinorUnits,
+} from '../utils/reported-money.util';
 
 /**
  * The vendor, and the only file in this codebase that knows who they are.
@@ -298,6 +303,91 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
   }
 
   /**
+   * Reports one purchase to the ad account's Pixel.
+   *
+   * Money crosses the boundary here, in the other direction and by the other half
+   * of the same rule: the caller hands over an Order total in minor units and the
+   * vendor is told `25.99`, so no float exists above this line and none is
+   * invented below it.
+   *
+   * ## The customer's details are sent in plaintext, and that is not a slip
+   *
+   * Meta requires contact details hashed, and this vendor does the hashing — it
+   * SHA-256s the values per Meta's spec before anything reaches the platform, and
+   * documents that callers send plaintext. Hashing them here as well would hash a
+   * hash, which matches nobody: the purchase would arrive, be attributed to no
+   * person, and the feature would look like it worked. The browser identifiers,
+   * `fbp` and `fbc`, go unhashed by Meta's own requirement.
+   *
+   * So what leaves this process is a customer's email and phone over TLS to the
+   * vendor, and what reaches the ad platform is a digest. That is the trade this
+   * integration makes, it is the only shape the vendor accepts, and it is the
+   * reason this file is also the only one that ever holds those values in a
+   * request body.
+   *
+   * ## A `200` is not an acceptance
+   *
+   * The vendor answers with a count of events received and a count that failed.
+   * One event that failed inside a successful response is a purchase that did not
+   * land, so it throws: the caller's whole job is to tell a reported purchase from
+   * an owed one.
+   */
+  async sendPurchase(input: SendPurchaseInput): Promise<void> {
+    this.connectPlatform(input.platform);
+    const { event } = input;
+
+    const result = await this.call<RawConversionResult>(
+      input.credential.secret,
+      'POST',
+      '/v1/ads/conversions',
+      {
+        body: {
+          accountId: input.providerAccountRef,
+          // Meta's own name for a Pixel on this endpoint is the destination.
+          destinationId: input.pixelId,
+          events: [
+            {
+              eventName: 'Purchase',
+              // Unix *seconds*. Milliseconds land the purchase thousands of years
+              // in the future, where the platform drops it without complaint.
+              eventTime: Math.floor(event.occurredAt.getTime() / 1000),
+              // The Order's id, which the browser's copy carries too.
+              eventId: event.eventId,
+              value: toDecimalAmount(event.value),
+              currency: event.currency,
+              actionSource:
+                event.origin === 'storefront' ? 'web' : 'system_generated',
+              ...(event.sourceUrl ? { sourceUrl: event.sourceUrl } : {}),
+              user: {
+                ...(event.email ? { email: event.email } : {}),
+                ...(event.phone ? { phone: event.phone } : {}),
+                ...(event.browserId || event.clickId
+                  ? {
+                      clickIds: {
+                        ...(event.browserId ? { fbp: event.browserId } : {}),
+                        ...(event.clickId ? { fbc: event.clickId } : {}),
+                      },
+                    }
+                  : {}),
+              },
+            },
+          ],
+        },
+      },
+    );
+
+    const failed = result?.eventsFailed ?? 0;
+    const received = result?.eventsReceived ?? 0;
+    if (failed > 0 || received < 1) {
+      // No detail from the body: it echoes the event, and the event is a
+      // customer's contact details.
+      throw new ServiceUnavailableException(
+        'The ad platform did not accept the purchase event. Nothing has changed — it will be tried again shortly.',
+      );
+    }
+  }
+
+  /**
    * Whether the vendor is answering, and how much history it offers.
    *
    * 90 days is what its ads backfill covers, and asking for more spends a quota
@@ -447,6 +537,20 @@ interface RawAd {
   endTime?: string | null;
   metrics?: RawMetrics;
   daily?: ({ date?: string; day?: string } & RawMetrics)[];
+}
+
+/**
+ * What the vendor answers a conversion upload with.
+ *
+ * Both counts are optional because a response that carried neither would be a
+ * response that said nothing about whether the purchase landed — and the caller
+ * treats "said nothing" as "did not land", which is the safe direction: an event
+ * reported twice is deduplicated by the platform on its id, and one never
+ * reported is a sale the platform does not know about.
+ */
+interface RawConversionResult {
+  eventsReceived?: number;
+  eventsFailed?: number;
 }
 
 interface RawTree {

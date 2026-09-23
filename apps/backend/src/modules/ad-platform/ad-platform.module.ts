@@ -7,10 +7,13 @@ import { AdminAdPlatformController } from './controllers/admin-ad-platform.contr
 import { AdPlatformCallbackController } from './controllers/ad-platform-callback.controller';
 import { AdPlatformConnectionRepository } from './repositories/ad-platform-connection.repository';
 import { AdPlatformCredentialRepository } from './repositories/ad-platform-credential.repository';
+import { PurchaseEventDispatchRepository } from './repositories/purchase-event-dispatch.repository';
 import { AdPlatformConnectionService } from './services/ad-platform-connection.service';
 import { AdPlatformSyncService } from './services/ad-platform-sync.service';
 import { CredentialVault } from './services/credential-vault.service';
 import { MeasurementService } from './services/measurement.service';
+import { PurchaseEventService } from './services/purchase-event.service';
+import { PurchaseEventHandler } from './services/purchase-event.handler';
 import { MeasurementResolver } from './resolvers/measurement.resolver';
 
 /**
@@ -33,6 +36,13 @@ import { MeasurementResolver } from './resolvers/measurement.resolver';
  * clicks into `ad_daily_figures` — is the sync's next job, keyed by the
  * platform's own ids rather than by a tag a merchant had to paste correctly.
  *
+ * Measurement flows the other way from the same seam. `MeasurementService`
+ * answers the storefront's question about which Pixel to load, and
+ * `PurchaseEventService` reports every paid Order back — the two halves of the
+ * one guarantee that connecting an ad platform is the whole of switching
+ * measurement on. Both are held to the rule attribution already lives under:
+ * they may cost a report, never a sale.
+ *
  * A deployment with no integration configured still boots: the adapter reads
  * its key lazily, so only a merchant who presses Connect is told there is none.
  */
@@ -47,10 +57,13 @@ import { MeasurementResolver } from './resolvers/measurement.resolver';
     CredentialVault,
     AdPlatformConnectionRepository,
     AdPlatformCredentialRepository,
+    PurchaseEventDispatchRepository,
     AdPlatformConnectionService,
     AdPlatformSyncService,
     MeasurementService,
     MeasurementResolver,
+    PurchaseEventService,
+    PurchaseEventHandler,
   ],
   exports: [
     AD_PLATFORM_PROVIDER,
@@ -60,6 +73,8 @@ import { MeasurementResolver } from './resolvers/measurement.resolver';
     AdPlatformSyncService,
     CredentialVault,
     MeasurementService,
+    PurchaseEventService,
+    PurchaseEventDispatchRepository,
   ],
 })
 export class AdPlatformModule {}

@@ -6,10 +6,11 @@
  * measurement on and disconnecting switches it off, both without a deploy and
  * without anyone editing this storefront.
  *
- * What it reports is browsing: pages viewed, products viewed, carts started.
- * That is what lets the platform build audiences and gives it something to learn
- * from before a young store has many purchases — and it is what sets the browser
- * identifiers the server-side purchases are matched on.
+ * What it reports is browsing — pages viewed, products viewed, carts started —
+ * and the purchase at the end of it. The browsing is what lets the platform build
+ * audiences and gives it something to learn from before a young store has many
+ * purchases, and it is what sets the browser identifiers the server-side copy of
+ * the purchase is matched on.
  *
  * Every function here is a no-op until the pixel has been activated, and every
  * one of them swallows its own failures. Reporting must never be able to cost a
@@ -90,10 +91,19 @@ export function activatePixel(pixelId: string): void {
 }
 
 /** Whether anything is listening. Everything below is a no-op when nothing is. */
-function track(event: string, params?: Record<string, unknown>): void {
+function track(
+  event: string,
+  params?: Record<string, unknown>,
+  /**
+   * The platform's deduplication key. Given on an event our server reports too,
+   * so the two copies of one purchase are counted once.
+   */
+  eventId?: string,
+): void {
   if (typeof window === "undefined" || !activePixelId) return;
   try {
-    window.fbq?.("track", event, params);
+    if (eventId) window.fbq?.("track", event, params, { eventID: eventId });
+    else window.fbq?.("track", event, params);
   } catch {
     // Reporting is evidence, never a dependency.
   }
@@ -138,4 +148,74 @@ export function trackAddToCart(line: {
     value: (line.unitPrice * line.quantity) / 100,
     currency: line.currency,
   });
+}
+
+/** Purchases this browser has already reported, so a re-render does not repeat one. */
+const reportedPurchases = new Set<string>();
+
+/** An Order, as the purchase event describes it. */
+export interface PurchasedOrder {
+  /** The Order's id. Not its number: the server's copy carries the id. */
+  id: string;
+  /** Minor units, as everything monetary in this codebase is. */
+  total: number;
+  currency: string;
+  lineItems: { sku?: string | null; quantity: number }[];
+}
+
+/**
+ * The purchase, as both copies describe it — pure, so the one claim worth
+ * asserting can be asserted without a browser.
+ *
+ * `eventId` is the Order's id and the platform's deduplication key. Everything
+ * else is the figure a merchant would recognise: the total in major units,
+ * because the platform's events are decimals while this codebase holds cents.
+ *
+ * `contents` is keyed by SKU, because that is what a merchant's product catalog
+ * is keyed by at the platform. A line with no SKU is left out rather than sent
+ * with an empty id: the value and the currency are the figures that matter, and a
+ * catalog id matching nothing would cost the event its whole `contents`.
+ */
+export function purchaseEventParams(order: PurchasedOrder): {
+  eventId: string;
+  params: Record<string, unknown>;
+} {
+  return {
+    eventId: order.id,
+    params: {
+      content_type: "product",
+      contents: order.lineItems
+        .filter((line) => Boolean(line.sku))
+        .map((line) => ({ id: line.sku as string, quantity: line.quantity })),
+      value: order.total / 100,
+      currency: order.currency,
+    },
+  };
+}
+
+/**
+ * A purchase completed.
+ *
+ * The one event with a second copy: the commerce engine reports every paid Order
+ * from its own server, and that copy is the one that survives an ad blocker. Both
+ * carry **the Order's id as the event id**, which is the entire reason the
+ * platform counts one purchase rather than two — so this value is the Order's id
+ * and nothing else, not the order number and not something generated here.
+ *
+ * Called once per Order per page load. The set below covers a re-render and the
+ * confirmation page's own polling; a visitor who reloads the page reports it
+ * again, and that is safe for the same reason the server's copy is — the platform
+ * deduplicates on the id, and it is the same id.
+ *
+ * Nothing is remembered until something was actually reported. Effects run from
+ * the leaf up, so the confirmation page can reach here on its first commit a beat
+ * before the root has loaded the pixel — and an Order marked reported by a call
+ * that went nowhere would be the one purchase the browser never sends.
+ */
+export function trackPurchase(order: PurchasedOrder): void {
+  if (reportedPurchases.has(order.id) || !activePixelId) return;
+  reportedPurchases.add(order.id);
+
+  const { eventId, params } = purchaseEventParams(order);
+  track("Purchase", params, eventId);
 }

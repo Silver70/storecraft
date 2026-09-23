@@ -14,6 +14,8 @@ import type {
   GrantedAccount,
   IssueCredentialInput,
   ProviderHealth,
+  PurchaseEvent,
+  SendPurchaseInput,
   StoreCredential,
 } from '../../src/modules/ad-platform/interfaces/ad-platform-provider.interface';
 
@@ -58,6 +60,24 @@ export interface FetchRecord {
   to: string;
 }
 
+/**
+ * One purchase this fake was told about — the whole of what is worth asserting
+ * about the other direction of the integration.
+ *
+ * The event is kept verbatim, because every claim ticket 06 makes is a claim
+ * about its contents: that the event id is the Order's id so the browser's copy
+ * and this one collapse into one purchase, that the frozen browser identifiers
+ * travelled with it, and that the total arrived as the platform's decimal rather
+ * than as our cents.
+ */
+export interface PurchaseRecord {
+  providerRef: string;
+  platform: AdPlatform;
+  providerAccountRef: string;
+  pixelId: string;
+  event: PurchaseEvent;
+}
+
 /** What the merchant approved at the platform, and what it can see. */
 interface Approval {
   providerAccountRef: string;
@@ -98,6 +118,7 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
   private readonly existingPixels = new Map<string, string>();
 
   readonly fetched: FetchRecord[] = [];
+  readonly purchases: PurchaseRecord[] = [];
 
   /** What the platform will say is running, keyed `providerRef:platform`. */
   private readonly trees = new Map<string, AdTree>();
@@ -167,6 +188,7 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     this.revoked.length = 0;
     this.fetched.length = 0;
     this.pixels.length = 0;
+    this.purchases.length = 0;
     this.approvals.clear();
     this.existingPixels.clear();
     this.trees.clear();
@@ -296,6 +318,30 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
         ads: [],
       },
     );
+  }
+
+  /**
+   * Records the purchase it was asked to report.
+   *
+   * Accepting is silence, and refusing throws, exactly as the interface says —
+   * which is what lets a test drive the failing side by setting `failAlways` and
+   * then assert that the checkout stood and the purchase is still owed.
+   */
+  sendPurchase(input: SendPurchaseInput): Promise<void> {
+    this.maybeFail();
+    this.purchases.push({
+      providerRef: input.credential.providerRef,
+      platform: input.platform,
+      providerAccountRef: input.providerAccountRef,
+      pixelId: input.pixelId,
+      event: input.event,
+    });
+    return Promise.resolve();
+  }
+
+  /** Every purchase reported for one Order, which should never be more than one. */
+  purchasesFor(orderId: string): PurchaseRecord[] {
+    return this.purchases.filter((entry) => entry.event.eventId === orderId);
   }
 
   health(): Promise<ProviderHealth> {

@@ -6,7 +6,8 @@ import { trackingScript } from "~/features/attribution/config";
 import { syncAttributionServerFn } from "~/features/attribution/server";
 import { ensureBrowserIds } from "./browser-ids";
 import { measurementPermitted, useConsent } from "./consent";
-import { activatePixel, trackPageView } from "./pixel";
+import type { PurchasedOrder } from "./pixel";
+import { activatePixel, trackPageView, trackPurchase } from "./pixel";
 import { measurementQueryOptions } from "./queries";
 import type { ConsentAnswer, Measurement } from "./types";
 
@@ -130,4 +131,31 @@ function ensureTrackingScript(): void {
   } catch {
     // Same bargain as everything else here: a lost event, never a lost page.
   }
+}
+
+/**
+ * The purchase at the end of it, reported from the browser.
+ *
+ * Its counterpart is the commerce engine's own copy, sent from the server for
+ * every paid Order, and the two are one decision rather than two: both carry the
+ * **Order's id** as the platform's event id, so what the platform receives is one
+ * purchase reported twice rather than two sales. The server's copy is the one that
+ * survives an ad blocker; this one is the one that arrives immediately, and either
+ * alone is enough.
+ *
+ * Held back by the same permission as everything else here — a store that asks
+ * before it measures means the purchase too — and by the pixel being loaded, since
+ * an event reported into a page with no pixel on it is not reported at all.
+ *
+ * `null` while the order is still being confirmed, which is most of the first
+ * second on that page: a pending Order has not been paid for, and the server has
+ * not reported it either.
+ */
+export function useReportPurchase(order: PurchasedOrder | null): void {
+  const { pixelId, permitted } = useMeasurement();
+
+  React.useEffect(() => {
+    if (!permitted || !pixelId || !order) return;
+    trackPurchase(order);
+  }, [permitted, pixelId, order]);
 }
