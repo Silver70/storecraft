@@ -88,6 +88,30 @@ export interface CampaignToTrack {
   }[];
 }
 
+/** A Campaign created here, as the platform answered for it. */
+export interface CreatedCampaignInput {
+  /** The create's idempotency key, which finds this row again on a retry. */
+  creationKey: string;
+  externalId: string;
+  name: string;
+  status: CampaignStatus;
+  startsAt: Date | null;
+  endsAt: Date | null;
+  /** The first ad's image, in storage we control. */
+  coverUrl: string | null;
+  ads: CreatedAdInput[];
+}
+
+export interface CreatedAdInput {
+  externalId: string;
+  name: string;
+  format: AdFormat | null;
+  status: CampaignStatus;
+  reviewStatus: AdReviewStatus | null;
+  /** The image the ad was made from, already in storage we control. */
+  creativeUrl: string | null;
+}
+
 export interface DailyFigureInput {
   adId: string;
   day: string;
@@ -112,8 +136,9 @@ function chunks<T>(rows: readonly T[]): T[][] {
 }
 
 /**
- * The only writer of Campaigns, Ads and `ad_daily_figures` for what the sync
- * reads from the platform.
+ * The only writer of Campaigns, Ads and `ad_daily_figures`: what the sync
+ * reads from the platform, and a Campaign created here, written from the
+ * platform's answer to the create.
  *
  * ## Idempotent by construction, statement by statement
  *
@@ -367,6 +392,120 @@ export class CampaignMirrorRepository {
           notInArray(ads.externalId, [...reportedAdIds]),
         ),
       );
+  }
+
+  /**
+   * Writes a Campaign created here, and its Ads, from what the platform
+   * answered — so it is on the grid now rather than after the next sync.
+   *
+   * Upserted on the platform's ids like everything else here. A retried create
+   * that the platform answered with the same campaign writes the same rows, and
+   * a sync that discovered the campaign first is simply joined. Its Cover and
+   * its Ads' creatives are filled only where missing, as the sync fills them.
+   *
+   * Every Ad is written as carrying our Link Tags. They went out in the call
+   * that made it. `link_tags_checked_at` stays null, so the tags are confirmed
+   * by reading them back, here or by the next sync, rather than taken on trust.
+   */
+  async recordCreated(
+    scope: MirrorScope,
+    input: CreatedCampaignInput,
+    at: Date,
+  ): Promise<{ campaignId: string; adIds: Map<string, string> }> {
+    const [campaign] = await this.db
+      .insert(campaigns)
+      .values({
+        organizationId: scope.organizationId,
+        storeId: scope.storeId,
+        platform: scope.platform,
+        externalId: input.externalId,
+        name: nameOr(
+          input.name,
+          `Campaign ${input.externalId}`,
+          CAMPAIGN_LIMITS.name,
+        ),
+        status: input.status,
+        startsAt: input.startsAt,
+        endsAt: input.endsAt,
+        coverUrl: input.coverUrl,
+        creationKey: input.creationKey,
+        createdAt: at,
+        updatedAt: at,
+      })
+      .onConflictDoUpdate({
+        target: [campaigns.storeId, campaigns.externalId],
+        set: {
+          name: sql`excluded.name`,
+          status: sql`excluded.status`,
+          startsAt: sql`excluded.starts_at`,
+          endsAt: sql`excluded.ends_at`,
+          coverUrl: sql`coalesce(${campaigns.coverUrl}, excluded.cover_url)`,
+          creationKey: sql`coalesce(${campaigns.creationKey}, excluded.creation_key)`,
+          updatedAt: sql`excluded.updated_at`,
+        },
+        setWhere: eq(campaigns.organizationId, scope.organizationId),
+      })
+      .returning({ id: campaigns.id });
+
+    const adIds = new Map<string, string>();
+    if (input.ads.length) {
+      const written = await this.db
+        .insert(ads)
+        .values(
+          input.ads.map((ad) => ({
+            organizationId: scope.organizationId,
+            storeId: scope.storeId,
+            campaignId: campaign.id,
+            externalId: ad.externalId,
+            name: nameOr(ad.name, `Ad ${ad.externalId}`, AD_LIMITS.name),
+            format: ad.format,
+            status: ad.status,
+            reviewStatus: ad.reviewStatus,
+            creativeUrl: ad.creativeUrl,
+            hasLinkTags: true,
+            linkTagsCheckedAt: null,
+            createdAt: at,
+            updatedAt: at,
+          })),
+        )
+        .onConflictDoUpdate({
+          target: [ads.storeId, ads.externalId],
+          set: {
+            campaignId: sql`excluded.campaign_id`,
+            name: sql`excluded.name`,
+            format: sql`coalesce(excluded.format, ${ads.format})`,
+            status: sql`excluded.status`,
+            reviewStatus: sql`excluded.review_status`,
+            creativeUrl: sql`coalesce(${ads.creativeUrl}, excluded.creative_url)`,
+            updatedAt: sql`excluded.updated_at`,
+          },
+          setWhere: eq(ads.organizationId, scope.organizationId),
+        })
+        .returning({ id: ads.id, externalId: ads.externalId });
+      for (const row of written) adIds.set(row.externalId, row.id);
+    }
+
+    return { campaignId: campaign.id, adIds };
+  }
+
+  /** The Campaign a create with this key already made here, or null. */
+  async findByCreationKey(
+    orgId: string,
+    storeId: string,
+    creationKey: string,
+  ): Promise<{ id: string; externalId: string } | null> {
+    const [row] = await this.db
+      .select({ id: campaigns.id, externalId: campaigns.externalId })
+      .from(campaigns)
+      .where(
+        and(
+          eq(campaigns.organizationId, orgId),
+          eq(campaigns.storeId, storeId),
+          eq(campaigns.creationKey, creationKey),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
   }
 
   /**

@@ -751,13 +751,12 @@ describe('Campaigns keyed by the platform (e2e)', () => {
       ).rejects.toThrow();
     });
 
-    it('offers no way to create, archive or delete a campaign or an ad here', async () => {
+    // Creating one is the platform's too: POST /campaigns makes it there first
+    // (see campaign-creation.e2e-spec.ts), so there is no local-only create.
+    it('offers no way to archive or delete a campaign or an ad here', async () => {
       const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
       const adId = summer.ads[SUMMER_VIDEO_EXT];
 
-      await admin.client
-        .post('/campaigns', { name: 'x', platform: 'meta' })
-        .expect(404);
       await admin.client.post(`/campaigns/${summer.id}/archive`).expect(404);
       await admin.client.delete(`/campaigns/${summer.id}`).expect(404);
       await admin.client.get(`/campaigns/${summer.id}/rules`).expect(404);

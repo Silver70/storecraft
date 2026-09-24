@@ -1,10 +1,20 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import type { AdPlatform } from '../../src/shared/database/schema';
+import {
+  CampaignRejectedError,
+  CreateInFlightError,
+} from '../../src/modules/ad-platform/interfaces/ad-platform-provider.interface';
 import type {
   AdAccountOption,
   AdPlatformProvider,
   AdTree,
+  CampaignDraft,
+  CampaignDraftInput,
+  CreateCampaignInput,
+  CreatedCampaign,
+  DraftCheck,
+  DraftComplaint,
   BeginConnectionInput,
   BeginConnectionResult,
   CompleteConnectionInput,
@@ -100,6 +110,23 @@ export interface TagWriteRecord {
   urlTags: string;
 }
 
+/**
+ * One campaign this fake was asked to create — the assertion the whole create
+ * path exists for: that every ad went out carrying the Link Tags, in the same
+ * call that made it.
+ */
+export interface CreateRecord {
+  providerRef: string;
+  providerAccountRef: string;
+  externalAccountId: string;
+  idempotencyKey: string;
+  draft: CampaignDraft;
+  /** The tags every ad was created carrying, as `key=value` joined with `&`. */
+  urlTags: string;
+  /** What the platform answered with, so a replay can answer the same. */
+  created: CreatedCampaign;
+}
+
 /** What the merchant approved at the platform, and what it can see. */
 interface Approval {
   providerAccountRef: string;
@@ -166,6 +193,33 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
    * goes away part-way through. Null never fails.
    */
   failTagWritesAfter: number | null = null;
+
+  /** Every campaign actually created, in order. A replayed key adds none. */
+  readonly creates: CreateRecord[] = [];
+
+  /** Every dry run asked for, in order. */
+  readonly validations: CampaignDraftInput[] = [];
+
+  /** What the dry run will object to. Empty accepts every draft. */
+  draftComplaints: DraftComplaint[] = [];
+
+  /**
+   * What the real create will object to, when the dry run could not see it —
+   * a video Meta could not use. Null creates.
+   */
+  createRejection: DraftComplaint[] | null = null;
+
+  /** Makes the next create answer "already in flight", as a double press would. */
+  createInFlight = false;
+
+  /**
+   * Makes a create reach the platform and then fail before answering, the way
+   * a dropped connection does. The campaign exists at the platform; a retry
+   * with the same key is answered with it rather than making another.
+   */
+  failAfterCreating = false;
+
+  private campaignSeq = 0;
 
   /** Makes creative downloads fail — a CDN link that has already expired. */
   failCreatives = false;
@@ -262,6 +316,12 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     this.linkTags.clear();
     this.tagWrites.length = 0;
     this.tagRefusals.clear();
+    this.creates.length = 0;
+    this.validations.length = 0;
+    this.draftComplaints = [];
+    this.createRejection = null;
+    this.createInFlight = false;
+    this.failAfterCreating = false;
     this.failTagWritesAfter = null;
     this.failCreatives = false;
     this.failTagReads = false;
@@ -438,6 +498,120 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     });
     this.linkTags.set(input.externalAdId, urlTags);
     return Promise.resolve({ outcome: 'written' });
+  }
+
+  /**
+   * Answers with whatever the test said is wrong with the draft, and records
+   * the draft, so a test can assert the dry run saw what was about to be sent.
+   * Video ads are unchecked, as they are at the real platform.
+   */
+  validateCampaign(input: CampaignDraftInput): Promise<DraftCheck> {
+    this.maybeFail();
+    this.validations.push(input);
+    return Promise.resolve({
+      complaints: [...this.draftComplaints],
+      unchecked: input.draft.ads
+        .map((ad, index) => (ad.media.kind === 'video' ? index : -1))
+        .filter((index) => index >= 0),
+    });
+  }
+
+  /**
+   * Builds the campaign the way the platform does: every ad under one campaign
+   * with platform ids of its own, each carrying the draft's tags, which a later
+   * read by the sync sees.
+   *
+   * A key it has already created under is answered with the first campaign,
+   * exactly as the real idempotency replay is, and nothing new is built.
+   */
+  createCampaign(input: CreateCampaignInput): Promise<CreatedCampaign> {
+    this.maybeFail();
+    if (this.createInFlight) {
+      this.createInFlight = false;
+      return Promise.reject(new CreateInFlightError());
+    }
+    if (this.createRejection) {
+      return Promise.reject(new CampaignRejectedError(this.createRejection));
+    }
+
+    const replay = this.creates.find(
+      (entry) =>
+        entry.providerRef === input.credential.providerRef &&
+        entry.idempotencyKey === input.idempotencyKey,
+    );
+    if (replay) return Promise.resolve(replay.created);
+
+    const n = ++this.campaignSeq;
+    const campaignId = `1202${String(n).padStart(14, '0')}`;
+    const paused = input.draft.launch === 'paused';
+    const created: CreatedCampaign = {
+      externalCampaignId: campaignId,
+      signals: {
+        delivery: paused ? 'paused' : 'pending_review',
+        review: 'in_review',
+        startsAt: input.draft.startsAt,
+        endsAt: input.draft.endsAt,
+      },
+      ads: input.draft.ads.map((ad, index) => ({
+        externalAdId: `1203${String(n).padStart(10, '0')}${String(index).padStart(4, '0')}`,
+        name: ad.name,
+        format: ad.media.kind,
+        signals: {
+          delivery: paused ? 'paused' : 'pending_review',
+          review: 'in_review',
+          startsAt: input.draft.startsAt,
+          endsAt: input.draft.endsAt,
+        },
+      })),
+    };
+
+    const urlTags = input.draft.linkTags
+      .map(({ key, value }) => `${key}=${value}`)
+      .join('&');
+    for (const ad of created.ads) this.linkTags.set(ad.externalAdId, urlTags);
+
+    // It is on the ad account now, so the next sync reads it back.
+    const tree = this.trees.get(input.externalAccountId) ?? {
+      currency: input.draft.currency,
+      campaigns: [],
+      complete: true,
+    };
+    this.trees.set(input.externalAccountId, {
+      ...tree,
+      currency: tree.currency ?? input.draft.currency,
+      campaigns: [
+        ...tree.campaigns,
+        {
+          externalCampaignId: created.externalCampaignId,
+          name: input.draft.name,
+          signals: created.signals,
+          ads: created.ads.map((ad) => ({
+            externalAdId: ad.externalAdId,
+            name: ad.name,
+            format: ad.format,
+            creativeUrl: null,
+            signals: ad.signals,
+            days: [],
+          })),
+        },
+      ],
+    });
+
+    this.creates.push({
+      providerRef: input.credential.providerRef,
+      providerAccountRef: input.providerAccountRef,
+      externalAccountId: input.externalAccountId,
+      idempotencyKey: input.idempotencyKey,
+      draft: input.draft,
+      urlTags,
+      created,
+    });
+
+    if (this.failAfterCreating) {
+      this.failAfterCreating = false;
+      return Promise.reject(new Error('connection dropped after create'));
+    }
+    return Promise.resolve(created);
   }
 
   /**

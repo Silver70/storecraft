@@ -176,10 +176,18 @@ export class StoreService {
     productPathPattern: string;
     canBuildLinks: boolean;
     missing: string[];
+    /**
+     * The currency an ad budget is in and the timezone its dates are read in,
+     * for the campaign form, which a merchant without settings access fills in.
+     */
+    currency: string;
+    timezone: string;
   }> {
     const store = await this.findById(storeId, orgId);
     if (!store) throw new NotFoundException('Store not found');
     return {
+      currency: store.currency,
+      timezone: store.timezone,
       storefrontUrl: store.storefrontUrl,
       productPathPattern: store.productPathPattern,
       ...readinessOf(store),

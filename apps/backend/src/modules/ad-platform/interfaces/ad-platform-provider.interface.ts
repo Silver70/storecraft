@@ -431,6 +431,168 @@ export interface SendPurchaseInput extends GrantedAccount {
   readonly event: PurchaseEvent;
 }
 
+/**
+ * The button on an ad, in the vocabulary this codebase uses. A short list on
+ * purpose: these are the ones that make sense for a click that lands on a shop.
+ */
+export const CALLS_TO_ACTION = [
+  'shop_now',
+  'buy_now',
+  'order_now',
+  'get_offer',
+  'learn_more',
+  'sign_up',
+  'subscribe',
+] as const;
+
+export type CallToAction = (typeof CALLS_TO_ACTION)[number];
+
+/**
+ * What an ad shows: one image or one video, at a public URL the platform can
+ * fetch. Always one of ours, from product media or an upload to our own
+ * storage, and never a link a merchant typed.
+ */
+export type CreativeMedia =
+  | { readonly kind: 'image'; readonly url: string }
+  | { readonly kind: 'video'; readonly url: string };
+
+/** One ad of a campaign about to be created, fully resolved. */
+export interface AdDraft {
+  /** The ad's name at the platform, unique within the campaign. */
+  readonly name: string;
+  readonly media: CreativeMedia;
+  readonly primaryText: string;
+  readonly headline: string;
+  readonly callToAction: CallToAction;
+  /** Already resolved to the Store's own storefront. */
+  readonly destinationUrl: string;
+}
+
+/**
+ * A campaign as it is sent to the platform: everything the merchant chose,
+ * resolved, plus what is fixed and never offered as a choice.
+ *
+ * What is fixed is in the shape rather than left to the adapter's defaults.
+ * The goal is always Sales, optimised for the Pixel's Purchase event, so
+ * `pixelId` is required. There is exactly one ad set, with the budget on the
+ * campaign. Placements are automatic and bidding is the platform's default.
+ * Neither appears here, because there is nothing to choose.
+ */
+export interface CampaignDraft {
+  readonly name: string;
+  /** Per day, in minor units of `currency`. The adapter converts at the edge. */
+  readonly dailyBudget: number;
+  /** The Store's currency, which the connection guarantees is the ad account's. */
+  readonly currency: string;
+  /** Null starts delivering as soon as the platform approves it. */
+  readonly startsAt: Date | null;
+  readonly endsAt: Date | null;
+  /** ISO 3166-1 alpha-2, upper case. */
+  readonly countries: readonly string[];
+  readonly ageMin: number;
+  readonly ageMax: number;
+  /** The Pixel the campaign optimises against, as the connection recorded it. */
+  readonly pixelId: string;
+  /**
+   * The click parameters every ad is created carrying. **This is the join.**
+   * They are part of the draft, not something to add later, so no create path
+   * can ever send an ad without them.
+   */
+  readonly linkTags: readonly ClickParam[];
+  /** One to six, in the order the merchant arranged them. */
+  readonly ads: readonly AdDraft[];
+  /** Live straight away, or created paused to review before it spends. */
+  readonly launch: 'active' | 'paused';
+}
+
+export interface CampaignDraftInput extends GrantedAccount {
+  /** The ad account the merchant chose, as the platform spells it. */
+  readonly externalAccountId: string;
+  readonly draft: CampaignDraft;
+}
+
+export interface CreateCampaignInput extends CampaignDraftInput {
+  /**
+   * Makes a retried create answer with the first one's result instead of
+   * building a second campaign. The same key with a different draft is refused.
+   */
+  readonly idempotencyKey: string;
+}
+
+/** Which part of the form a complaint is about. */
+export type DraftField =
+  | 'name'
+  | 'dailyBudget'
+  | 'schedule'
+  | 'audience'
+  | 'media'
+  | 'primaryText'
+  | 'headline'
+  | 'callToAction'
+  | 'destination';
+
+/**
+ * One thing the platform objects to, in the platform's own words.
+ *
+ * `adIndex` points at the ad it is about, or is null for the campaign as a
+ * whole. `field` is where on the form it belongs, when the platform said.
+ */
+export interface DraftComplaint {
+  readonly adIndex: number | null;
+  readonly field: DraftField | null;
+  readonly message: string;
+}
+
+/** What a dry run of a draft found. */
+export interface DraftCheck {
+  /** Empty when the platform accepts the draft as it stands. */
+  readonly complaints: readonly DraftComplaint[];
+  /**
+   * Ads the dry run could not check, by index. Their media is only examined
+   * when the campaign is created, so a complaint about one arrives then.
+   */
+  readonly unchecked: readonly number[];
+}
+
+/** One ad the platform built, as it reported it. */
+export interface CreatedAd {
+  /** Meta's own ad id — what `{{ad.id}}` expands to. */
+  readonly externalAdId: string;
+  readonly name: string | null;
+  readonly format: ReportedAdFormat | null;
+  readonly signals: PlatformSignals;
+}
+
+export interface CreatedCampaign {
+  /** Meta's own campaign id — what `{{campaign.id}}` expands to. */
+  readonly externalCampaignId: string;
+  readonly signals: PlatformSignals;
+  readonly ads: readonly CreatedAd[];
+}
+
+/**
+ * The platform would not create the campaign, for a reason about the campaign.
+ * Its complaints are passed back for the form. Nothing was created.
+ *
+ * A failure of the integration itself is not this. That throws an ordinary
+ * `HttpException`, because it says nothing about the draft.
+ */
+export class CampaignRejectedError extends Error {
+  constructor(readonly complaints: readonly DraftComplaint[]) {
+    super(complaints.map((c) => c.message).join(' '));
+  }
+}
+
+/**
+ * The same create is already in flight at the provider, under the same key.
+ * The first one's outcome is the answer, and a second is not started.
+ */
+export class CreateInFlightError extends Error {
+  constructor() {
+    super('this campaign is already being created');
+  }
+}
+
 export interface AdPlatformProvider {
   /**
    * Issues a credential scoped to one Store, creating the provider-side scope
@@ -521,6 +683,29 @@ export interface AdPlatformProvider {
    * call would work.
    */
   writeLinkTags(input: WriteLinkTagsInput): Promise<LinkTagWrite>;
+
+  /**
+   * A dry run of a campaign: the platform's own checks, and nothing created.
+   *
+   * Budget minimums, image dimensions and copy the platform rejects come back
+   * as complaints for the form rather than as a failed create. An integration
+   * failure throws, because it says nothing about the draft.
+   */
+  validateCampaign(input: CampaignDraftInput): Promise<DraftCheck>;
+
+  /**
+   * Creates the campaign, its one ad set and every ad in a single call, each
+   * ad carrying `draft.linkTags`.
+   *
+   * **This spends the merchant's money**, unless the draft is launched paused.
+   * It is only called after the dry run passed and the merchant pressed
+   * Publish or Save as paused.
+   *
+   * Throws `CampaignRejectedError` when the platform refuses the campaign
+   * itself, with its complaints. It throws `CreateInFlightError` when the same
+   * key is still being created. Anything else throws as it comes.
+   */
+  createCampaign(input: CreateCampaignInput): Promise<CreatedCampaign>;
 
   /**
    * The bytes behind a creative URL the tree reported.

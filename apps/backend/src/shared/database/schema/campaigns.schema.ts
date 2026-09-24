@@ -56,6 +56,7 @@ export const CAMPAIGN_LIMITS = {
    * platform writes this id into `utm_campaign` at the moment of the click.
    */
   externalId: 255,
+  creationKey: 255,
 } as const;
 
 /**
@@ -106,6 +107,14 @@ export const campaigns = pgTable(
      * whose revenue we cannot see must read as unknown, never as zero.
      */
     hasLinkTags: boolean('has_link_tags').notNull().default(false),
+    /**
+     * The idempotency key of the create that made this Campaign here, or null
+     * for one the sync discovered. A retried create finds its campaign by this
+     * key and answers with it, rather than asking the platform to build another.
+     */
+    creationKey: varchar('creation_key', {
+      length: CAMPAIGN_LIMITS.creationKey,
+    }),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
@@ -113,6 +122,8 @@ export const campaigns = pgTable(
     // One row per platform campaign per Store. The database is the authority,
     // so a sync and a create racing on the same campaign cannot both insert.
     unique('campaigns_store_external_id_unique').on(t.storeId, t.externalId),
+    // One campaign per create, even when two retries race each other here.
+    unique('campaigns_store_creation_key_unique').on(t.storeId, t.creationKey),
     index('campaigns_org_store_status_idx').on(
       t.organizationId,
       t.storeId,

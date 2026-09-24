@@ -1,5 +1,13 @@
 import type { ConfigService } from '@nestjs/config';
-import type { FetchAdTreeInput } from '../interfaces/ad-platform-provider.interface';
+import {
+  CampaignRejectedError,
+  CreateInFlightError,
+  type CampaignDraft,
+  type CampaignDraftInput,
+  type CreateCampaignInput,
+  type FetchAdTreeInput,
+} from '../interfaces/ad-platform-provider.interface';
+import { LINK_TAGS } from '../utils/link-tags.util';
 import { ZernioAdPlatformAdapter } from './zernio.adapter';
 
 /**
@@ -450,5 +458,299 @@ describe('ZernioAdPlatformAdapter.fetchCreative', () => {
     await expect(
       new ZernioAdPlatformAdapter(config).fetchCreative('https://cdn.meta/x'),
     ).rejects.toThrow();
+  });
+});
+
+describe('ZernioAdPlatformAdapter creating a campaign', () => {
+  const realFetch = global.fetch;
+  let fetchMock: jest.Mock;
+
+  beforeEach(() => {
+    fetchMock = jest.fn();
+    global.fetch = fetchMock;
+  });
+
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  const draft: CampaignDraft = {
+    name: 'Autumn sale',
+    dailyBudget: 2550,
+    currency: 'USD',
+    startsAt: new Date('2026-10-01T04:00:00Z'),
+    endsAt: null,
+    countries: ['US', 'CA'],
+    ageMin: 25,
+    ageMax: 54,
+    pixelId: 'px_1',
+    linkTags: LINK_TAGS,
+    launch: 'active',
+    ads: [
+      {
+        name: 'Autumn sale · Ad 1',
+        media: { kind: 'image', url: 'https://cdn.test/a.jpg' },
+        primaryText: 'Warm coats, cold prices.',
+        headline: 'Coats from $49',
+        callToAction: 'shop_now',
+        destinationUrl: 'https://shop.test/products/coat',
+      },
+      {
+        name: 'Autumn sale · Ad 2',
+        media: { kind: 'video', url: 'https://cdn.test/b.mp4' },
+        primaryText: 'See them move.',
+        headline: 'Coats in motion',
+        callToAction: 'learn_more',
+        destinationUrl: 'https://shop.test/products',
+      },
+    ],
+  };
+  const createInput: CreateCampaignInput = {
+    credential: input.credential,
+    platform: 'meta',
+    providerAccountRef: 'acc_1',
+    externalAccountId: 'act_1',
+    draft,
+    idempotencyKey: 'key-1',
+  };
+  const adapter = () => new ZernioAdPlatformAdapter(config);
+  const sentBody = (call = 0) =>
+    JSON.parse(
+      (fetchMock.mock.calls[call] as [URL, RequestInit])[1].body as string,
+    ) as Record<string, unknown>;
+
+  it('sends every ad in one call, each carrying the link tags, with the key', async () => {
+    fetchMock.mockResolvedValueOnce(
+      json(
+        {
+          platformCampaignId: '1202',
+          ads: [
+            {
+              platformAdId: '1203',
+              name: 'Autumn sale · Ad 1',
+              status: 'pending_review',
+              reviewStatus: 'in_review',
+              creativeType: 'image',
+            },
+            {
+              platformAdId: '1204',
+              name: 'Autumn sale · Ad 2',
+              status: 'pending_review',
+              reviewStatus: 'in_review',
+              creativeType: 'video',
+            },
+          ],
+        },
+        201,
+      ),
+    );
+
+    const created = await adapter().createCampaign(createInput);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(url.toString()).toBe('https://vendor.test/api/v1/ads/create');
+    expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe(
+      'key-1',
+    );
+    const body = sentBody();
+    expect(body).toMatchObject({
+      accountId: 'acc_1',
+      adAccountId: 'act_1',
+      goal: 'conversions',
+      promotedObject: { pixelId: 'px_1', customEventType: 'PURCHASE' },
+      budgetLevel: 'campaign',
+      budgetType: 'daily',
+      // Minor units in, whole units of the currency out.
+      budgetAmount: 25.5,
+      status: 'ACTIVE',
+      countries: ['US', 'CA'],
+      ageMin: 25,
+      ageMax: 54,
+      startDate: '2026-10-01T04:00:00.000Z',
+      tracking: {
+        pixelId: 'px_1',
+        urlTags: [
+          { key: 'utm_source', value: 'meta' },
+          { key: 'utm_medium', value: 'paid' },
+          { key: 'utm_campaign', value: '{{campaign.id}}' },
+          { key: 'utm_content', value: '{{ad.id}}' },
+        ],
+      },
+      creatives: [
+        {
+          name: 'Autumn sale · Ad 1',
+          imageUrl: 'https://cdn.test/a.jpg',
+          body: 'Warm coats, cold prices.',
+          headline: 'Coats from $49',
+          callToAction: 'SHOP_NOW',
+          linkUrl: 'https://shop.test/products/coat',
+        },
+        {
+          name: 'Autumn sale · Ad 2',
+          video: { url: 'https://cdn.test/b.mp4' },
+          callToAction: 'LEARN_MORE',
+        },
+      ],
+    });
+    // Nothing a merchant was told is fixed: placements and bidding are left out.
+    expect(body).not.toHaveProperty('placements');
+    expect(body).not.toHaveProperty('bidStrategy');
+    expect(body).not.toHaveProperty('endDate');
+
+    expect(created).toMatchObject({
+      externalCampaignId: '1202',
+      signals: { delivery: 'pending_review', review: 'in_review' },
+      ads: [
+        { externalAdId: '1203', format: 'image' },
+        { externalAdId: '1204', format: 'video' },
+      ],
+    });
+  });
+
+  it('creates paused when asked, and reads the campaign as paused', async () => {
+    fetchMock.mockResolvedValueOnce(
+      json(
+        { platformCampaignId: '1202', ads: [{ platformAdId: '1203' }] },
+        201,
+      ),
+    );
+
+    const created = await adapter().createCampaign({
+      ...createInput,
+      draft: { ...draft, launch: 'paused' },
+    });
+
+    expect(sentBody().status).toBe('PAUSED');
+    expect(created.signals.delivery).toBe('paused');
+    expect(created.ads[0].signals.delivery).toBe('paused');
+  });
+
+  it('turns Meta’s refusal into complaints, placed by ad and field', async () => {
+    fetchMock.mockResolvedValueOnce(
+      json(
+        {
+          error: 'Invalid parameter',
+          type: 'platform_error',
+          param: 'creatives[1].video',
+          platformError: {
+            error_user_title: 'Video too short',
+            error_user_msg: 'Your video must be at least 1 second long.',
+          },
+        },
+        400,
+      ),
+    );
+
+    const error = await adapter()
+      .createCampaign(createInput)
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(CampaignRejectedError);
+    expect((error as CampaignRejectedError).complaints).toEqual([
+      {
+        adIndex: 1,
+        field: 'media',
+        message: 'Your video must be at least 1 second long.',
+      },
+    ]);
+  });
+
+  it('says a create with the same key is still in flight', async () => {
+    fetchMock.mockResolvedValueOnce(json({ error: 'in progress' }, 409));
+    await expect(adapter().createCampaign(createInput)).rejects.toBeInstanceOf(
+      CreateInFlightError,
+    );
+  });
+
+  it('treats an unreachable vendor as a failure, not a refusal', async () => {
+    fetchMock.mockResolvedValueOnce(json({ error: 'bad gateway' }, 502));
+    const error = await adapter()
+      .createCampaign(createInput)
+      .catch((e: unknown) => e);
+    expect(error).not.toBeInstanceOf(CampaignRejectedError);
+    expect((error as Error).message).toMatch(/could not be reached/);
+  });
+
+  it('dry-runs each image ad on its own, and leaves video ads unchecked', async () => {
+    fetchMock.mockResolvedValueOnce(
+      json({
+        validateOnly: true,
+        results: [{ node: 'campaign', status: 'validated' }],
+      }),
+    );
+
+    const check = await adapter().validateCampaign(createInput);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = sentBody();
+    expect(body).toMatchObject({
+      validateOnly: true,
+      adName: 'Autumn sale · Ad 1',
+      imageUrl: 'https://cdn.test/a.jpg',
+      budgetAmount: 25.5,
+      tracking: { pixelId: 'px_1' },
+    });
+    expect(body).not.toHaveProperty('creatives');
+    expect(check).toEqual({ complaints: [], unchecked: [1] });
+  });
+
+  it('reports a complaint every ad produced once, for the campaign', async () => {
+    const twoImages: CampaignDraftInput = {
+      ...createInput,
+      draft: {
+        ...draft,
+        ads: [draft.ads[0], { ...draft.ads[0], name: 'Autumn sale · Ad 2' }],
+      },
+    };
+    const budget = {
+      error: 'Budget too low',
+      type: 'platform_error',
+      platformError: {
+        error_user_msg: 'Your budget must be at least $1.00 a day.',
+      },
+    };
+    const image = {
+      error: 'Bad image',
+      type: 'platform_error',
+      param: 'imageUrl',
+      platformError: { error_user_msg: 'The image is too small.' },
+    };
+    fetchMock
+      .mockResolvedValueOnce(json(budget, 400))
+      .mockResolvedValueOnce(json(budget, 400))
+      .mockResolvedValueOnce(json(image, 400));
+
+    // Only two calls are made; the third answer is never read.
+    const check = await adapter().validateCampaign(twoImages);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(check.complaints).toEqual([
+      {
+        adIndex: null,
+        field: null,
+        message: 'Your budget must be at least $1.00 a day.',
+      },
+    ]);
+  });
+
+  it('places a creative complaint on the ad that caused it', async () => {
+    fetchMock.mockResolvedValueOnce(
+      json(
+        {
+          error: 'Bad image',
+          type: 'platform_error',
+          param: 'imageUrl',
+          platformError: { error_user_msg: 'The image is too small.' },
+        },
+        400,
+      ),
+    );
+
+    const check = await adapter().validateCampaign(createInput);
+
+    expect(check.complaints).toEqual([
+      { adIndex: 0, field: 'media', message: 'The image is too small.' },
+    ]);
   });
 });

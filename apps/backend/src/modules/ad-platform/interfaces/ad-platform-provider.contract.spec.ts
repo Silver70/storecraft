@@ -36,6 +36,8 @@ const EXPECTED_SURFACE = [
   'fetchAdTree',
   'readLinkTags',
   'writeLinkTags',
+  'validateCampaign',
+  'createCampaign',
   'fetchCreative',
   'sendPurchase',
   'health',

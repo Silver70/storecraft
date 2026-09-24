@@ -6,13 +6,16 @@ import { ZernioAdPlatformAdapter } from './services/zernio.adapter';
 import { AdminAdPlatformController } from './controllers/admin-ad-platform.controller';
 import { AdPlatformCallbackController } from './controllers/ad-platform-callback.controller';
 import { AdminCampaignTrackingController } from './controllers/admin-campaign-tracking.controller';
+import { AdminCampaignCreationController } from './controllers/admin-campaign-creation.controller';
 import { AdPlatformConnectionRepository } from './repositories/ad-platform-connection.repository';
 import { AdPlatformCredentialRepository } from './repositories/ad-platform-credential.repository';
 import { CampaignMirrorRepository } from './repositories/campaign-mirror.repository';
+import { CampaignDraftRepository } from './repositories/campaign-draft.repository';
 import { PurchaseEventDispatchRepository } from './repositories/purchase-event-dispatch.repository';
 import { AdPlatformConnectionService } from './services/ad-platform-connection.service';
 import { AdPlatformSyncService } from './services/ad-platform-sync.service';
 import { CampaignTrackingService } from './services/campaign-tracking.service';
+import { CampaignCreationService } from './services/campaign-creation.service';
 import { CredentialVault } from './services/credential-vault.service';
 import { MeasurementService } from './services/measurement.service';
 import { PurchaseEventService } from './services/purchase-event.service';
@@ -40,9 +43,13 @@ import { R2StorageService } from '../../shared/storage/r2-storage.service';
  * and link clicks in `ad_daily_figures` — all keyed by the platform's own ids
  * rather than by a tag a merchant had to paste correctly, and all written by
  * `CampaignMirrorRepository`. Object storage is provided here for the creative
- * copies, as the product module provides it for product media. The one write
- * back to the platform's ads is `CampaignTrackingService`, and only when a
- * merchant presses Start tracking.
+ * copies, as the product module provides it for product media.
+ *
+ * Two things write to the platform, and only when a merchant asks.
+ * `CampaignCreationService` creates a campaign with every ad already carrying
+ * the Link Tags, and records it here straight away rather than waiting for the
+ * sync. `CampaignTrackingService` writes the tags onto a discovered campaign's
+ * ads when a merchant presses Start tracking.
  *
  * Measurement flows the other way from the same seam. `MeasurementService`
  * answers the storefront's question about which Pixel to load, and
@@ -60,6 +67,7 @@ import { R2StorageService } from '../../shared/storage/r2-storage.service';
     AdminAdPlatformController,
     AdPlatformCallbackController,
     AdminCampaignTrackingController,
+    AdminCampaignCreationController,
   ],
   providers: [
     {
@@ -70,11 +78,13 @@ import { R2StorageService } from '../../shared/storage/r2-storage.service';
     AdPlatformConnectionRepository,
     AdPlatformCredentialRepository,
     CampaignMirrorRepository,
+    CampaignDraftRepository,
     PurchaseEventDispatchRepository,
     R2StorageService,
     AdPlatformConnectionService,
     AdPlatformSyncService,
     CampaignTrackingService,
+    CampaignCreationService,
     MeasurementService,
     MeasurementResolver,
     PurchaseEventService,

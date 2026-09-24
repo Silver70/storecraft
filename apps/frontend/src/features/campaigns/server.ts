@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { getCookie } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { adminStoreHeader } from "~/lib/active-store";
 import { apiClient, authHeader } from "~/lib/api-client";
@@ -9,7 +10,10 @@ import type {
   AdPlatformSyncOutcome,
   AttributedRevenueReport,
   Campaign,
+  CampaignFormContext,
   CampaignPerformanceReport,
+  CreateCampaignOutcome,
+  DraftComplaint,
   TrackingOutcome,
 } from "~/types/api";
 
@@ -17,9 +21,9 @@ async function storeHeaders() {
   return { ...(await authHeader()), ...adminStoreHeader() };
 }
 
-// A campaign is the ad platform's: it is created and changed there, and
-// arrives here through the connection. There is no create, edit, archive or
-// delete to call. The one write is Start tracking, below.
+// A campaign is the ad platform's. One created here is created there first and
+// recorded here from the platform's answer; one built in Ads Manager arrives
+// through the connection. There is no archive or delete to call.
 
 export const getCampaignsServerFn = createServerFn({ method: "GET" }).handler(
   async (): Promise<Campaign[]> => {
@@ -108,6 +112,145 @@ export const startCampaignTrackingServerFn = createServerFn({ method: "POST" })
       const res = await apiClient.post<TrackingOutcome>(
         `/api/admin/campaigns/${data.campaignId}/tracking`,
         {},
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+// ─── Creating one ─────────────────────────────────────────────────────────────
+
+/**
+ * What the create form needs from the active store: the currency a budget is
+ * typed in, the timezone its dates are read in, and whether an ad's link can
+ * be built yet.
+ */
+export const getCampaignFormContextServerFn = createServerFn({
+  method: "GET",
+}).handler(async (): Promise<CampaignFormContext> => {
+  const storeId = getCookie("wos-active-store");
+  if (!storeId) throw new Error("No store is selected.");
+  try {
+    const res = await apiClient.get<Omit<CampaignFormContext, "storeId">>(
+      `/api/admin/stores/${storeId}/storefront`,
+      { headers: await storeHeaders() },
+    );
+    return { storeId, ...res.data };
+  } catch (err) {
+    throw new Error(getErrorMessage(err));
+  }
+});
+
+const campaignAdInput = z.object({
+  mediaSource: z.enum(["product", "upload"]),
+  productMediaId: z.string().optional(),
+  uploadUrl: z.string().optional(),
+  primaryText: z.string(),
+  headline: z.string(),
+  callToAction: z.enum([
+    "shop_now",
+    "buy_now",
+    "order_now",
+    "get_offer",
+    "learn_more",
+    "sign_up",
+    "subscribe",
+  ]),
+  destination: z.enum(["product", "all_products", "home", "custom"]),
+  destinationProductId: z.string().optional(),
+  destinationPath: z.string().optional(),
+});
+
+/**
+ * What a create answered: the campaign, or everything wrong with the form.
+ *
+ * A 422 is not an error here. It is the answer the form is built around: our
+ * own rules and Meta's dry run, each complaint placed by field and by ad, and
+ * nothing created.
+ */
+export type CreateCampaignResult =
+  | { ok: true; outcome: CreateCampaignOutcome }
+  | { ok: false; message: string; complaints: DraftComplaint[] };
+
+/**
+ * Creates the campaign at Meta and here.
+ *
+ * `idempotencyKey` is kept by the form across retries of one submission, so a
+ * press whose answer was lost cannot make a second campaign when pressed again.
+ */
+export const createCampaignServerFn = createServerFn({ method: "POST" })
+  .inputValidator(
+    z.object({
+      idempotencyKey: z.string().min(1).max(255),
+      campaign: z.object({
+        name: z.string(),
+        dailyBudget: z.number().int(),
+        startDate: z.string(),
+        endDate: z.string().nullable(),
+        countries: z.array(z.string()),
+        ageMin: z.number().int(),
+        ageMax: z.number().int(),
+        launch: z.enum(["active", "paused"]),
+        ads: z.array(campaignAdInput),
+      }),
+    }),
+  )
+  .handler(async ({ data }): Promise<CreateCampaignResult> => {
+    try {
+      const res = await apiClient.post<CreateCampaignOutcome>(
+        "/api/admin/campaigns",
+        data.campaign,
+        {
+          headers: {
+            ...(await storeHeaders()),
+            "Idempotency-Key": data.idempotencyKey,
+          },
+        },
+      );
+      return { ok: true, outcome: res.data };
+    } catch (err) {
+      const rejection = err as {
+        status?: number;
+        data?: { message?: string; complaints?: DraftComplaint[] };
+      };
+      if (rejection.status === 422 && rejection.data?.complaints) {
+        return {
+          ok: false,
+          message: rejection.data.message ?? "The campaign needs fixing.",
+          complaints: rejection.data.complaints,
+        };
+      }
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+/**
+ * Stores a picture or video an ad is made from, in this store's own storage.
+ * The answer's URL is what the form sends back as `uploadUrl`.
+ */
+export const uploadCampaignCreativeServerFn = createServerFn({ method: "POST" })
+  .inputValidator(
+    z.object({
+      fileBase64: z.string().min(1),
+      mimeType: z.string().min(1),
+      fileName: z.string().min(1),
+    }),
+  )
+  .handler(async ({ data }): Promise<{ url: string; kind: "image" | "video" }> => {
+    const formData = new FormData();
+    formData.append(
+      "file",
+      new Blob([Buffer.from(data.fileBase64, "base64")], {
+        type: data.mimeType,
+      }),
+      data.fileName,
+    );
+    try {
+      const res = await apiClient.post<{ url: string; kind: "image" | "video" }>(
+        "/api/admin/campaigns/creatives",
+        formData,
         { headers: await storeHeaders() },
       );
       return res.data;

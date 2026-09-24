@@ -469,6 +469,92 @@ export type TrackingOutcome = {
   ads: AdTrackingResult[];
 };
 
+// ─── Creating a campaign ──────────────────────────────────────────────────────
+
+/** The button on an ad. */
+export type CallToAction =
+  | "shop_now"
+  | "buy_now"
+  | "order_now"
+  | "get_offer"
+  | "learn_more"
+  | "sign_up"
+  | "subscribe";
+
+export type AdDestinationKind = "product" | "all_products" | "home" | "custom";
+
+/**
+ * One ad on the create form. Media and destination are references, never URLs:
+ * the server turns them into links on this store's own storefront and images
+ * in its own storage.
+ */
+export type CampaignAdInput = {
+  mediaSource: "product" | "upload";
+  productMediaId?: string;
+  uploadUrl?: string;
+  primaryText: string;
+  headline: string;
+  callToAction: CallToAction;
+  destination: AdDestinationKind;
+  destinationProductId?: string;
+  destinationPath?: string;
+};
+
+export type CreateCampaignInput = {
+  name: string;
+  /** Per day, in minor units of the store's currency. */
+  dailyBudget: number;
+  /** `YYYY-MM-DD`, in the store's timezone. */
+  startDate: string;
+  endDate: string | null;
+  countries: string[];
+  ageMin: number;
+  ageMax: number;
+  launch: "active" | "paused";
+  ads: CampaignAdInput[];
+};
+
+export type DraftField =
+  | "name"
+  | "dailyBudget"
+  | "schedule"
+  | "audience"
+  | "media"
+  | "primaryText"
+  | "headline"
+  | "callToAction"
+  | "destination";
+
+/**
+ * Something wrong with the form, from our own rules or from Meta's dry run.
+ * `adIndex` is null for the campaign as a whole.
+ */
+export type DraftComplaint = {
+  adIndex: number | null;
+  field: DraftField | null;
+  message: string;
+};
+
+export type CreateCampaignOutcome = {
+  campaignId: string;
+  externalId: string;
+  tracked: boolean;
+  /** A retry, answered with the campaign already created. */
+  replayed: boolean;
+  /** Video ads Meta checks only at creation. */
+  unchecked: number[];
+};
+
+/** What the create form needs to know about the active store. */
+export type CampaignFormContext = {
+  storeId: string;
+  currency: string;
+  timezone: string;
+  storefrontUrl: string | null;
+  canBuildLinks: boolean;
+  missing: string[];
+};
+
 // ─── Ads ──────────────────────────────────────────────────────────────────────
 
 export type AdStatus = CampaignStatus;

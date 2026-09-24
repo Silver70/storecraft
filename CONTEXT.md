@@ -87,8 +87,9 @@ _Avoid_: Ad group, audience, targeting
 
 **Creative**:
 The picture an Ad is recognised by — its image, or a video's poster frame.
-Uploaded here when the Ad is created here, read from the platform when it was
-made there; nothing that reads it can tell which.
+Uploaded here, or picked from a Product's own photographs, when the Ad is
+created here; read from the platform when it was made there. Nothing that reads
+it can tell which.
 _Avoid_: Ad image, thumbnail, asset, media (that is a Product's)
 
 **Cover**:
@@ -103,7 +104,8 @@ _Avoid_: Thumbnail, banner, hero, campaign image
 The UTM parameters written onto an Ad's link, naming the platform's own campaign
 id and ad id, which the platform fills in at the moment of the click. What joins
 an Order's Last Touch to a Campaign and an Ad; an id never changes on a rename,
-where a name would. Written on every Ad created here. A discovered Campaign whose
+where a name would. Written on every Ad created here, in the same call that
+creates it, and read back to confirm. A discovered Campaign whose
 Ads lack them is **Not Tracked** — its revenue is unknown rather than zero —
 until the merchant chooses to have them written, which the platform treats as a
 new creative and sends back through review. A Campaign is **Tracked** only when
@@ -118,6 +120,14 @@ classifies it. The one thing said about an Ad beside its name. Where the Ad was
 shown is deliberately not carried: with automatic placements one Ad runs on
 every surface at once, so there is no single answer to give.
 _Avoid_: Creative type, placement, ad type
+
+**Dry Run**:
+The platform's own check of a Campaign before it is created, with nothing
+created. Its complaints (a budget under the minimum, an image the wrong size,
+copy it rejects) are shown on the form beside the field they are about. Every
+create passes one first. It cannot see a video that has not been uploaded yet,
+so a complaint about a video arrives with the create instead.
+_Avoid_: Validation (ours are the rules checked before it), preview
 
 **Touch**:
 A single recorded instance of a Visitor arriving from a traffic source, carrying

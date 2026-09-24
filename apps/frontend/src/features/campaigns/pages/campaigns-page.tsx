@@ -1,8 +1,9 @@
 import * as React from "react";
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { getRouteApi } from "@tanstack/react-router";
-import { MegaphoneIcon, SearchIcon } from "lucide-react";
+import { Link, getRouteApi } from "@tanstack/react-router";
+import { MegaphoneIcon, PlusIcon, SearchIcon } from "lucide-react";
 
+import { Button } from "~/components/ui/button";
 import { Card } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import type { AdPlatformConnection } from "~/types/api";
@@ -71,9 +72,21 @@ export function CampaignsPage() {
     <div className="space-y-6 pb-10">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <Title showWindow />
-        {/* Whose account these figures came from, how fresh they are, and
-            whether the last attempt to refresh them failed. */}
-        <MetaConnectionSummary connection={connection} />
+        <div className="flex flex-col items-start gap-2 sm:items-end">
+          {/* A disconnected account's campaigns stay readable, and nothing new
+              can be made on it. */}
+          {connection.status === "connected" && (
+            <Button asChild size="sm" className="gap-1.5">
+              <Link to="/admin/campaigns/new">
+                <PlusIcon className="h-4 w-4" />
+                Create campaign
+              </Link>
+            </Button>
+          )}
+          {/* Whose account these figures came from, how fresh they are, and
+              whether the last attempt to refresh them failed. */}
+          <MetaConnectionSummary connection={connection} />
+        </div>
       </div>
 
       {search.ad_platform_result && (
@@ -188,7 +201,7 @@ function NoCampaignsYet({ connection }: { connection: AdPlatformConnection }) {
         {connection.status === "disconnected"
           ? `Meta is disconnected, and no campaigns were pulled from ${account} before it was.`
           : connection.lastSyncedAt
-            ? `Meta is connected, and ${account} has no campaigns on it. Campaigns you create in Ads Manager appear here within the hour.`
+            ? `Meta is connected, and ${account} has no campaigns on it. Create one here, or in Ads Manager, where it appears here within the hour.`
             : `Meta is connected. Campaigns on ${account} appear here once the first refresh finishes.`}
       </p>
     </Card>

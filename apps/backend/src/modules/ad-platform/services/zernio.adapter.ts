@@ -5,17 +5,30 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AdPlatform } from '../../../shared/database/schema';
+import {
+  CampaignRejectedError,
+  CreateInFlightError,
+} from '../interfaces/ad-platform-provider.interface';
 import type {
   AdAccountOption,
+  AdDraft,
   AdPlatformProvider,
   AdTree,
   BeginConnectionInput,
+  CallToAction,
+  CampaignDraftInput,
   ClickParam,
   BeginConnectionResult,
   CompleteConnectionInput,
   ConnectionGrant,
+  CreateCampaignInput,
+  CreatedAd,
+  CreatedCampaign,
   CreativeFile,
   DeliverySignal,
+  DraftCheck,
+  DraftComplaint,
+  DraftField,
   EnsurePixelInput,
   FetchAdTreeInput,
   GrantedAccount,
@@ -419,6 +432,168 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
   }
 
   /**
+   * The platform's dry run, one ad at a time.
+   *
+   * The vendor's dry run takes a campaign with a single ad, never the
+   * several-ads shape the real create uses, and it cannot check a video it
+   * would have to upload first. So each image ad is checked as a campaign of
+   * its own. That uses the same budget, schedule, audience and tags as the real
+   * create, with that one ad's creative. Video ads are reported unchecked:
+   * their complaints arrive with the create.
+   *
+   * Meta checks the campaign and the creative this way. It cannot check the ad
+   * set against a campaign that does not exist yet. The image is uploaded to
+   * the ad account's library while it is checked, which is harmless: uploads
+   * are deduplicated by content.
+   *
+   * A complaint that every checked ad produced is about the campaign, not one
+   * ad, and is reported once.
+   */
+  async validateCampaign(input: CampaignDraftInput): Promise<DraftCheck> {
+    this.connectPlatform(input.platform);
+    const { draft } = input;
+
+    const found: DraftComplaint[] = [];
+    const unchecked: number[] = [];
+    const checked: number[] = [];
+
+    for (const [index, ad] of draft.ads.entries()) {
+      if (ad.media.kind !== 'image') {
+        unchecked.push(index);
+        continue;
+      }
+      checked.push(index);
+      try {
+        await this.call<unknown>(
+          input.credential.secret,
+          'POST',
+          '/v1/ads/create',
+          {
+            body: {
+              ...campaignBody(input),
+              adName: ad.name,
+              ...singleCreative(ad),
+              validateOnly: true,
+            },
+            refuse: [400, 422],
+          },
+        );
+      } catch (error) {
+        if (!(error instanceof RefusedByPlatform)) throw error;
+        found.push(...complaintsFrom(error.body, index));
+      }
+    }
+
+    return {
+      complaints: settleComplaints(found, checked.length),
+      unchecked,
+    };
+  }
+
+  /**
+   * Creates the campaign, one ad set and every ad in one call, the vendor's
+   * several-creatives shape.
+   *
+   * **The Link Tags go in this call.** `tracking.urlTags` is applied to every ad
+   * of the shape, onto the creative the platform builds, so there is no moment
+   * when an ad exists without them. The Pixel goes in the same place, so each
+   * ad reports Website events whatever it optimises for.
+   *
+   * The goal is Sales, optimised for the Pixel's Purchase event. The budget is
+   * on the campaign (Meta's CBO), daily, in whole units of the currency: money
+   * crosses the boundary here, by `toDecimalAmount`, as it does for a purchase.
+   * Placements are automatic and bidding is the platform's default, because
+   * neither is sent. A paused create holds the pause on the campaign, so one
+   * switch brings the whole thing live later.
+   *
+   * The key makes a retry safe. The vendor replays the first answer to the
+   * same key and body for a day, answers 409 while the first is in flight, and
+   * 422 for the same key with a different body.
+   */
+  async createCampaign(input: CreateCampaignInput): Promise<CreatedCampaign> {
+    this.connectPlatform(input.platform);
+    const { draft } = input;
+
+    let result: RawCreateResult | undefined;
+    try {
+      result = await this.call<RawCreateResult>(
+        input.credential.secret,
+        'POST',
+        '/v1/ads/create',
+        {
+          body: {
+            ...campaignBody(input),
+            creatives: draft.ads.map((ad) => ({
+              name: ad.name,
+              ...singleCreative(ad),
+            })),
+          },
+          headers: { 'Idempotency-Key': input.idempotencyKey },
+          refuse: [400, 409, 422, 502],
+        },
+      );
+    } catch (error) {
+      if (!(error instanceof RefusedByPlatform)) throw error;
+      if (error.status === 409) throw new CreateInFlightError();
+      // A 502 is the vendor's own failure unless it carries Meta's objection,
+      // which it does when Meta could not make something the ad needs.
+      if (error.status === 502 && !isPlatformError(error.body)) {
+        throw new ServiceUnavailableException(
+          'The ad platform could not be reached just now. Nothing was created — try again shortly.',
+        );
+      }
+      throw new CampaignRejectedError(
+        settleComplaints(complaintsFrom(error.body, null), draft.ads.length),
+      );
+    }
+
+    const rawAds = result?.ads ?? (result?.ad ? [result.ad] : []);
+    const externalCampaignId =
+      result?.platformCampaignId ?? rawAds[0]?.platformCampaignId;
+    if (!externalCampaignId) {
+      // Created, most likely, and unreadable. Said plainly rather than as a
+      // failure: the next sync finds the campaign on the ad account.
+      this.logger.error('A campaign create answered without a campaign id');
+      throw new ServiceUnavailableException(
+        'The ad platform accepted the campaign but did not say what it created. It will appear here after the next refresh — check before creating it again.',
+      );
+    }
+
+    const paused = draft.launch === 'paused';
+    const ads: CreatedAd[] = rawAds
+      .filter((ad) => ad.platformAdId)
+      .map((ad) => ({
+        externalAdId: ad.platformAdId!,
+        name: ad.name ?? null,
+        format: toFormat(ad.creativeType),
+        signals: {
+          // A new ad with no status yet is in review, not broken.
+          delivery: ad.status
+            ? toDelivery(ad.status)
+            : paused
+              ? 'paused'
+              : 'pending_review',
+          review: toReview(ad.reviewStatus),
+          startsAt: draft.startsAt,
+          endsAt: draft.endsAt,
+        },
+      }));
+
+    return {
+      externalCampaignId,
+      signals: {
+        delivery: paused ? 'paused' : createdDelivery(ads),
+        review: ads.some((ad) => ad.signals.review === 'in_review')
+          ? 'in_review'
+          : null,
+        startsAt: draft.startsAt,
+        endsAt: draft.endsAt,
+      },
+      ads,
+    };
+  }
+
+  /**
    * A creative's bytes, from wherever Meta hosts them.
    *
    * No credential goes with this request. The URL is signed on its own, and the
@@ -619,6 +794,8 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
     options: {
       query?: Record<string, string>;
       body?: unknown;
+      /** Headers beyond the credential, such as an idempotency key. */
+      headers?: Record<string, string>;
       /** Status codes that mean "already done", not "failed". */
       tolerate?: number[];
       /**
@@ -639,6 +816,7 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
       response = await fetch(url, {
         method,
         headers: {
+          ...options.headers,
           Authorization: `Bearer ${key}`,
           ...(options.body ? { 'Content-Type': 'application/json' } : {}),
         },
@@ -657,7 +835,8 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
 
     if (options.refuse?.includes(response.status)) {
       this.logger.warn(`${method} ${path} was refused (${response.status})`);
-      throw new RefusedByPlatform(response.status);
+      // Kept for the caller to read the objection from, never logged.
+      throw new RefusedByPlatform(response.status, await bodyOf(response));
     }
 
     if (!response.ok) {
@@ -700,8 +879,21 @@ const MAX_CREATIVE_BYTES = 15 * 1024 * 1024;
  * failure of the integration, and the next ad may be fine.
  */
 class RefusedByPlatform extends Error {
-  constructor(readonly status: number) {
+  constructor(
+    readonly status: number,
+    /** The vendor's error envelope, where it sent one. */
+    readonly body: RawError | null = null,
+  ) {
     super(`the ad platform refused the request (${status})`);
+  }
+}
+
+async function bodyOf(response: Response): Promise<RawError | null> {
+  try {
+    const parsed: unknown = await response.json();
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
   }
 }
 
@@ -717,6 +909,30 @@ function sameJoin(standing: string, sent: readonly ClickParam[]): boolean {
       params.get(key)?.trim() ===
       sent.find((tag) => tag.key === key)?.value.trim(),
   );
+}
+
+/** The vendor's error envelope, as far as this file reads it. */
+interface RawError {
+  error?: string;
+  type?: string;
+  /** The request field at fault, e.g. `budgetAmount` or `creatives[1].imageUrl`. */
+  param?: string;
+  /** Meta's own payload, verbatim, on a `platform_error`. */
+  platformError?: {
+    error_user_title?: string;
+    error_user_msg?: string;
+    message?: string;
+  } | null;
+  /** On the several-creatives shape, which entry a media failure was about. */
+  creativeIndex?: number;
+  details?: { creativeIndex?: number } | null;
+}
+
+/** A create's answer: one ad, or several sharing a campaign. */
+interface RawCreateResult {
+  ad?: RawAd & { platformCampaignId?: string };
+  ads?: (RawAd & { platformCampaignId?: string })[];
+  platformCampaignId?: string;
 }
 
 interface RawAdAccount {
@@ -981,6 +1197,184 @@ function creativeUrlOf(ad: RawAd): string | null {
     creative?.thumbnailUrl ||
     null
   );
+}
+
+/** How the vendor spells a button. */
+const CALL_TO_ACTION: Record<CallToAction, string> = {
+  shop_now: 'SHOP_NOW',
+  buy_now: 'BUY_NOW',
+  order_now: 'ORDER_NOW',
+  get_offer: 'GET_OFFER',
+  learn_more: 'LEARN_MORE',
+  sign_up: 'SIGN_UP',
+  subscribe: 'SUBSCRIBE',
+};
+
+/**
+ * Everything about a create that is not an ad: the same for the dry run and the
+ * real thing, so the dry run checks what will actually be sent.
+ */
+function campaignBody(input: CampaignDraftInput): Record<string, unknown> {
+  const { draft } = input;
+  return {
+    accountId: input.providerAccountRef,
+    adAccountId: input.externalAccountId,
+    name: draft.name,
+    campaignName: draft.name,
+    // Sales, optimised for purchases the Pixel sees.
+    goal: 'conversions',
+    promotedObject: { pixelId: draft.pixelId, customEventType: 'PURCHASE' },
+    // One budget, on the campaign.
+    budgetLevel: 'campaign',
+    budgetType: 'daily',
+    budgetAmount: toDecimalAmount(draft.dailyBudget),
+    currency: draft.currency,
+    status: draft.launch === 'paused' ? 'PAUSED' : 'ACTIVE',
+    countries: [...draft.countries],
+    ageMin: draft.ageMin,
+    ageMax: draft.ageMax,
+    ...(draft.startsAt ? { startDate: draft.startsAt.toISOString() } : {}),
+    ...(draft.endsAt ? { endDate: draft.endsAt.toISOString() } : {}),
+    tracking: {
+      pixelId: draft.pixelId,
+      // Sent decoded. The vendor passes `{{…}}` through for Meta to expand and
+      // encodes everything else.
+      urlTags: draft.linkTags.map(({ key, value }) => ({ key, value })),
+    },
+  };
+}
+
+/** One ad's creative fields, as both the single and several shapes take them. */
+function singleCreative(ad: AdDraft): Record<string, unknown> {
+  return {
+    headline: ad.headline,
+    body: ad.primaryText,
+    callToAction: CALL_TO_ACTION[ad.callToAction],
+    linkUrl: ad.destinationUrl,
+    ...(ad.media.kind === 'image'
+      ? { imageUrl: ad.media.url }
+      : { video: { url: ad.media.url } }),
+  };
+}
+
+/** Where on the form a vendor field belongs. */
+const FIELD_OF: Record<string, DraftField> = {
+  name: 'name',
+  campaignName: 'name',
+  adName: 'name',
+  budgetAmount: 'dailyBudget',
+  budgetType: 'dailyBudget',
+  currency: 'dailyBudget',
+  startDate: 'schedule',
+  endDate: 'schedule',
+  countries: 'audience',
+  ageMin: 'audience',
+  ageMax: 'audience',
+  targeting: 'audience',
+  imageUrl: 'media',
+  video: 'media',
+  body: 'primaryText',
+  headline: 'headline',
+  callToAction: 'callToAction',
+  linkUrl: 'destination',
+};
+
+const AD_FIELDS = new Set<DraftField>([
+  'media',
+  'primaryText',
+  'headline',
+  'callToAction',
+  'destination',
+]);
+
+/**
+ * What the vendor objected to, as complaints for the form.
+ *
+ * Meta's own sentence where it sent one: `error_user_msg` is written for the
+ * person who made the ad, and it is what names a budget minimum or an image
+ * size. The vendor's sentence otherwise.
+ *
+ * `adIndex` is the ad the request was about, for a dry run of one ad. For the
+ * several-ads create, the ad is read from the field (`creatives[2].imageUrl`)
+ * or from the index the vendor reports.
+ */
+function complaintsFrom(
+  body: RawError | null,
+  adIndex: number | null,
+): DraftComplaint[] {
+  const platform = body?.platformError;
+  const message =
+    platform?.error_user_msg?.trim() ||
+    platform?.error_user_title?.trim() ||
+    body?.error?.trim() ||
+    'Meta did not accept this campaign.';
+
+  const param = body?.param ?? '';
+  const nested = /^creatives[[.](\d+)\]?\.?(\w+)/.exec(param);
+  const field =
+    FIELD_OF[nested ? nested[2] : (param.split(/[.[]/)[0] ?? '')] ?? null;
+  const index =
+    (nested ? Number(nested[1]) : null) ??
+    body?.creativeIndex ??
+    body?.details?.creativeIndex ??
+    adIndex;
+
+  return [
+    {
+      // A campaign field is about the campaign, whichever ad was being checked.
+      adIndex: field && !AD_FIELDS.has(field) ? null : index,
+      field,
+      message,
+    },
+  ];
+}
+
+/**
+ * One complaint per thing wrong.
+ *
+ * The dry run checks each ad as a campaign of its own, so a problem with the
+ * campaign comes back once per ad. A complaint that every checked ad produced
+ * is about the campaign, and it is reported once without an ad. The same goes
+ * for a campaign complaint repeated verbatim.
+ */
+function settleComplaints(
+  found: readonly DraftComplaint[],
+  checkedCount: number,
+): DraftComplaint[] {
+  const byText = new Map<string, DraftComplaint[]>();
+  for (const complaint of found) {
+    const key = `${complaint.field ?? ''}|${complaint.message}`;
+    byText.set(key, [...(byText.get(key) ?? []), complaint]);
+  }
+
+  const settled: DraftComplaint[] = [];
+  for (const group of byText.values()) {
+    const ads = new Set(group.map((c) => c.adIndex));
+    const campaignWide =
+      ads.has(null) || (checkedCount > 1 && ads.size >= checkedCount);
+    if (campaignWide) {
+      settled.push({ ...group[0], adIndex: null });
+    } else {
+      settled.push(...[...ads].map((adIndex) => ({ ...group[0], adIndex })));
+    }
+  }
+  return settled;
+}
+
+function isPlatformError(body: RawError | null): boolean {
+  return body?.type === 'platform_error' || Boolean(body?.platformError);
+}
+
+/**
+ * A new campaign's delivery, from its ads'. In review while any ad is, which on
+ * a fresh create is all of them.
+ */
+function createdDelivery(ads: readonly CreatedAd[]): DeliverySignal {
+  if (ads.some((ad) => ad.signals.delivery === 'pending_review')) {
+    return 'pending_review';
+  }
+  if (ads.some((ad) => ad.signals.delivery === 'active')) return 'active';
+  return ads[0]?.signals.delivery ?? 'pending_review';
 }
 
 function toDate(value: string | null | undefined): Date | null {

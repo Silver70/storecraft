@@ -218,6 +218,13 @@
       "when": 1790241034957,
       "tag": "0030_the_campaign_detail_page",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1790248261314,
+      "tag": "0031_create_a_campaign",
+      "breakpoints": true
     }
   ]
 }

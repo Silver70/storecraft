@@ -5,6 +5,7 @@ import {
   getAdPlatformConnectionsServerFn,
   getAttributedRevenueServerFn,
   getCampaignByIdServerFn,
+  getCampaignFormContextServerFn,
   getCampaignPerformanceServerFn,
   getCampaignsServerFn,
 } from "./server";
@@ -67,4 +68,12 @@ export const adAccountsQueryOptions = () =>
     queryKey: ["campaigns", "connection", "ad-accounts"],
     queryFn: () => getAdAccountsServerFn({ data: { platform: "meta" } }),
     staleTime: 0,
+  });
+
+/** The active store's currency, timezone and storefront, for the create form. */
+export const campaignFormContextQueryOptions = () =>
+  queryOptions({
+    queryKey: ["campaigns", "form-context"],
+    queryFn: () => getCampaignFormContextServerFn(),
+    staleTime: 60 * 1000,
   });
