@@ -35,6 +35,7 @@ const EXPECTED_SURFACE = [
   'revokeStoreCredential',
   'fetchAdTree',
   'readLinkTags',
+  'writeLinkTags',
   'fetchCreative',
   'sendPurchase',
   'health',

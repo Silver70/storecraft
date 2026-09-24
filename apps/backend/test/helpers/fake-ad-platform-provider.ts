@@ -14,11 +14,14 @@ import type {
   FetchAdTreeInput,
   GrantedAccount,
   IssueCredentialInput,
+  LinkTagRefusal,
+  LinkTagWrite,
   ProviderHealth,
   PurchaseEvent,
   ReadLinkTagsInput,
   SendPurchaseInput,
   StoreCredential,
+  WriteLinkTagsInput,
 } from '../../src/modules/ad-platform/interfaces/ad-platform-provider.interface';
 
 interface IssuedCredential extends StoreCredential {
@@ -86,6 +89,17 @@ export interface TagReadRecord {
   externalAdId: string;
 }
 
+/**
+ * One tag write the fake was asked for — the assertion that matters most about
+ * Start tracking, since each one sends a merchant's ad back through review.
+ */
+export interface TagWriteRecord {
+  providerRef: string;
+  externalAdId: string;
+  /** Exactly what was sent, as `key=value` joined with `&`. */
+  urlTags: string;
+}
+
 /** What the merchant approved at the platform, and what it can see. */
 interface Approval {
   providerAccountRef: string;
@@ -141,6 +155,17 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
 
   /** Each ad's stored link tags, keyed by the ad's platform id. */
   private readonly linkTags = new Map<string, string | null>();
+
+  readonly tagWrites: TagWriteRecord[] = [];
+
+  /** Ads the platform will refuse to retag, and why. */
+  private readonly tagRefusals = new Map<string, LinkTagRefusal>();
+
+  /**
+   * Makes tag writes throw after this many have succeeded — a platform that
+   * goes away part-way through. Null never fails.
+   */
+  failTagWritesAfter: number | null = null;
 
   /** Makes creative downloads fail — a CDN link that has already expired. */
   failCreatives = false;
@@ -206,6 +231,16 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     this.linkTags.set(externalAdId, urlTags);
   }
 
+  /** Says the platform will refuse to retag this ad, the way it refuses one made from a post. */
+  refuseTagWrite(externalAdId: string, reason: LinkTagRefusal): void {
+    this.tagRefusals.set(externalAdId, reason);
+  }
+
+  /** The ad's link tags as the platform now holds them. */
+  linkTagsOf(externalAdId: string): string | null {
+    return this.linkTags.get(externalAdId) ?? null;
+  }
+
   /** How many times the sync asked for one ad's tags. */
   tagReadsFor(externalAdId: string): number {
     return this.tagReads.filter((r) => r.externalAdId === externalAdId).length;
@@ -225,6 +260,9 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     this.tagReads.length = 0;
     this.creativeFetches.length = 0;
     this.linkTags.clear();
+    this.tagWrites.length = 0;
+    this.tagRefusals.clear();
+    this.failTagWritesAfter = null;
     this.failCreatives = false;
     this.failTagReads = false;
     this.pixels.length = 0;
@@ -371,6 +409,35 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
       return Promise.reject(new Error('tag read refused'));
     }
     return Promise.resolve(this.linkTags.get(input.externalAdId) ?? null);
+  }
+
+  /**
+   * Records the write and, unless the ad is one the platform refuses, stores the
+   * tags — so a later read, by the sync or by a second press, sees them.
+   */
+  writeLinkTags(input: WriteLinkTagsInput): Promise<LinkTagWrite> {
+    this.maybeFail();
+    if (
+      this.failTagWritesAfter !== null &&
+      this.tagWrites.length >= this.failTagWritesAfter
+    ) {
+      return Promise.reject(new Error('tag write refused'));
+    }
+
+    const refusal = this.tagRefusals.get(input.externalAdId);
+    if (refusal)
+      return Promise.resolve({ outcome: 'refused', reason: refusal });
+
+    const urlTags = input.tags
+      .map(({ key, value }) => `${key}=${value}`)
+      .join('&');
+    this.tagWrites.push({
+      providerRef: input.credential.providerRef,
+      externalAdId: input.externalAdId,
+      urlTags,
+    });
+    this.linkTags.set(input.externalAdId, urlTags);
+    return Promise.resolve({ outcome: 'written' });
   }
 
   /**

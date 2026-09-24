@@ -10,15 +10,16 @@ import type {
   AttributedRevenueReport,
   Campaign,
   CampaignPerformanceReport,
+  TrackingOutcome,
 } from "~/types/api";
 
 async function storeHeaders() {
   return { ...(await authHeader()), ...adminStoreHeader() };
 }
 
-// Reads only. A campaign is the ad platform's: it is created and changed there,
-// and arrives here through the connection. There is no create, edit, archive
-// or delete to call.
+// A campaign is the ad platform's: it is created and changed there, and
+// arrives here through the connection. There is no create, edit, archive or
+// delete to call. The one write is Start tracking, below.
 
 export const getCampaignsServerFn = createServerFn({ method: "GET" }).handler(
   async (): Promise<Campaign[]> => {
@@ -84,6 +85,29 @@ export const getCampaignPerformanceServerFn = createServerFn({ method: "GET" })
     try {
       const res = await apiClient.get<CampaignPerformanceReport>(
         `/api/admin/marketing/campaigns/${data.campaignId}/performance?period=${data.period}`,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+/**
+ * Writes our link tags onto every ad of a campaign built in Ads Manager.
+ *
+ * Each tagged ad goes back through Meta's review, which is why the page asks
+ * first. The answer is per ad and never an exception for a refused one: an ad
+ * Meta will not retag comes back named, with the reason, beside the ones it
+ * did.
+ */
+export const startCampaignTrackingServerFn = createServerFn({ method: "POST" })
+  .inputValidator(z.object({ campaignId: z.string().min(1) }))
+  .handler(async ({ data }): Promise<TrackingOutcome> => {
+    try {
+      const res = await apiClient.post<TrackingOutcome>(
+        `/api/admin/campaigns/${data.campaignId}/tracking`,
+        {},
         { headers: await storeHeaders() },
       );
       return res.data;

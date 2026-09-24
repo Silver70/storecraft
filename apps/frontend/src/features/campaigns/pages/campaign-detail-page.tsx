@@ -8,6 +8,7 @@ import { CampaignAdsTable } from "../components/campaign-ads-table";
 import { CreativeTile } from "../components/campaign-cards";
 import { CampaignStatusBadge } from "../components/campaign-status-badge";
 import { PerformancePanel } from "../components/performance-panel";
+import { StartTrackingBanner } from "../components/start-tracking";
 import { campaignPerformanceQueryOptions, campaignQueryOptions } from "../queries";
 import {
   CAMPAIGN_PERIODS,
@@ -25,7 +26,9 @@ const route = getRouteApi("/admin/campaigns_/$campaignId");
  * opens on a sensible period without it.
  *
  * Drawn entirely from what the sync already stored. Nothing here calls the ad
- * platform, so a vendor outage costs the page its freshness, never the page.
+ * platform to render, so a vendor outage costs the page its freshness, never the
+ * page. The one call out is Start tracking, and only when the merchant presses
+ * it.
  */
 export function CampaignDetailPage() {
   const { campaignId } = route.useParams();
@@ -82,6 +85,9 @@ export function CampaignDetailPage() {
           </Tabs>
         </div>
       </div>
+
+      {/* A Tracked campaign has nothing to start, so it offers nothing. */}
+      {!line.hasLinkTags && <StartTrackingBanner line={line} />}
 
       {/* ── Cover and performance ─────────────────────────────────────────── */}
       <div className="grid gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">

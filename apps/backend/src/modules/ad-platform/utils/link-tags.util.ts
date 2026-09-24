@@ -79,3 +79,39 @@ export function carriesOurLinkTags(
     read('utm_content') === AD_ID_MACRO
   );
 }
+
+/**
+ * The tags to write onto an ad that already carries some of its own: ours
+ * merged into the merchant's rather than written over them.
+ *
+ * A tag write replaces the ad's whole set, so anything left out is lost. The
+ * merchant's other parameters are kept in their order. The two join parameters
+ * are always ours, because a hand-typed campaign name matches no platform id.
+ * `utm_source` and `utm_medium` are only added where the ad has none: nothing
+ * joins on them, and a merchant who labelled their own traffic keeps the label.
+ *
+ * Values come back decoded, which is what the platform expects on a write.
+ */
+export function mergeLinkTags(existing: string | null | undefined): LinkTag[] {
+  const kept: LinkTag[] = [];
+  const seen = new Set<string>();
+  const params = new URLSearchParams(
+    (existing ?? '').trim().replace(/^\?/, ''),
+  );
+  for (const [key, value] of params) {
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    kept.push({ key, value });
+  }
+
+  const ours = new Map(LINK_TAGS.map((tag) => [tag.key, tag.value]));
+  const joins = new Set(['utm_campaign', 'utm_content']);
+
+  const merged = kept.map((tag) =>
+    joins.has(tag.key) ? { key: tag.key, value: ours.get(tag.key)! } : tag,
+  );
+  for (const tag of LINK_TAGS) {
+    if (!seen.has(tag.key)) merged.push(tag);
+  }
+  return merged;
+}

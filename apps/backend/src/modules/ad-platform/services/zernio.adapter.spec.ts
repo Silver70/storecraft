@@ -342,6 +342,81 @@ describe('ZernioAdPlatformAdapter.readLinkTags', () => {
   });
 });
 
+describe('ZernioAdPlatformAdapter.writeLinkTags', () => {
+  const realFetch = global.fetch;
+  let fetchMock: jest.Mock;
+
+  beforeEach(() => {
+    fetchMock = jest.fn();
+    global.fetch = fetchMock;
+  });
+
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  const tags = [
+    { key: 'ref', value: 'two words' },
+    { key: 'utm_campaign', value: '{{campaign.id}}' },
+    { key: 'utm_content', value: '{{ad.id}}' },
+  ];
+  const write = (externalAdId = '1201') =>
+    new ZernioAdPlatformAdapter(config).writeLinkTags({
+      ...input,
+      externalAdId,
+      tags,
+    });
+
+  it('sends the tags alone, never a creative to rebuild from', async () => {
+    fetchMock.mockResolvedValueOnce(
+      json({
+        platform: 'facebook',
+        urlTags:
+          'ref=two%20words&utm_campaign={{campaign.id}}&utm_content={{ad.id}}',
+      }),
+    );
+
+    await expect(write()).resolves.toEqual({ outcome: 'written' });
+
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(String(url)).toBe(
+      'https://vendor.test/api/v1/ads/1201/tracking-tags',
+    );
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body as string)).toEqual({ urlTags: tags });
+  });
+
+  it.each([
+    [422, 'cannot_rebuild'],
+    [404, 'not_found'],
+    [405, 'unsupported'],
+  ])('reports a %i as a refusal about this ad', async (status, reason) => {
+    fetchMock.mockResolvedValueOnce(json({ error: 'no' }, status));
+    await expect(write()).resolves.toEqual({ outcome: 'refused', reason });
+  });
+
+  it('reports a success whose tags lack the join as not applied', async () => {
+    fetchMock.mockResolvedValueOnce(json({ urlTags: 'ref=two%20words' }));
+    await expect(write()).resolves.toEqual({
+      outcome: 'refused',
+      reason: 'not_applied',
+    });
+  });
+
+  it.each([429, 403, 500, 502])(
+    'throws on a %i, which says nothing about the ad',
+    async (status) => {
+      fetchMock.mockResolvedValueOnce(json({}, status));
+      await expect(write()).rejects.toThrow();
+    },
+  );
+
+  it('throws when the vendor cannot be reached', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));
+    await expect(write()).rejects.toThrow();
+  });
+});
+
 describe('ZernioAdPlatformAdapter.fetchCreative', () => {
   const realFetch = global.fetch;
   afterEach(() => {

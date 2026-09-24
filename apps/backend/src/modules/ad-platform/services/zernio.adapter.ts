@@ -10,6 +10,7 @@ import type {
   AdPlatformProvider,
   AdTree,
   BeginConnectionInput,
+  ClickParam,
   BeginConnectionResult,
   CompleteConnectionInput,
   ConnectionGrant,
@@ -19,6 +20,7 @@ import type {
   FetchAdTreeInput,
   GrantedAccount,
   IssueCredentialInput,
+  LinkTagWrite,
   PlatformSignals,
   ProviderHealth,
   ReadLinkTagsInput,
@@ -29,6 +31,7 @@ import type {
   ReviewSignal,
   SendPurchaseInput,
   StoreCredential,
+  WriteLinkTagsInput,
 } from '../interfaces/ad-platform-provider.interface';
 import {
   toCount,
@@ -367,6 +370,55 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
   }
 
   /**
+   * Replaces one ad's link tags, which Meta does by building a new creative.
+   *
+   * `urlTags` is sent alone. The vendor then copies the existing creative
+   * exactly and adds the new tags, so the merchant's image, copy and button stay
+   * as they were. The optional `creative` body would rebuild the ad from fields
+   * we supply, and is never sent. The vendor answers 422 for a creative it
+   * cannot copy: one made from an existing Page or Instagram post, a dark post,
+   * or one customised per placement. That ad is reported, and nothing is built
+   * for it.
+   *
+   * The macros go through as they are. The vendor passes `{{…}}` unescaped and
+   * encodes everything else, so values are sent decoded.
+   */
+  async writeLinkTags(input: WriteLinkTagsInput): Promise<LinkTagWrite> {
+    this.connectPlatform(input.platform);
+    try {
+      const result = await this.call<{ urlTags?: string | null } | undefined>(
+        input.credential.secret,
+        'PATCH',
+        `/v1/ads/${encodeURIComponent(input.externalAdId)}/tracking-tags`,
+        {
+          body: {
+            urlTags: input.tags.map(({ key, value }) => ({ key, value })),
+          },
+          refuse: [404, 405, 422],
+        },
+      );
+
+      // The answer is the tags as they now stand. A success whose tags lack the
+      // join has not tracked anything, whatever the status code said.
+      const standing = result?.urlTags;
+      if (typeof standing === 'string' && !sameJoin(standing, input.tags)) {
+        return { outcome: 'refused', reason: 'not_applied' };
+      }
+      return { outcome: 'written' };
+    } catch (error) {
+      if (!(error instanceof RefusedByPlatform)) throw error;
+      switch (error.status) {
+        case 404:
+          return { outcome: 'refused', reason: 'not_found' };
+        case 405:
+          return { outcome: 'refused', reason: 'unsupported' };
+        default:
+          return { outcome: 'refused', reason: 'cannot_rebuild' };
+      }
+    }
+  }
+
+  /**
    * A creative's bytes, from wherever Meta hosts them.
    *
    * No credential goes with this request. The URL is signed on its own, and the
@@ -562,13 +614,19 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
    */
   private async call<T>(
     key: string,
-    method: 'GET' | 'POST' | 'DELETE',
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     path: string,
     options: {
       query?: Record<string, string>;
       body?: unknown;
       /** Status codes that mean "already done", not "failed". */
       tolerate?: number[];
+      /**
+       * Status codes that are a refusal about this one object rather than a
+       * failure of the integration. Thrown as `RefusedByPlatform`, so the caller
+       * can report it and carry on.
+       */
+      refuse?: number[];
     } = {},
   ): Promise<T> {
     const url = new URL(`${this.baseUrl()}${path}`);
@@ -595,6 +653,11 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
 
     if (options.tolerate?.includes(response.status)) {
       return undefined as T;
+    }
+
+    if (options.refuse?.includes(response.status)) {
+      this.logger.warn(`${method} ${path} was refused (${response.status})`);
+      throw new RefusedByPlatform(response.status);
     }
 
     if (!response.ok) {
@@ -631,6 +694,30 @@ const MAX_TREE_PAGES = 100;
 
 /** Larger than any ad image Meta serves; a guard, not a limit anyone meets. */
 const MAX_CREATIVE_BYTES = 15 * 1024 * 1024;
+
+/**
+ * A refusal that is about one object: this ad cannot be retagged. It is not a
+ * failure of the integration, and the next ad may be fine.
+ */
+class RefusedByPlatform extends Error {
+  constructor(readonly status: number) {
+    super(`the ad platform refused the request (${status})`);
+  }
+}
+
+/**
+ * Whether the tags the vendor says are now on the ad carry the join we sent.
+ * Only the two join parameters matter: the vendor may reorder or re-encode the
+ * rest.
+ */
+function sameJoin(standing: string, sent: readonly ClickParam[]): boolean {
+  const params = new URLSearchParams(standing.trim().replace(/^\?/, ''));
+  return ['utm_campaign', 'utm_content'].every(
+    (key) =>
+      params.get(key)?.trim() ===
+      sent.find((tag) => tag.key === key)?.value.trim(),
+  );
+}
 
 interface RawAdAccount {
   id: string;

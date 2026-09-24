@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
   and,
+  asc,
   between,
   eq,
   inArray,
@@ -70,6 +71,21 @@ export interface MirroredAd {
   creativeUrl: string | null;
   /** Null until the Ad's link tags have been read. */
   linkTagsCheckedAt: Date | null;
+}
+
+/** A Campaign and its Ads, as Start tracking needs them. */
+export interface CampaignToTrack {
+  id: string;
+  externalId: string;
+  name: string;
+  platform: AdPlatform;
+  hasLinkTags: boolean;
+  ads: {
+    id: string;
+    externalId: string;
+    name: string;
+    hasLinkTags: boolean;
+  }[];
 }
 
 export interface DailyFigureInput {
@@ -353,7 +369,59 @@ export class CampaignMirrorRepository {
       );
   }
 
-  /** Records what reading one Ad's link tags found. Read once, then left. */
+  /**
+   * One Campaign in this Store and every Ad under it, or null when the id is
+   * not this Store's. Ads come oldest first, so a merchant reads the per-ad
+   * results in the order the ads were made.
+   */
+  async findCampaignToTrack(
+    orgId: string,
+    storeId: string,
+    campaignId: string,
+  ): Promise<CampaignToTrack | null> {
+    const [campaign] = await this.db
+      .select({
+        id: campaigns.id,
+        externalId: campaigns.externalId,
+        name: campaigns.name,
+        platform: campaigns.platform,
+        hasLinkTags: campaigns.hasLinkTags,
+      })
+      .from(campaigns)
+      .where(
+        and(
+          eq(campaigns.id, campaignId),
+          eq(campaigns.organizationId, orgId),
+          eq(campaigns.storeId, storeId),
+        ),
+      )
+      .limit(1);
+    if (!campaign) return null;
+
+    const campaignAds = await this.db
+      .select({
+        id: ads.id,
+        externalId: ads.externalId,
+        name: ads.name,
+        hasLinkTags: ads.hasLinkTags,
+      })
+      .from(ads)
+      .where(
+        and(
+          eq(ads.campaignId, campaign.id),
+          eq(ads.organizationId, orgId),
+          eq(ads.storeId, storeId),
+        ),
+      )
+      .orderBy(asc(ads.createdAt), asc(ads.id));
+
+    return { ...campaign, ads: campaignAds };
+  }
+
+  /**
+   * Records what reading one Ad's link tags found. Read once by the sync, then
+   * left — and written again by Start tracking, once it has tagged the Ad.
+   */
   async recordLinkTags(
     scope: MirrorScope,
     adId: string,

@@ -5,12 +5,14 @@ import { AD_PLATFORM_PROVIDER } from './interfaces/ad-platform-provider.interfac
 import { ZernioAdPlatformAdapter } from './services/zernio.adapter';
 import { AdminAdPlatformController } from './controllers/admin-ad-platform.controller';
 import { AdPlatformCallbackController } from './controllers/ad-platform-callback.controller';
+import { AdminCampaignTrackingController } from './controllers/admin-campaign-tracking.controller';
 import { AdPlatformConnectionRepository } from './repositories/ad-platform-connection.repository';
 import { AdPlatformCredentialRepository } from './repositories/ad-platform-credential.repository';
 import { CampaignMirrorRepository } from './repositories/campaign-mirror.repository';
 import { PurchaseEventDispatchRepository } from './repositories/purchase-event-dispatch.repository';
 import { AdPlatformConnectionService } from './services/ad-platform-connection.service';
 import { AdPlatformSyncService } from './services/ad-platform-sync.service';
+import { CampaignTrackingService } from './services/campaign-tracking.service';
 import { CredentialVault } from './services/credential-vault.service';
 import { MeasurementService } from './services/measurement.service';
 import { PurchaseEventService } from './services/purchase-event.service';
@@ -38,7 +40,9 @@ import { R2StorageService } from '../../shared/storage/r2-storage.service';
  * and link clicks in `ad_daily_figures` — all keyed by the platform's own ids
  * rather than by a tag a merchant had to paste correctly, and all written by
  * `CampaignMirrorRepository`. Object storage is provided here for the creative
- * copies, as the product module provides it for product media.
+ * copies, as the product module provides it for product media. The one write
+ * back to the platform's ads is `CampaignTrackingService`, and only when a
+ * merchant presses Start tracking.
  *
  * Measurement flows the other way from the same seam. `MeasurementService`
  * answers the storefront's question about which Pixel to load, and
@@ -52,7 +56,11 @@ import { R2StorageService } from '../../shared/storage/r2-storage.service';
  */
 @Module({
   imports: [AuthModule, TenantModule],
-  controllers: [AdminAdPlatformController, AdPlatformCallbackController],
+  controllers: [
+    AdminAdPlatformController,
+    AdPlatformCallbackController,
+    AdminCampaignTrackingController,
+  ],
   providers: [
     {
       provide: AD_PLATFORM_PROVIDER,
@@ -66,6 +74,7 @@ import { R2StorageService } from '../../shared/storage/r2-storage.service';
     R2StorageService,
     AdPlatformConnectionService,
     AdPlatformSyncService,
+    CampaignTrackingService,
     MeasurementService,
     MeasurementResolver,
     PurchaseEventService,

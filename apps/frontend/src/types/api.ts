@@ -445,6 +445,30 @@ export type Campaign = {
   updatedAt: string;
 };
 
+/** What Start tracking did to one ad. */
+export type AdTrackingResult = {
+  adId: string;
+  externalId: string;
+  name: string;
+  /**
+   * `tagged` was written just now and goes back through Meta's review;
+   * `already_tagged` was left alone; `refused` Meta will not retag, and
+   * `reason` says why; `not_attempted` the platform failed before its turn.
+   */
+  result: "tagged" | "already_tagged" | "refused" | "not_attempted";
+  reason: string | null;
+};
+
+/** What Start tracking did to a campaign. */
+export type TrackingOutcome = {
+  campaignId: string;
+  /** Tracked afterwards: every ad carries the tags. */
+  tracked: boolean;
+  /** Set when the platform failed part-way. Never a claim of success. */
+  message: string | null;
+  ads: AdTrackingResult[];
+};
+
 // ─── Ads ──────────────────────────────────────────────────────────────────────
 
 export type AdStatus = CampaignStatus;

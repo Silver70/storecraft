@@ -317,6 +317,47 @@ export interface ReadLinkTagsInput extends GrantedAccount {
   readonly externalAdId: string;
 }
 
+/** One click parameter, as it is written to an ad. */
+export interface ClickParam {
+  readonly key: string;
+  /** Unencoded. The platform's macros, like `{{ad.id}}`, are passed as they are. */
+  readonly value: string;
+}
+
+export interface WriteLinkTagsInput extends GrantedAccount {
+  /** The ad's id at the platform. */
+  readonly externalAdId: string;
+  /**
+   * Every click parameter the ad will carry afterwards, in order. Not a patch:
+   * whatever the ad carried before and is not in this list is gone.
+   */
+  readonly tags: readonly ClickParam[];
+}
+
+/**
+ * Why the platform will not retag one ad. A fact about that ad, not about the
+ * platform: the next ad in the same campaign may take its tags fine.
+ *
+ * - `cannot_rebuild` — the platform will not rebuild this creative with new
+ *   tags. Chiefly an ad made from an existing Facebook or Instagram post, whose
+ *   likes and comments belong to the post; also a creative customised per
+ *   placement.
+ * - `not_found` — the platform no longer has the ad, usually because it was
+ *   deleted.
+ * - `unsupported` — the ad sits on a surface with no click-URL tags at all.
+ * - `not_applied` — the platform answered success and then reported tags that
+ *   are not ours.
+ */
+export type LinkTagRefusal =
+  | 'cannot_rebuild'
+  | 'not_found'
+  | 'unsupported'
+  | 'not_applied';
+
+export type LinkTagWrite =
+  | { readonly outcome: 'written' }
+  | { readonly outcome: 'refused'; readonly reason: LinkTagRefusal };
+
 /** A creative's bytes, fetched from wherever the platform hosts them. */
 export interface CreativeFile {
   readonly body: Buffer;
@@ -462,6 +503,24 @@ export interface AdPlatformProvider {
    * rebuilds its creative.
    */
   readLinkTags(input: ReadLinkTagsInput): Promise<string | null>;
+
+  /**
+   * Replaces one ad's link tags.
+   *
+   * **This costs the merchant something, and is only called when they asked.**
+   * The platform's creatives are immutable, so a tag change is a new creative:
+   * the ad goes back through review, and an ad built from an existing post
+   * cannot take one without losing the post's engagement. Only the tags are
+   * sent — never a rebuilt creative — so the platform either keeps the rest of
+   * the creative exactly as it was or refuses.
+   *
+   * A refusal that is a fact about this ad answers `refused` with the reason,
+   * so the caller can report it and carry on with the next ad. Anything else —
+   * unreachable, rate-limited, a failure the platform did not explain — throws,
+   * because it says nothing about the ad and everything about whether the next
+   * call would work.
+   */
+  writeLinkTags(input: WriteLinkTagsInput): Promise<LinkTagWrite>;
 
   /**
    * The bytes behind a creative URL the tree reported.
