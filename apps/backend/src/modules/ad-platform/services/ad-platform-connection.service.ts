@@ -22,6 +22,7 @@ import {
 import { AdPlatformConnectionRepository } from '../repositories/ad-platform-connection.repository';
 import { AdPlatformCredentialRepository } from '../repositories/ad-platform-credential.repository';
 import { CredentialVault } from './credential-vault.service';
+import { AdPlatformSyncService } from './ad-platform-sync.service';
 import { currencyRefusal } from '../utils/account-currency.util';
 import {
   HANDOFF_TTL_MS,
@@ -121,6 +122,7 @@ export class AdPlatformConnectionService {
     private readonly vault: CredentialVault,
     private readonly stores: StoreService,
     private readonly config: ConfigService,
+    private readonly sync: AdPlatformSyncService,
   ) {}
 
   async list(
@@ -343,7 +345,7 @@ export class AdPlatformConnectionService {
     });
     if (!row) throw new NotFoundException('Connection not found');
 
-    return toView(row);
+    return toView(await this.backfill(orgId, storeId, platform, row));
   }
 
   /**
@@ -384,6 +386,38 @@ export class AdPlatformConnectionService {
   }
 
   // ─── Internals ──────────────────────────────────────────────────────────────
+
+  /**
+   * Runs the first sync as part of connecting, so the page is worth reading the
+   * moment the merchant lands back on it rather than an hour later.
+   *
+   * A connection that has synced before — a reconnect to the same account —
+   * gets an ordinary trailing sync from the same call; the sync decides which
+   * it owes. It is awaited rather than detached so the connection the merchant
+   * is shown already carries its figures and its freshness, and it cannot fail
+   * the connect: the sync reports rather than throws, and anything that
+   * escapes it is logged and left to the hourly job. The connection stands
+   * either way.
+   */
+  private async backfill(
+    orgId: string,
+    storeId: string,
+    platform: AdPlatform,
+    connected: AdPlatformConnection,
+  ): Promise<AdPlatformConnection> {
+    try {
+      await this.sync.syncStore(orgId, storeId, platform);
+      return (
+        (await this.connections.findByPlatform(orgId, storeId, platform)) ??
+        connected
+      );
+    } catch (error) {
+      this.logger.error(
+        `The first ${platform} sync for store ${storeId} could not run; the hourly sync will pick it up: ${messageOf(error)}`,
+      );
+      return connected;
+    }
+  }
 
   /**
    * Connects without asking when there is nothing to ask.

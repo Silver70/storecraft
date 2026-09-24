@@ -1,0 +1,1 @@
+ALTER TABLE "ads" ADD COLUMN "link_tags_checked_at" timestamp;

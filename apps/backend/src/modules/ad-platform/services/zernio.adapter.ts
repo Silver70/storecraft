@@ -13,13 +13,20 @@ import type {
   BeginConnectionResult,
   CompleteConnectionInput,
   ConnectionGrant,
+  CreativeFile,
+  DeliverySignal,
   EnsurePixelInput,
   FetchAdTreeInput,
   GrantedAccount,
   IssueCredentialInput,
+  PlatformSignals,
   ProviderHealth,
+  ReadLinkTagsInput,
   ReportedAd,
   ReportedAdDay,
+  ReportedAdFormat,
+  ReportedCampaign,
+  ReviewSignal,
   SendPurchaseInput,
   StoreCredential,
 } from '../interfaces/ad-platform-provider.interface';
@@ -264,42 +271,141 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
    * decimals the way its dashboard displays them and this codebase holds
    * integers in the smallest currency unit, so `toMinorUnits` runs at the edge
    * and no float reaches a service, a repository or a report.
+   *
+   * The tree is paginated by campaign, so this reads every page: a sync that
+   * stopped at the first would silently leave the twenty-first campaign's spend
+   * out of every total. The date range narrows the figures, not the campaigns —
+   * every campaign on the account comes back, deleted ones included (the vendor
+   * keeps them as `cancelled`), which is what lets the sync treat an absence as
+   * meaningful.
    */
   async fetchAdTree(input: FetchAdTreeInput): Promise<AdTree> {
     this.connectPlatform(input.platform);
 
-    const tree = await this.call<RawTree>(
-      input.credential.secret,
-      'GET',
-      '/v1/ads/tree',
-      {
-        query: {
-          accountId: input.providerAccountRef,
-          adAccountId: input.externalAccountId,
-          fromDate: input.from,
-          toDate: input.to,
-          // Everything on the account, including ads built in Ads Manager: a
-          // campaign we did not create still spent this merchant's money.
-          source: 'all',
-          timeIncrement: '1',
-          dailyLevel: 'ad',
-        },
-      },
-    );
+    const campaigns: ReportedCampaign[] = [];
+    let currency: string | null = null;
+    let complete = true;
+    let skipped = 0;
 
-    const ads: ReportedAd[] = [];
-    for (const campaign of tree.campaigns ?? []) {
-      for (const adSet of campaign.adSets ?? []) {
-        for (const ad of adSet.ads ?? []) {
-          ads.push(toReportedAd(ad));
+    for (let page = 1; page <= MAX_TREE_PAGES; page++) {
+      const tree = await this.call<RawTree>(
+        input.credential.secret,
+        'GET',
+        '/v1/ads/tree',
+        {
+          query: {
+            accountId: input.providerAccountRef,
+            adAccountId: input.externalAccountId,
+            fromDate: input.from,
+            toDate: input.to,
+            // Everything on the account, including ads built in Ads Manager: a
+            // campaign we did not create still spent this merchant's money.
+            source: 'all',
+            timeIncrement: '1',
+            dailyLevel: 'ad',
+            page: String(page),
+            limit: String(TREE_PAGE_SIZE),
+          },
+        },
+      );
+
+      // A 202 carrying this flag: part of the range is still being gathered,
+      // which the vendor does for a while after an ad account is first
+      // connected. What arrived is kept; the range is not counted as covered.
+      if (tree?.backfillPending) complete = false;
+
+      for (const raw of tree?.campaigns ?? []) {
+        // The vendor groups ads with no campaign id into a synthetic bucket.
+        // Meta has no such ads, and a bucket with no platform id could never
+        // be joined to a click, so it is left out rather than invented.
+        if (!raw.platformCampaignId) {
+          skipped++;
+          continue;
         }
+        currency ??= raw.currency ?? null;
+        campaigns.push(toReportedCampaign(raw));
+      }
+
+      const pages = tree?.pagination?.pages ?? 1;
+      if (page >= pages || !tree?.campaigns?.length) break;
+      if (page === MAX_TREE_PAGES) {
+        // Far past any merchant this product serves. Marked incomplete rather
+        // than treated as the whole account, so nothing absent from the pages
+        // read is taken to have ended.
+        complete = false;
+        this.logger.warn(
+          `Ad tree for one account exceeded ${MAX_TREE_PAGES} pages; the rest is left for the next sync`,
+        );
       }
     }
 
-    return {
-      currency: tree.campaigns?.[0]?.currency ?? 'USD',
-      ads,
-    };
+    if (skipped) {
+      this.logger.warn(
+        `Left out ${skipped} ad tree node(s) that carried no platform campaign id`,
+      );
+    }
+
+    return { currency, campaigns, complete };
+  }
+
+  /**
+   * One ad's link tags, as Meta stores them on its creative.
+   *
+   * An ad the vendor cannot find, or one on a surface with no click-URL tags,
+   * has none to read. Both answer null — "not ours" — rather than failing the
+   * sync that asked, because the merchant's figures do not depend on it.
+   */
+  async readLinkTags(input: ReadLinkTagsInput): Promise<string | null> {
+    this.connectPlatform(input.platform);
+    const result = await this.call<{ urlTags?: string | null } | undefined>(
+      input.credential.secret,
+      'GET',
+      `/v1/ads/${encodeURIComponent(input.externalAdId)}/tracking-tags`,
+      { tolerate: [404, 405] },
+    );
+    return result?.urlTags ?? null;
+  }
+
+  /**
+   * A creative's bytes, from wherever Meta hosts them.
+   *
+   * No credential goes with this request. The URL is signed on its own, and the
+   * Store's key belongs to the vendor, not to a CDN. Only images are accepted —
+   * a video ad's creative here is its poster frame — and only up to a size an
+   * image has any business being.
+   */
+  async fetchCreative(url: string): Promise<CreativeFile> {
+    let response: Response;
+    try {
+      response = await fetch(url);
+    } catch {
+      throw new ServiceUnavailableException(
+        'A creative image could not be fetched from the ad platform just now.',
+      );
+    }
+    if (!response.ok) {
+      throw new ServiceUnavailableException(
+        `A creative image could not be fetched from the ad platform (${response.status}).`,
+      );
+    }
+
+    const contentType = (response.headers.get('content-type') ?? '')
+      .split(';')[0]
+      .trim()
+      .toLowerCase();
+    if (!contentType.startsWith('image/')) {
+      throw new ServiceUnavailableException(
+        'The ad platform returned something other than an image for a creative.',
+      );
+    }
+
+    const body = Buffer.from(await response.arrayBuffer());
+    if (body.byteLength > MAX_CREATIVE_BYTES) {
+      throw new ServiceUnavailableException(
+        'A creative image from the ad platform was larger than expected.',
+      );
+    }
+    return { body, contentType };
   }
 
   /**
@@ -514,6 +620,18 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
  */
 const ADS_BACKFILL_DAYS = 90;
 
+/** The most campaigns the vendor returns per page. */
+const TREE_PAGE_SIZE = 100;
+
+/**
+ * A ceiling on pages read in one sync — ten thousand campaigns. Past it the
+ * tree is reported incomplete rather than read forever.
+ */
+const MAX_TREE_PAGES = 100;
+
+/** Larger than any ad image Meta serves; a guard, not a limit anyone meets. */
+const MAX_CREATIVE_BYTES = 15 * 1024 * 1024;
+
 interface RawAdAccount {
   id: string;
   name?: string | null;
@@ -525,18 +643,53 @@ interface RawAdAccount {
 interface RawMetrics {
   spend?: number | null;
   impressions?: number | null;
+  /**
+   * Meta's "clicks (all)": likes, image taps and profile visits as well as the
+   * link. **Deliberately not read.** A conversion rate built on it is
+   * meaningless and does not look wrong.
+   */
   clicks?: number | null;
+  /**
+   * In-session link clicks — Meta's own "Link clicks" column, people the ad
+   * sent to the destination. This is the figure stored as `clicks`.
+   */
+  inlineLinkClicks?: number | null;
+  /** Meta's action counts; `link_click` is the fallback where the above is absent. */
+  actions?: Record<string, number> | null;
+}
+
+interface RawSchedule {
+  startDate?: string | null;
+  endDate?: string | null;
 }
 
 interface RawAd {
   _id?: string;
+  /** Meta's own ad id — what `{{ad.id}}` expands to. The one we key on. */
   platformAdId?: string;
   name?: string | null;
-  creativeUrl?: string | null;
-  startTime?: string | null;
-  endTime?: string | null;
-  metrics?: RawMetrics;
+  status?: string | null;
+  reviewStatus?: string | null;
+  creativeType?: string | null;
+  creative?: {
+    imageUrl?: string | null;
+    thumbnailUrl?: string | null;
+    mediaUrls?: string[] | null;
+  } | null;
+  schedule?: RawSchedule | null;
   daily?: ({ date?: string; day?: string } & RawMetrics)[];
+}
+
+interface RawCampaign {
+  platformCampaignId?: string;
+  campaignName?: string | null;
+  currency?: string | null;
+  /** Derived by the vendor from the campaign's ads. */
+  status?: string | null;
+  reviewStatus?: string | null;
+  /** Meta's own `effective_status` on the campaign: ACTIVE, PAUSED, DELETED… */
+  platformCampaignStatus?: string | null;
+  adSets?: { ads?: RawAd[] }[];
 }
 
 /**
@@ -554,10 +707,9 @@ interface RawConversionResult {
 }
 
 interface RawTree {
-  campaigns?: {
-    currency?: string;
-    adSets?: { ads?: RawAd[] }[];
-  }[];
+  campaigns?: RawCampaign[];
+  pagination?: { page?: number; pages?: number };
+  backfillPending?: boolean;
 }
 
 /**
@@ -575,6 +727,49 @@ function unusableReason(account: RawAdAccount): string | null {
   return null;
 }
 
+/**
+ * A campaign node, with the ads of every ad set under it read as its own.
+ *
+ * Meta's campaign carries no schedule of its own in the tree — the flight lives
+ * on the ad sets — so the campaign's is the span of its ads': the earliest
+ * start, and the latest end if every ad has one. A campaign with one ad still
+ * running open-ended is open-ended.
+ */
+function toReportedCampaign(raw: RawCampaign): ReportedCampaign {
+  const ads: ReportedAd[] = [];
+  for (const adSet of raw.adSets ?? []) {
+    for (const ad of adSet.ads ?? []) {
+      // Without Meta's own id an ad cannot be joined to a click and cannot be
+      // told apart from its siblings across syncs. The vendor's document id is
+      // not a substitute: `{{ad.id}}` never expands to it.
+      if (!ad.platformAdId) continue;
+      ads.push(toReportedAd(ad));
+    }
+  }
+
+  const starts = ads
+    .map((ad) => ad.signals.startsAt)
+    .filter((d): d is Date => d !== null);
+  const ends = ads.map((ad) => ad.signals.endsAt);
+  const openEnded = ends.length === 0 || ends.some((d) => d === null);
+
+  return {
+    externalCampaignId: raw.platformCampaignId!,
+    name: raw.campaignName ?? null,
+    signals: {
+      delivery: campaignDelivery(raw),
+      review: toReview(raw.reviewStatus),
+      startsAt: starts.length
+        ? new Date(Math.min(...starts.map((d) => d.getTime())))
+        : null,
+      endsAt: openEnded
+        ? null
+        : new Date(Math.max(...(ends as Date[]).map((d) => d.getTime()))),
+    },
+    ads,
+  };
+}
+
 function toReportedAd(ad: RawAd): ReportedAd {
   const days: ReportedAdDay[] = (ad.daily ?? [])
     .map((entry) => {
@@ -584,19 +779,121 @@ function toReportedAd(ad: RawAd): ReportedAd {
         day,
         spend: toMinorUnits(entry.spend ?? 0),
         impressions: toCount(entry.impressions),
-        clicks: toCount(entry.clicks),
+        clicks: toCount(linkClicks(entry)),
       } satisfies ReportedAdDay;
     })
     .filter((entry): entry is ReportedAdDay => entry !== null);
 
   return {
-    externalAdId: ad.platformAdId ?? ad._id ?? '',
+    externalAdId: ad.platformAdId!,
     name: ad.name ?? null,
-    creativeUrl: ad.creativeUrl ?? null,
-    startsAt: toDate(ad.startTime),
-    endsAt: toDate(ad.endTime),
+    format: toFormat(ad.creativeType),
+    creativeUrl: creativeUrlOf(ad),
+    signals: adSignals(ad),
     days,
   };
+}
+
+/**
+ * Link clicks, never "clicks (all)".
+ *
+ * `inlineLinkClicks` is Meta's "Link clicks" column. `actions.link_click` is
+ * the same act counted on the attribution window, and is the fallback where the
+ * first is absent. The vendor's bare `clicks` is not a fallback at any depth.
+ */
+function linkClicks(metrics: RawMetrics): number | null {
+  return metrics.inlineLinkClicks ?? metrics.actions?.link_click ?? null;
+}
+
+function adSignals(ad: RawAd): PlatformSignals {
+  return {
+    delivery: toDelivery(ad.status),
+    review: toReview(ad.reviewStatus),
+    startsAt: toDate(ad.schedule?.startDate),
+    endsAt: toDate(ad.schedule?.endDate),
+  };
+}
+
+/**
+ * A campaign's delivery, preferring Meta's own word for a deleted one.
+ *
+ * The vendor derives a campaign's `status` from its ads, so a campaign deleted
+ * in Ads Manager whose ads the vendor has not yet marked would still read as
+ * whatever they last were. Meta's `effective_status` on the campaign itself is
+ * authoritative about deletion and archiving, and about a pause at campaign
+ * level.
+ */
+function campaignDelivery(raw: RawCampaign): DeliverySignal {
+  switch (raw.platformCampaignStatus?.toUpperCase()) {
+    case 'DELETED':
+    case 'ARCHIVED':
+      return 'deleted';
+    case 'PAUSED':
+    case 'CAMPAIGN_PAUSED':
+      return 'paused';
+    default:
+      return toDelivery(raw.status);
+  }
+}
+
+/**
+ * The vendor's delivery status in our spelling.
+ *
+ * `cancelled` is how the vendor records a deleted ad or campaign — a soft
+ * delete that keeps its history, which is what `deleted` means here too. An
+ * unrecognised value is treated as `error` rather than `active`: an ad we cannot
+ * read is one a merchant should look at, not one we should say is fine.
+ */
+function toDelivery(status: string | null | undefined): DeliverySignal {
+  switch (status) {
+    case 'active':
+    case 'paused':
+    case 'pending_review':
+    case 'rejected':
+    case 'completed':
+    case 'error':
+      return status;
+    case 'cancelled':
+      return 'deleted';
+    default:
+      return 'error';
+  }
+}
+
+function toReview(status: string | null | undefined): ReviewSignal | null {
+  switch (status) {
+    case 'in_review':
+    case 'approved':
+    case 'rejected':
+    case 'with_issues':
+      return status;
+    default:
+      return null;
+  }
+}
+
+/** A document-format creative is a LinkedIn format, and has no place here. */
+function toFormat(type: string | null | undefined): ReportedAdFormat | null {
+  return type === 'image' || type === 'video' || type === 'carousel'
+    ? type
+    : null;
+}
+
+/**
+ * The picture an ad is recognised by.
+ *
+ * The full-size image first. A carousel's first card after that, and the
+ * thumbnail last — it is the poster frame of a video ad, and for an ad Meta's
+ * moderation stripped it can be all that is left, at 64 pixels square.
+ */
+function creativeUrlOf(ad: RawAd): string | null {
+  const creative = ad.creative;
+  return (
+    creative?.imageUrl ||
+    creative?.mediaUrls?.find(Boolean) ||
+    creative?.thumbnailUrl ||
+    null
+  );
 }
 
 function toDate(value: string | null | undefined): Date | null {

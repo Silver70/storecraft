@@ -21,8 +21,10 @@ import { adPlatformEnum } from './ad-platform-connections.schema';
  * status: a Campaign is the platform's campaign, so the only way to change what
  * it is doing is to ask the platform to, and the next sync reports the answer.
  * The platform describes a campaign on three separate axes — delivery, review
- * and schedule — and the collapse from those onto this set happens once, at the
- * adapter edge, so nothing above it ever reads a vendor's spelling.
+ * and schedule. The adapter translates the vendor's spellings of them at the
+ * edge, and the collapse onto this set happens once, in
+ * `ad-platform/utils/platform-status.util.ts`, so nothing reads a vendor's
+ * vocabulary and no two places can disagree about precedence.
  *
  * `ended` covers a finished schedule and a campaign deleted on the platform
  * alike. Neither is hidden: an ended campaign spent money, and its history has

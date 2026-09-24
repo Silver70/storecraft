@@ -81,6 +81,18 @@ export const ads = pgTable(
      * cannot be measured until it does.
      */
     hasLinkTags: boolean('has_link_tags').notNull().default(false),
+    /**
+     * When the sync read this Ad's link tags from the platform, or null if it
+     * has not yet.
+     *
+     * Tags are read once per Ad, on discovery, because each read is a call of
+     * its own against a quota shared with every customer of the provider — and
+     * an Ad's tags do not change behind our back: the platform rebuilds the
+     * creative to change them, which is a write made from here. Null is also
+     * how a read that failed is retried on the next sync rather than recorded
+     * as "untagged" for good.
+     */
+    linkTagsCheckedAt: timestamp('link_tags_checked_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },

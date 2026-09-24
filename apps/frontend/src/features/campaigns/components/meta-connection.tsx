@@ -231,8 +231,10 @@ export function MetaConnectionSummary({
     // A refusal arrives in the response rather than as an error, so a vendor
     // outage costs this page freshness and not the page.
     onSuccess: (outcomes) => {
-      const failure = outcomes.find((outcome) => outcome.status === "failed");
-      setNote(failure?.message ?? "Up to date.");
+      // A partial sync carries a sentence too: history still arriving is not
+      // "up to date", and saying so would make the missing days look final.
+      const notice = outcomes.find((outcome) => outcome.status !== "synced");
+      setNote(notice?.message ?? "Up to date.");
       void invalidate();
     },
     onError: (err: Error) => setError(err.message),

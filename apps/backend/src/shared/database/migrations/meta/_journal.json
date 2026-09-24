@@ -204,6 +204,13 @@
       "when": 1790186173445,
       "tag": "0028_server_side_purchase_events",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1790238284471,
+      "tag": "0029_sync_campaigns_ads_and_figures",
+      "breakpoints": true
     }
   ]
 }

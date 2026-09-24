@@ -9,12 +9,14 @@ import type {
   BeginConnectionResult,
   CompleteConnectionInput,
   ConnectionGrant,
+  CreativeFile,
   EnsurePixelInput,
   FetchAdTreeInput,
   GrantedAccount,
   IssueCredentialInput,
   ProviderHealth,
   PurchaseEvent,
+  ReadLinkTagsInput,
   SendPurchaseInput,
   StoreCredential,
 } from '../../src/modules/ad-platform/interfaces/ad-platform-provider.interface';
@@ -78,6 +80,12 @@ export interface PurchaseRecord {
   event: PurchaseEvent;
 }
 
+/** One ad whose link tags the sync asked for. */
+export interface TagReadRecord {
+  providerRef: string;
+  externalAdId: string;
+}
+
 /** What the merchant approved at the platform, and what it can see. */
 interface Approval {
   providerAccountRef: string;
@@ -120,8 +128,25 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
   readonly fetched: FetchRecord[] = [];
   readonly purchases: PurchaseRecord[] = [];
 
-  /** What the platform will say is running, keyed `providerRef:platform`. */
+  readonly tagReads: TagReadRecord[] = [];
+  /** Every creative URL the sync fetched, in order. */
+  readonly creativeFetches: string[] = [];
+
+  /**
+   * What the platform will say is on each ad account, keyed by the ad
+   * account's id — which a test knows before it connects, so the tree can be
+   * in place for the backfill that connecting runs.
+   */
   private readonly trees = new Map<string, AdTree>();
+
+  /** Each ad's stored link tags, keyed by the ad's platform id. */
+  private readonly linkTags = new Map<string, string | null>();
+
+  /** Makes creative downloads fail — a CDN link that has already expired. */
+  failCreatives = false;
+
+  /** Makes link-tag reads fail, independently of the tree read. */
+  failTagReads = false;
 
   /** Makes the next provider call fail, the way a vendor outage would. */
   failNext: Error | null = null;
@@ -171,9 +196,19 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     this.existingPixels.set(externalAccountId, pixelId);
   }
 
-  /** Says what the platform will report for this account. */
-  setAdTree(providerRef: string, platform: AdPlatform, tree: AdTree): void {
-    this.trees.set(`${providerRef}:${platform}`, tree);
+  /** Says what the platform will report for this ad account. */
+  setAdTree(externalAccountId: string, tree: AdTree): void {
+    this.trees.set(externalAccountId, tree);
+  }
+
+  /** Says what link tags an ad carries on the platform. Untagged by default. */
+  setLinkTags(externalAdId: string, urlTags: string | null): void {
+    this.linkTags.set(externalAdId, urlTags);
+  }
+
+  /** How many times the sync asked for one ad's tags. */
+  tagReadsFor(externalAdId: string): number {
+    return this.tagReads.filter((r) => r.externalAdId === externalAdId).length;
   }
 
   /** The credential issued for a store, as a test that seeded one can find it. */
@@ -187,6 +222,11 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     this.disconnected.length = 0;
     this.revoked.length = 0;
     this.fetched.length = 0;
+    this.tagReads.length = 0;
+    this.creativeFetches.length = 0;
+    this.linkTags.clear();
+    this.failCreatives = false;
+    this.failTagReads = false;
     this.pixels.length = 0;
     this.purchases.length = 0;
     this.approvals.clear();
@@ -313,11 +353,40 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     });
 
     return Promise.resolve(
-      this.trees.get(`${input.credential.providerRef}:${input.platform}`) ?? {
-        currency: 'USD',
-        ads: [],
+      this.trees.get(input.externalAccountId) ?? {
+        currency: null,
+        campaigns: [],
+        complete: true,
       },
     );
+  }
+
+  readLinkTags(input: ReadLinkTagsInput): Promise<string | null> {
+    this.maybeFail();
+    this.tagReads.push({
+      providerRef: input.credential.providerRef,
+      externalAdId: input.externalAdId,
+    });
+    if (this.failTagReads) {
+      return Promise.reject(new Error('tag read refused'));
+    }
+    return Promise.resolve(this.linkTags.get(input.externalAdId) ?? null);
+  }
+
+  /**
+   * Answers with a few bytes of "image" per URL, so a test can tell which
+   * creative landed where by the stored key rather than by the content.
+   */
+  fetchCreative(url: string): Promise<CreativeFile> {
+    this.maybeFail();
+    this.creativeFetches.push(url);
+    if (this.failCreatives) {
+      return Promise.reject(new Error('creative link expired'));
+    }
+    return Promise.resolve({
+      body: Buffer.from(`image:${url}`),
+      contentType: 'image/jpeg',
+    });
   }
 
   /**

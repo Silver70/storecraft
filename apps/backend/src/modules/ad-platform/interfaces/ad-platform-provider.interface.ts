@@ -191,41 +191,136 @@ export interface ReportedAdDay {
   /** In minor units of the tree's currency. */
   readonly spend: number;
   readonly impressions: number;
+  /**
+   * Link clicks — people the ad sent to the destination. Not the platform's
+   * "clicks (all)", which counts likes and image taps too and would make every
+   * conversion rate built on it meaningless without looking wrong.
+   */
   readonly clicks: number;
 }
+
+/**
+ * What the platform says about whether something is delivering — the first of
+ * the three separate axes a Campaign or an Ad is described on.
+ *
+ * Neutral spellings of the platform's own states, translated at the adapter
+ * edge so nothing above it reads a vendor's vocabulary. `deleted` is a real
+ * state rather than an absence: an object deleted on the platform keeps its
+ * history there, and here.
+ */
+export type DeliverySignal =
+  | 'active'
+  | 'paused'
+  | 'pending_review'
+  | 'rejected'
+  | 'completed'
+  | 'deleted'
+  | 'error';
+
+/**
+ * The platform's review verdict — the second axis, reported independently of
+ * delivery. An ad can be delivering while its campaign is still in review, and a
+ * rejected ad is distinguishable from a healthy one only here.
+ */
+export type ReviewSignal =
+  | 'in_review'
+  | 'approved'
+  | 'rejected'
+  | 'with_issues';
+
+/**
+ * The platform's separate signals about one Campaign or Ad, before they are
+ * collapsed into the five statuses a merchant reads.
+ *
+ * The collapse is not done here because the third axis, the schedule, needs
+ * *now* — and the adapter is not the place a clock is read. See
+ * `platform-status.util.ts`, which is the one place it happens.
+ */
+export interface PlatformSignals {
+  readonly delivery: DeliverySignal;
+  /** Null where the platform reports no review signal at all. */
+  readonly review: ReviewSignal | null;
+  /**
+   * When the platform says it runs. Either may be absent — anything still
+   * delivering routinely has a start and no end.
+   */
+  readonly startsAt: Date | null;
+  readonly endsAt: Date | null;
+}
+
+/** How an ad's creative is built, in the vocabulary Ads are stored in. */
+export type ReportedAdFormat = 'image' | 'video' | 'carousel';
 
 /**
  * One ad at the platform, with every day of the requested range it reported.
  *
  * The descriptive fields are here because a platform ad id recognises nothing.
- * The name, the creative and the flight are what let a merchant tell which of
+ * The name, the creative and the format are what let a merchant tell which of
  * their own ads a row is about.
  */
 export interface ReportedAd {
-  /** The ad's id at the platform. The key everything about it is held under. */
+  /**
+   * The ad's id at the platform — Meta's own, not the provider's document id —
+   * because it is what `utm_content={{ad.id}}` expands to on a click, and the
+   * join from an Order to its Ad is an equality on it.
+   */
   readonly externalAdId: string;
   readonly name: string | null;
-  /** The creative, as a URL the platform hosts. Null where it offers none. */
-  readonly creativeUrl: string | null;
+  /** Null where the platform has not classified it. */
+  readonly format: ReportedAdFormat | null;
   /**
-   * When the platform says the ad ran. Either may be absent — platforms
-   * routinely report a start and no end for anything still delivering.
+   * The creative, as a URL the platform hosts. Signed, and expiring within
+   * about a day, so it is copied into our own storage on first sight and never
+   * stored as it is. Null where the platform offers none.
    */
-  readonly startsAt: Date | null;
-  readonly endsAt: Date | null;
+  readonly creativeUrl: string | null;
+  readonly signals: PlatformSignals;
   readonly days: readonly ReportedAdDay[];
 }
 
 /**
- * What the platform says is running and what it says each ad did.
+ * One campaign at the platform, with its ads read as its own whichever ad set
+ * they sit in — the ad set level is not modelled.
+ */
+export interface ReportedCampaign {
+  /** What `utm_campaign={{campaign.id}}` expands to on a click. */
+  readonly externalCampaignId: string;
+  readonly name: string | null;
+  readonly signals: PlatformSignals;
+  readonly ads: readonly ReportedAd[];
+}
+
+/**
+ * What the platform says is on the ad account and what each ad did.
  *
  * `currency` is the ad account's own, and on a connected account it is the
  * Store's — the connection refuses any other, so nothing downstream ever has a
- * rate to apply or a mismatch to explain.
+ * rate to apply or a mismatch to explain. Null when the platform reported no
+ * campaign to read it from.
  */
 export interface AdTree {
-  readonly currency: string;
-  readonly ads: readonly ReportedAd[];
+  readonly currency: string | null;
+  readonly campaigns: readonly ReportedCampaign[];
+  /**
+   * False when the platform says part of the requested range is still being
+   * gathered — which it does for a while after a first connection.
+   *
+   * What did arrive is still worth writing, but the sync must not count the
+   * range as covered: every later sync asks only for a trailing window, so a
+   * range recorded as done while half-empty would stay half-empty for good.
+   */
+  readonly complete: boolean;
+}
+
+export interface ReadLinkTagsInput extends GrantedAccount {
+  /** The ad's id at the platform. */
+  readonly externalAdId: string;
+}
+
+/** A creative's bytes, fetched from wherever the platform hosts them. */
+export interface CreativeFile {
+  readonly body: Buffer;
+  readonly contentType: string;
 }
 
 /**
@@ -357,6 +452,26 @@ export interface AdPlatformProvider {
    * idempotency that makes it safe is enforced above, in the write.
    */
   fetchAdTree(input: FetchAdTreeInput): Promise<AdTree>;
+
+  /**
+   * The link tags on one ad, as the platform stores them — an `&`-joined query
+   * string with the platform's macros unexpanded — or null where it has none.
+   *
+   * A pure read, asked once per ad when the sync first sees it: it is one call
+   * per ad against a shared quota, and an ad's tags only change when something
+   * rebuilds its creative.
+   */
+  readLinkTags(input: ReadLinkTagsInput): Promise<string | null>;
+
+  /**
+   * The bytes behind a creative URL the tree reported.
+   *
+   * On the interface rather than a bare `fetch` in the sync because it reaches
+   * the network, and this seam is where the suite swaps the network out. It
+   * carries no credential: the platform's image links are signed on their own,
+   * and a Store's key has no business travelling to a CDN.
+   */
+  fetchCreative(url: string): Promise<CreativeFile>;
 
   /**
    * Reports one purchase to the ad account's Pixel.

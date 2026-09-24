@@ -7,6 +7,7 @@ import { AdminAdPlatformController } from './controllers/admin-ad-platform.contr
 import { AdPlatformCallbackController } from './controllers/ad-platform-callback.controller';
 import { AdPlatformConnectionRepository } from './repositories/ad-platform-connection.repository';
 import { AdPlatformCredentialRepository } from './repositories/ad-platform-credential.repository';
+import { CampaignMirrorRepository } from './repositories/campaign-mirror.repository';
 import { PurchaseEventDispatchRepository } from './repositories/purchase-event-dispatch.repository';
 import { AdPlatformConnectionService } from './services/ad-platform-connection.service';
 import { AdPlatformSyncService } from './services/ad-platform-sync.service';
@@ -15,6 +16,7 @@ import { MeasurementService } from './services/measurement.service';
 import { PurchaseEventService } from './services/purchase-event.service';
 import { PurchaseEventHandler } from './services/purchase-event.handler';
 import { MeasurementResolver } from './resolvers/measurement.resolver';
+import { R2StorageService } from '../../shared/storage/r2-storage.service';
 
 /**
  * A Store's access to the ad platforms it advertises on.
@@ -30,11 +32,13 @@ import { MeasurementResolver } from './resolvers/measurement.resolver';
  * platform's day is resolved in — the merchant's day, which is the day the
  * platform is reporting.
  *
- * **Nothing here writes a Campaign, an Ad or a figure yet.** The sync reads
- * the ad tree and records how it went; writing what it read — discovered
- * Campaigns and Ads, their status, and each Ad's daily spend, impressions and
- * clicks into `ad_daily_figures` — is the sync's next job, keyed by the
- * platform's own ids rather than by a tag a merchant had to paste correctly.
+ * **The sync is the only writer of what the platform reports.** Campaigns and
+ * Ads discovered on the ad account, their status, whether each Ad carries our
+ * Link Tags, a copy of each creative, and each Ad's daily spend, impressions
+ * and link clicks in `ad_daily_figures` — all keyed by the platform's own ids
+ * rather than by a tag a merchant had to paste correctly, and all written by
+ * `CampaignMirrorRepository`. Object storage is provided here for the creative
+ * copies, as the product module provides it for product media.
  *
  * Measurement flows the other way from the same seam. `MeasurementService`
  * answers the storefront's question about which Pixel to load, and
@@ -57,7 +61,9 @@ import { MeasurementResolver } from './resolvers/measurement.resolver';
     CredentialVault,
     AdPlatformConnectionRepository,
     AdPlatformCredentialRepository,
+    CampaignMirrorRepository,
     PurchaseEventDispatchRepository,
+    R2StorageService,
     AdPlatformConnectionService,
     AdPlatformSyncService,
     MeasurementService,

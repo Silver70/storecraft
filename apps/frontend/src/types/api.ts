@@ -102,11 +102,15 @@ export type AdAccountChoice = {
 // than as an error, which is why the button can say what happened.
 export type AdPlatformSyncOutcome = {
   platform: AdPlatform;
-  status: "synced" | "failed";
+  // "partial": figures were written but the platform is still gathering the
+  // range, so it is retried like a failure without being one.
+  status: "synced" | "partial" | "failed";
   from: string;
   to: string;
   backfill: boolean;
   message: string | null;
+  campaignsDiscovered: number;
+  adsDiscovered: number;
 };
 
 // ─── Organizations ────────────────────────────────────────────────────────────

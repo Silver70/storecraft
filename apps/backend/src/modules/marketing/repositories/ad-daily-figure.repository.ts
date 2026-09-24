@@ -16,9 +16,9 @@ export interface AdFigures {
  * Reads the platform's per-Ad daily figures. Scoped to one Organization and
  * Store on every read, like everything else tenant-owned.
  *
- * Nothing writes this table yet; the sync will. Reading it now gives the report
- * its final shape, so the figures appear the day they start arriving rather
- * than the day someone remembers to add them.
+ * Read-only here. The sync is the table's only writer
+ * (`ad-platform/repositories/campaign-mirror.repository.ts`), so a figure on
+ * the page is always one the platform reported and never one typed in.
  */
 @Injectable()
 export class AdDailyFigureRepository {

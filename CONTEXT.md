@@ -106,7 +106,9 @@ an Order's Last Touch to a Campaign and an Ad; an id never changes on a rename,
 where a name would. Written on every Ad created here. A discovered Campaign whose
 Ads lack them is **Not Tracked** — its revenue is unknown rather than zero —
 until the merchant chooses to have them written, which the platform treats as a
-new creative and sends back through review.
+new creative and sends back through review. A Campaign is **Tracked** only when
+it has Ads and every one of them carries ours; a discovered Ad's tags are read
+once, when the Sync first sees it.
 _Avoid_: Tracking tags (the vendor's name for a pixel), UTM template, Ad Tag,
 Tagged Link
 
@@ -214,6 +216,18 @@ is durable: a merchant who closes the tab, or picks an account that is refused,
 does not go back through the platform's approval screen. Disconnected, never
 deleted, so revoking access cannot rewrite the reports it produced.
 _Avoid_: Integration, app, install, linked account
+
+**Sync**:
+Reading a Store's connected Ad Account into Campaigns, Ads and each Ad's daily
+Spend, Impressions and Clicks — hourly, on Refresh, and once as part of
+connecting, which reaches back over the history the platform offers. The only
+writer of what the platform reports. It re-reads the last week every time,
+because the platform restates recent days, and running it twice changes
+nothing. A Campaign on the account with no row here is simply inserted; one the
+platform stops reporting reads Ended and keeps its history. The one part of the
+feature that is slow or fails, so it never sits in a read: a failure is recorded
+on the connection and shown beside the figures already held.
+_Avoid_: Import, ingest, claim, refresh job
 
 **Ad Platform Provider**:
 The interface every reach for an ad platform goes through, and the only place
