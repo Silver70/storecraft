@@ -17,6 +17,7 @@
  * `attributed-revenue.util.spec.ts`.
  */
 import type { INestApplication } from '@nestjs/common';
+import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import {
@@ -614,6 +615,81 @@ describe('Campaigns keyed by the platform (e2e)', () => {
           hasLinkTags: true,
         }),
       ]);
+    });
+
+    it('shows a Campaign with no Cover of its own by its biggest spender’s creative', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [
+        SUMMER_VIDEO_EXT,
+        SUMMER_STILL_EXT,
+      ]);
+      await db
+        .update(ads)
+        .set({ creativeUrl: 'https://cdn.test/video.jpg' })
+        .where(eq(ads.id, summer.ads[SUMMER_VIDEO_EXT]));
+      await db
+        .update(ads)
+        .set({ creativeUrl: 'https://cdn.test/still.jpg' })
+        .where(eq(ads.id, summer.ads[SUMMER_STILL_EXT]));
+      // The still outspent the video over its life, though not in the period.
+      await seedFigures(summer.ads[SUMMER_VIDEO_EXT], dayAgo(2), {
+        spend: 30_00,
+        impressions: 100,
+        clicks: 1,
+      });
+      await seedFigures(summer.ads[SUMMER_STILL_EXT], dayAgo(60), {
+        spend: 80_00,
+        impressions: 100,
+        clicks: 1,
+      });
+
+      expect(lineFor(await readReport(), summer.id)!.coverUrl).toBe(
+        'https://cdn.test/still.jpg',
+      );
+
+      // A Cover of its own always wins.
+      await db
+        .update(campaigns)
+        .set({ coverUrl: 'https://cdn.test/own.jpg' })
+        .where(eq(campaigns.id, summer.id));
+      expect(lineFor(await readReport(), summer.id)!.coverUrl).toBe(
+        'https://cdn.test/own.jpg',
+      );
+    });
+
+    it('says when an Ended Campaign stopped, and nothing for a running one', async () => {
+      const running = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+      const scheduled = await seedCampaign(SPRING_EXT, [SPRING_VIDEO_EXT], {
+        status: 'ended',
+      });
+      const endsAt = new Date(daysAgo(45));
+      await db
+        .update(campaigns)
+        .set({ endsAt })
+        .where(eq(campaigns.id, scheduled.id));
+      // Deleted on the platform with no end of its own: it stopped on the last
+      // day it reported anything.
+      const deleted = await seedCampaign(
+        '120200000000000003',
+        ['120210000000000009'],
+        { status: 'ended' },
+      );
+      await seedFigures(deleted.ads['120210000000000009'], dayAgo(40), {
+        spend: 5_00,
+        impressions: 10,
+        clicks: 0,
+      });
+      await seedFigures(deleted.ads['120210000000000009'], dayAgo(12), {
+        spend: 5_00,
+        impressions: 10,
+        clicks: 0,
+      });
+
+      const report = await readReport();
+      expect(lineFor(report, running.id)!.endedAt).toBeNull();
+      expect(lineFor(report, scheduled.id)!.endedAt).toBe(endsAt.toISOString());
+      expect(lineFor(report, deleted.id)!.endedAt).toBe(
+        `${dayAgo(12)}T00:00:00.000Z`,
+      );
     });
 
     it('defaults the link-tags flag to absent', async () => {

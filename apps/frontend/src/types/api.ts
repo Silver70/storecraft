@@ -511,7 +511,13 @@ export type CampaignRevenueLine = RevenueBucket &
     status: CampaignStatus;
     startsAt: string | null;
     endsAt: string | null;
+    /** Its own cover, or else the creative of the ad that spent the most. */
     coverUrl: string | null;
+    /**
+     * When an ended campaign stopped, over its whole life. Null while it runs,
+     * and for one that ended without ever reporting a figure.
+     */
+    endedAt: string | null;
     /** False means Not Tracked: revenue is unknown, not zero. */
     hasLinkTags: boolean;
     /** Every ad of the campaign; with `unassigned` they add up to this line. */

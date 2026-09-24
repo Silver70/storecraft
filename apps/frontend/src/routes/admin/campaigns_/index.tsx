@@ -5,6 +5,7 @@ import {
   attributedRevenueQueryOptions,
 } from "~/features/campaigns/queries";
 import { CampaignsPage } from "~/features/campaigns/pages/campaigns-page";
+import { GRID_PERIOD } from "~/features/campaigns/utils";
 
 export const Route = createFileRoute("/admin/campaigns_/")({
   // Meta returns the merchant here when they finish approving, so the page has
@@ -22,7 +23,9 @@ export const Route = createFileRoute("/admin/campaigns_/")({
   loader: ({ context }) =>
     Promise.all([
       context.queryClient.ensureQueryData(adPlatformConnectionsQueryOptions()),
-      context.queryClient.ensureQueryData(attributedRevenueQueryOptions("30d")),
+      context.queryClient.ensureQueryData(
+        attributedRevenueQueryOptions(GRID_PERIOD),
+      ),
     ]),
   component: CampaignsPage,
 });

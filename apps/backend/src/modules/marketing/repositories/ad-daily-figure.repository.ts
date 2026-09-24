@@ -65,4 +65,47 @@ export class AdDailyFigureRepository {
       ]),
     );
   }
+
+  /**
+   * Each Ad's whole history in one line: everything the platform ever charged
+   * for it, and the last day it reported anything. An Ad with no rows at all is
+   * absent from the map.
+   *
+   * What a Campaign is recognised by and when it stopped are questions about
+   * its whole life, not about whichever period a report happens to cover.
+   */
+  async lifetimeByAd(
+    orgId: string,
+    storeId: string,
+  ): Promise<Map<string, AdLifetime>> {
+    const rows = await this.db
+      .select({
+        adId: adDailyFigures.adId,
+        spend: sql<number>`coalesce(sum(${adDailyFigures.spend}), 0)::bigint`,
+        lastDay: sql<string>`max(${adDailyFigures.day})::text`,
+      })
+      .from(adDailyFigures)
+      .where(
+        and(
+          eq(adDailyFigures.organizationId, orgId),
+          eq(adDailyFigures.storeId, storeId),
+        ),
+      )
+      .groupBy(adDailyFigures.adId);
+
+    return new Map(
+      rows.map((row) => [
+        row.adId,
+        { spend: Number(row.spend), lastDay: row.lastDay },
+      ]),
+    );
+  }
+}
+
+/** One Ad's whole history, reduced to what a Campaign's card needs from it. */
+export interface AdLifetime {
+  /** Everything the platform ever charged for the Ad, in minor units. */
+  spend: number;
+  /** The last `YYYY-MM-DD` the platform reported a figure for it. */
+  lastDay: string;
 }

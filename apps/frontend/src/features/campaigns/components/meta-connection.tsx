@@ -225,6 +225,9 @@ export function MetaConnectionSummary({
   const [error, setError] = React.useState<string | null>(null);
 
   const gone = connection.status === "disconnected";
+  // Said on the header line, not only behind it: a merchant who never opens
+  // the panel still has to be able to tell stale figures from live ones.
+  const failing = !gone && connection.lastSyncError !== null;
 
   const sync = useMutation({
     mutationFn: () => syncAdPlatformServerFn({ data: { platform: "meta" } }),
@@ -252,10 +255,17 @@ export function MetaConnectionSummary({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+          className={cn(
+            "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs hover:bg-muted/60",
+            failing
+              ? "text-amber-700 dark:text-amber-400"
+              : "text-muted-foreground hover:text-foreground",
+          )}
         >
           {gone ? (
             <UnlinkIcon className="h-3 w-3" />
+          ) : failing ? (
+            <AlertCircleIcon className="h-3 w-3" />
           ) : (
             <CheckCircle2Icon className="h-3 w-3" />
           )}
@@ -263,6 +273,7 @@ export function MetaConnectionSummary({
             Meta · {connection.accountName ?? connection.accountId}
             {" · "}
             {gone ? "disconnected" : freshness(connection)}
+            {failing && " · last refresh failed"}
           </span>
         </button>
       </PopoverTrigger>

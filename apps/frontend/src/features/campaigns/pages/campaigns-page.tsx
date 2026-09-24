@@ -1,18 +1,16 @@
 import * as React from "react";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
-import { MegaphoneIcon } from "lucide-react";
+import { MegaphoneIcon, SearchIcon } from "lucide-react";
 
 import { Card } from "~/components/ui/card";
-import type { AttributedRevenueReport, Period } from "~/types/api";
+import { Input } from "~/components/ui/input";
+import type { AdPlatformConnection } from "~/types/api";
 import {
   adPlatformConnectionsQueryOptions,
   attributedRevenueQueryOptions,
 } from "../queries";
-import {
-  CampaignSection,
-  UnattributedCard,
-} from "../components/campaign-cards";
+import { CampaignCard } from "../components/campaign-cards";
 import {
   AdAccountPicker,
   ConnectMetaEmptyState,
@@ -20,33 +18,24 @@ import {
   MetaConnectionSummary,
   metaConnection,
 } from "../components/meta-connection";
+import { GRID_PERIOD, arrangeGrid } from "../utils";
 
 const route = getRouteApi("/admin/campaigns_/");
 
 /**
  * Which campaigns are running, and how much money each one made.
  *
- * Every campaign here is one on the store's connected ad account, and every
- * order is credited to the latest ad click by the platform ids its link
- * carried. One period governs everything below it, so two figures on screen
- * are never from two different windows.
+ * A card per campaign and nothing else: no summary strip, no filters, no date
+ * controls. Every card reports the same fixed window, stated once at the top,
+ * so any two can be compared. Everything a card leaves out is on the
+ * campaign's own page.
  */
 export function CampaignsPage() {
-  const [period, setPeriod] = React.useState<Period>("30d");
   const search = route.useSearch();
-
-  // The selector re-keys the report query, which suspends. Inside a transition
-  // React keeps the current figures on screen until the new ones arrive rather
-  // than dropping the page to the route's fallback — a period switch should
-  // read as the numbers changing, not as the page reloading.
-  const [pending, startTransition] = React.useTransition();
 
   const connection = metaConnection(
     useSuspenseQuery(adPlatformConnectionsQueryOptions()).data,
   );
-  const report: AttributedRevenueReport = useSuspenseQuery(
-    attributedRevenueQueryOptions(period),
-  ).data;
 
   // Before a connection the whole page is one empty state with one button.
   // There is nothing else here yet that is true: every campaign on this page is
@@ -54,7 +43,7 @@ export function CampaignsPage() {
   if (!connection) {
     return (
       <div className="space-y-6 pb-10">
-        <Header />
+        <Title />
         {search.ad_platform_result && (
           <ConnectionResultNote result={search.ad_platform_result} />
         )}
@@ -69,7 +58,7 @@ export function CampaignsPage() {
   if (connection.status === "awaiting_account") {
     return (
       <div className="space-y-6 pb-10">
-        <Header />
+        <Title />
         {search.ad_platform_result && (
           <ConnectionResultNote result={search.ad_platform_result} />
         )}
@@ -80,11 +69,10 @@ export function CampaignsPage() {
 
   return (
     <div className="space-y-6 pb-10">
-      {/* ── Header ────────────────────────────────────────────────────────── */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <Header />
-
-        {/* Whose account these figures came from, and how fresh they are. */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <Title showWindow />
+        {/* Whose account these figures came from, how fresh they are, and
+            whether the last attempt to refresh them failed. */}
         <MetaConnectionSummary connection={connection} />
       </div>
 
@@ -92,108 +80,116 @@ export function CampaignsPage() {
         <ConnectionResultNote result={search.ad_platform_result} />
       )}
 
-      {/* ── The one period ────────────────────────────────────────────────── */}
-      <PeriodTabs
-        value={period}
-        onValueChange={(next) => startTransition(() => setPeriod(next))}
-      />
+      <CampaignGrid connection={connection} />
+    </div>
+  );
+}
 
-      <div
-        className={
-          pending ? "opacity-60 transition-opacity" : "transition-opacity"
-        }
-      >
-        {report.campaigns.length === 0 ? (
-          <EmptyStore />
-        ) : (
-          <div className="space-y-8">
-            {report.campaigns.map((line) => (
-              <CampaignSection
-                key={line.campaignId}
-                line={line}
-                lookbackDays={report.lookbackDays}
-              />
-            ))}
+/**
+ * The cards, and the search over them.
+ *
+ * The report is read from figures already stored, so a sync that failed an
+ * hour ago costs these cards freshness and nothing else — the header line says
+ * so, and the grid draws what it has.
+ */
+function CampaignGrid({ connection }: { connection: AdPlatformConnection }) {
+  const report = useSuspenseQuery(
+    attributedRevenueQueryOptions(GRID_PERIOD),
+  ).data;
 
-            <UnattributedCard
-              orders={report.unattributed.orders}
-              revenue={report.unattributed.revenue}
-              realizedRevenue={report.totals.revenue}
-            />
-          </div>
-        )}
+  const [query, setQuery] = React.useState("");
+  const [showOlder, setShowOlder] = React.useState(false);
+
+  const { shown, older } = React.useMemo(
+    () => arrangeGrid(report.campaigns, report.rangeStart, query),
+    [report.campaigns, report.rangeStart, query],
+  );
+
+  if (report.campaigns.length === 0) {
+    return <NoCampaignsYet connection={connection} />;
+  }
+
+  const visible = showOlder ? [...shown, ...older] : shown;
+
+  return (
+    <div className="space-y-5">
+      <div className="relative max-w-sm">
+        <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search campaigns"
+          aria-label="Search campaigns by name"
+          className="h-9 pl-9 text-sm"
+        />
       </div>
 
-      <p className="max-w-prose text-xs leading-relaxed text-muted-foreground">
-        Each order is credited to the latest ad click: the last visit if it came
-        from one of these campaigns, otherwise the first. Revenue counts paid,
-        processing, shipped and delivered orders — the same ones the dashboard
-        and analytics report.
-      </p>
-    </div>
-  );
-}
+      {visible.length > 0 ? (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {visible.map((line) => (
+            <CampaignCard key={line.campaignId} line={line} />
+          ))}
+        </div>
+      ) : (
+        older.length === 0 && (
+          <p className="py-10 text-center text-sm text-muted-foreground">
+            No campaign is called anything like &ldquo;{query.trim()}&rdquo;.
+          </p>
+        )
+      )}
 
-const PERIODS: { value: Period; label: string }[] = [
-  { value: "today", label: "Today" },
-  { value: "7d", label: "7 days" },
-  { value: "30d", label: "30 days" },
-  { value: "90d", label: "90 days" },
-];
-
-/** The one control left on this page, and the one that governs every figure. */
-function PeriodTabs({
-  value,
-  onValueChange,
-}: {
-  value: Period;
-  onValueChange: (next: Period) => void;
-}) {
-  return (
-    <div
-      role="tablist"
-      aria-label="Reporting period"
-      className="inline-flex items-center gap-1 rounded-lg border bg-muted/30 p-1"
-    >
-      {PERIODS.map((period) => (
+      {/* Older finished campaigns: out of the way, not gone. */}
+      {older.length > 0 && (
         <button
-          key={period.value}
           type="button"
-          role="tab"
-          aria-selected={period.value === value}
-          onClick={() => onValueChange(period.value)}
-          className={
-            period.value === value
-              ? "rounded-md bg-background px-3 py-1 text-xs font-medium shadow-sm"
-              : "rounded-md px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
-          }
+          onClick={() => setShowOlder((open) => !open)}
+          className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
         >
-          {period.label}
+          {showOlder
+            ? "Hide older campaigns"
+            : `Show older campaigns (${older.length})`}
         </button>
-      ))}
+      )}
     </div>
   );
 }
 
-/** The page's own title, on the screens that have nothing else on them yet. */
-function Header() {
+/**
+ * The page's title, and — once there are figures — the one window every card
+ * reports, said here so no card has to say it.
+ */
+function Title({ showWindow = false }: { showWindow?: boolean }) {
   return (
     <div>
       <h1 className="text-2xl font-semibold">Campaigns</h1>
-      <p className="max-w-prose text-sm text-muted-foreground">
-        The campaigns on your connected ad account, and what each one earned.
-      </p>
+      {showWindow && (
+        <p className="text-sm text-muted-foreground">
+          Revenue over the last 30 days
+        </p>
+      )}
     </div>
   );
 }
 
-/** No campaigns at all. */
-function EmptyStore() {
+/**
+ * Connected, and nothing on the account yet.
+ *
+ * Said outright rather than left as an empty page, which would read as the
+ * connection not working.
+ */
+function NoCampaignsYet({ connection }: { connection: AdPlatformConnection }) {
+  const account = connection.accountName ?? connection.accountId;
   return (
-    <Card className="flex flex-col items-center gap-2 py-16 text-center">
+    <Card className="flex flex-col items-center gap-2 px-6 py-16 text-center">
       <MegaphoneIcon className="h-8 w-8 text-muted-foreground/40" />
-      <p className="text-sm text-muted-foreground">
-        No campaigns yet. They appear here from your connected ad account.
+      <p className="text-sm font-medium">No campaigns yet</p>
+      <p className="max-w-md text-sm text-muted-foreground">
+        {connection.status === "disconnected"
+          ? `Meta is disconnected, and no campaigns were pulled from ${account} before it was.`
+          : connection.lastSyncedAt
+            ? `Meta is connected, and ${account} has no campaigns on it. Campaigns you create in Ads Manager appear here within the hour.`
+            : `Meta is connected. Campaigns on ${account} appear here once the first refresh finishes.`}
       </p>
     </Card>
   );

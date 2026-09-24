@@ -27,6 +27,7 @@ import {
   type CreditIndex,
   type RevenueBucket,
 } from '../utils/attributed-revenue.util';
+import { coverFor, endedAtFor } from '../utils/campaign-card.util';
 
 export type { AttributionPeriod };
 
@@ -75,7 +76,21 @@ export interface CampaignRevenueLine extends RevenueBucket, PlatformFigures {
   status: CampaignStatus;
   startsAt: string | null;
   endsAt: string | null;
+  /**
+   * The picture the Campaign is shown with: its own Cover, or failing that the
+   * creative of its Ad that has spent the most. Null only when no Ad has a
+   * creative on file.
+   */
   coverUrl: string | null;
+  /**
+   * When an Ended Campaign stopped — its scheduled end once passed, otherwise
+   * the last day any of its Ads reported a figure. Null for a Campaign that has
+   * not ended, and for one that ended without ever reporting a figure.
+   *
+   * Over the Campaign's whole life, not the period, so the grid can tell a
+   * campaign that finished last week from one that finished last year.
+   */
+  endedAt: string | null;
   /**
    * Tracked when true. When false the Campaign's revenue is **unknown, not
    * zero** — its Ads carry no Link Tags, so no Order could name them — and a
@@ -201,17 +216,19 @@ export class AttributedRevenueService {
     // Tenancy is enforced on every read. The credit rule is pure and will
     // faithfully match whatever index it is handed, so a Store's Campaigns
     // never meeting another Store's Orders is a property of this method.
-    const [campaignRows, adRows, orderRows, figures] = await Promise.all([
-      this.campaigns.findMany(orgId, storeId),
-      this.ads.findManyForStore(orgId, storeId),
-      this.attribution.findAttributableOrders(orgId, storeId, start, end),
-      this.figures.sumByAd(
-        orgId,
-        storeId,
-        dayInTimezone(start, timezone),
-        dayInTimezone(end, timezone),
-      ),
-    ]);
+    const [campaignRows, adRows, orderRows, figures, lifetime] =
+      await Promise.all([
+        this.campaigns.findMany(orgId, storeId),
+        this.ads.findManyForStore(orgId, storeId),
+        this.attribution.findAttributableOrders(orgId, storeId, start, end),
+        this.figures.sumByAd(
+          orgId,
+          storeId,
+          dayInTimezone(start, timezone),
+          dayInTimezone(end, timezone),
+        ),
+        this.figures.lifetimeByAd(orgId, storeId),
+      ]);
 
     const index: CreditIndex = {
       campaigns: new Map(campaignRows.map((c) => [c.externalId, c.id])),
@@ -235,8 +252,10 @@ export class AttributedRevenueService {
     const campaigns: CampaignRevenueLine[] = campaignRows
       .map((campaign) => {
         const bucket = tally.byCampaign.get(campaign.id) ?? EMPTY;
+        const ownAds = adRowsByCampaign.get(campaign.id) ?? [];
+        const endedAt = endedAtFor(campaign, ownAds, lifetime, end);
         const ads = adLinesFor(
-          adRowsByCampaign.get(campaign.id) ?? [],
+          ownAds,
           tally.adsByCampaign.get(campaign.id) ?? NO_ADS,
           figures,
         );
@@ -248,7 +267,8 @@ export class AttributedRevenueService {
           status: campaign.status,
           startsAt: campaign.startsAt?.toISOString() ?? null,
           endsAt: campaign.endsAt?.toISOString() ?? null,
-          coverUrl: campaign.coverUrl,
+          coverUrl: coverFor(campaign.coverUrl, ownAds, lifetime),
+          endedAt: endedAt?.toISOString() ?? null,
           hasLinkTags: campaign.hasLinkTags,
           orders: bucket.orders,
           revenue: bucket.revenue,
