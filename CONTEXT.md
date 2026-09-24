@@ -79,10 +79,13 @@ finest grain revenue is credited to.
 _Avoid_: Creative (that is the image, not the Ad), variant, ad unit, placement
 
 **Ad Set**:
-The platform's layer between a Campaign and its Ads, where the audience and
-sometimes the budget live. Not a thing here: a Campaign created here has exactly
-one, with the budget on the Campaign, and a discovered Campaign's Ads are read
-as its own whichever Ad Set they sit in.
+The platform's layer between a Campaign and its Ads, where the audience, the
+schedule and sometimes the budget live. Not a thing here: a Campaign created
+here has exactly one, with the budget on the Campaign, and a discovered
+Campaign's Ads are read as its own whichever Ad Set they sit in. Each Ad keeps
+its Ad Set's id only as a handle, because an end date is written to the Ad Set
+and a new Ad is added to one. A budget that lives on the Ad Sets is changed in
+Ads Manager, not here.
 _Avoid_: Ad group, audience, targeting
 
 **Creative**:

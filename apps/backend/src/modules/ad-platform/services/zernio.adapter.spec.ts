@@ -1,7 +1,9 @@
 import type { ConfigService } from '@nestjs/config';
 import {
   CampaignRejectedError,
+  ChangeRejectedError,
   CreateInFlightError,
+  type AddAdInput,
   type CampaignDraft,
   type CampaignDraftInput,
   type CreateCampaignInput,
@@ -752,5 +754,382 @@ describe('ZernioAdPlatformAdapter creating a campaign', () => {
     expect(check.complaints).toEqual([
       { adIndex: 0, field: 'media', message: 'The image is too small.' },
     ]);
+  });
+});
+
+describe('ZernioAdPlatformAdapter reading where a budget lives', () => {
+  const realFetch = global.fetch;
+  let fetchMock: jest.Mock;
+
+  beforeEach(() => {
+    fetchMock = jest.fn();
+    global.fetch = fetchMock;
+  });
+
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  const tree = (campaign: Record<string, unknown>) =>
+    json({
+      campaigns: [
+        {
+          platformCampaignId: '1200',
+          campaignName: 'Budgeted',
+          status: 'active',
+          adSets: [
+            {
+              platformAdSetId: '1210',
+              ads: [{ platformAdId: '1201', status: 'active' }],
+            },
+          ],
+          ...campaign,
+        },
+      ],
+      pagination: { page: 1, pages: 1 },
+    });
+
+  it('reads a daily campaign budget in minor units, and each ad’s ad set', async () => {
+    fetchMock.mockResolvedValueOnce(
+      tree({
+        budgetLevel: 'campaign',
+        campaignBudget: { amount: 75.5, type: 'daily' },
+      }),
+    );
+    const [campaign] = (
+      await new ZernioAdPlatformAdapter(config).fetchAdTree(input)
+    ).campaigns;
+
+    expect(campaign.budget).toEqual({ level: 'campaign', daily: 7550 });
+    expect(campaign.ads[0].externalAdSetId).toBe('1210');
+  });
+
+  it('has no daily figure for a budget on the ad sets', async () => {
+    fetchMock.mockResolvedValueOnce(tree({ budgetLevel: 'adset' }));
+    const [campaign] = (
+      await new ZernioAdPlatformAdapter(config).fetchAdTree(input)
+    ).campaigns;
+    expect(campaign.budget).toEqual({ level: 'ad_set', daily: null });
+  });
+
+  it('has no daily figure for a lifetime budget on the campaign', async () => {
+    fetchMock.mockResolvedValueOnce(
+      tree({
+        budgetLevel: 'campaign',
+        campaignBudget: { amount: 500, type: 'lifetime' },
+      }),
+    );
+    const [campaign] = (
+      await new ZernioAdPlatformAdapter(config).fetchAdTree(input)
+    ).campaigns;
+    expect(campaign.budget).toEqual({ level: 'campaign', daily: null });
+  });
+
+  it('says nothing about a budget the vendor did not describe', async () => {
+    fetchMock.mockResolvedValueOnce(tree({}));
+    const [campaign] = (
+      await new ZernioAdPlatformAdapter(config).fetchAdTree(input)
+    ).campaigns;
+    expect(campaign.budget).toEqual({ level: null, daily: null });
+  });
+});
+
+describe('ZernioAdPlatformAdapter editing a campaign', () => {
+  const realFetch = global.fetch;
+  let fetchMock: jest.Mock;
+
+  beforeEach(() => {
+    fetchMock = jest.fn();
+    global.fetch = fetchMock;
+  });
+
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  const account = {
+    credential: input.credential,
+    platform: 'meta' as const,
+    providerAccountRef: 'acc_1',
+  };
+  const adapter = () => new ZernioAdPlatformAdapter(config);
+  const sent = (call = 0) => {
+    const [url, init] = fetchMock.mock.calls[call] as [URL, RequestInit];
+    return {
+      url: url.toString(),
+      method: init.method,
+      body: JSON.parse(init.body as string) as Record<string, unknown>,
+    };
+  };
+
+  it('sends a daily budget in whole units, beside a rename, to the campaign', async () => {
+    fetchMock.mockResolvedValueOnce(json({ updated: 2 }));
+    await adapter().updateCampaign({
+      ...account,
+      externalCampaignId: '1200',
+      name: 'Winter sale',
+      dailyBudget: 4250,
+    });
+
+    const call = sent();
+    expect(call.method).toBe('PUT');
+    expect(call.url).toBe('https://vendor.test/api/v1/ads/campaigns/1200');
+    expect(call.body).toEqual({
+      platform: 'facebook',
+      accountId: 'acc_1',
+      name: 'Winter sale',
+      budget: { amount: 42.5, type: 'daily' },
+    });
+  });
+
+  it('sends a rename alone without touching the budget', async () => {
+    fetchMock.mockResolvedValueOnce(json({ updated: 1 }));
+    await adapter().updateCampaign({
+      ...account,
+      externalCampaignId: '1200',
+      name: 'Renamed',
+    });
+    expect(sent().body).not.toHaveProperty('budget');
+  });
+
+  it('reports Meta’s own words when it refuses the change', async () => {
+    fetchMock.mockResolvedValueOnce(
+      json(
+        {
+          error: 'Invalid parameter',
+          type: 'platform_error',
+          platformError: {
+            error_user_msg: 'Your budget is too low. The minimum is $1.00.',
+          },
+        },
+        400,
+      ),
+    );
+    await expect(
+      adapter().updateCampaign({
+        ...account,
+        externalCampaignId: '1200',
+        dailyBudget: 50,
+      }),
+    ).rejects.toThrow(
+      new ChangeRejectedError('Your budget is too low. The minimum is $1.00.'),
+    );
+  });
+
+  it('says a budget on the ad sets is changed in Ads Manager', async () => {
+    fetchMock.mockResolvedValueOnce(json({ error: 'ABO campaign' }, 409));
+    await expect(
+      adapter().updateCampaign({
+        ...account,
+        externalCampaignId: '1200',
+        dailyBudget: 5000,
+      }),
+    ).rejects.toThrow(/set on each of its ad sets/);
+  });
+
+  it('treats an outage as an outage, not as a refusal of the change', async () => {
+    fetchMock.mockResolvedValueOnce(json({ error: 'down' }, 503));
+    const failure = adapter().updateCampaign({
+      ...account,
+      externalCampaignId: '1200',
+      name: 'x',
+    });
+    await expect(failure).rejects.not.toBeInstanceOf(ChangeRejectedError);
+    await expect(failure).rejects.toThrow(/could not|refused the request/);
+  });
+
+  it('pauses a campaign, and counts only the echoed status as done', async () => {
+    fetchMock.mockResolvedValueOnce(json({ status: 'paused', updated: 0 }));
+    await adapter().setCampaignDelivery({
+      ...account,
+      externalCampaignId: '1200',
+      status: 'paused',
+    });
+    expect(sent()).toMatchObject({
+      method: 'PUT',
+      url: 'https://vendor.test/api/v1/ads/campaigns/1200/status',
+      body: { status: 'paused', platform: 'facebook' },
+    });
+
+    fetchMock.mockResolvedValueOnce(json({ updated: 0 }));
+    await expect(
+      adapter().setCampaignDelivery({
+        ...account,
+        externalCampaignId: '1200',
+        status: 'active',
+      }),
+    ).rejects.toBeInstanceOf(ChangeRejectedError);
+  });
+
+  it('switches one ad, and reports a skip as a refusal', async () => {
+    fetchMock.mockResolvedValueOnce(json({ updated: 1, skipped: 0 }));
+    await adapter().setAdDelivery({
+      ...account,
+      externalAdId: '1201',
+      status: 'paused',
+    });
+    expect(sent()).toMatchObject({
+      method: 'PUT',
+      url: 'https://vendor.test/api/v1/ads/1201/status',
+      body: { status: 'paused' },
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      json({ updated: 0, skipped: 1, message: 'Ad is rejected' }),
+    );
+    await expect(
+      adapter().setAdDelivery({
+        ...account,
+        externalAdId: '1201',
+        status: 'active',
+      }),
+    ).rejects.toThrow(new ChangeRejectedError('Ad is rejected'));
+  });
+
+  it('writes an end date to the ad set, and clears one with null', async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(json({ budgetLevel: 'adset' })),
+    );
+    await adapter().setAdSetEnd({
+      ...account,
+      externalAdSetId: '1210',
+      endsAt: new Date('2026-11-01T04:00:00Z'),
+    });
+    await adapter().setAdSetEnd({
+      ...account,
+      externalAdSetId: '1210',
+      endsAt: null,
+    });
+
+    expect(sent(0)).toMatchObject({
+      method: 'PUT',
+      url: 'https://vendor.test/api/v1/ads/ad-sets/1210',
+      body: {
+        platform: 'facebook',
+        platformSpecificData: { endDate: '2026-11-01T04:00:00.000Z' },
+      },
+    });
+    expect(sent(1).body).toEqual({
+      platform: 'facebook',
+      platformSpecificData: { endDate: null },
+    });
+  });
+});
+
+describe('ZernioAdPlatformAdapter adding an ad to a running campaign', () => {
+  const realFetch = global.fetch;
+  let fetchMock: jest.Mock;
+
+  beforeEach(() => {
+    fetchMock = jest.fn();
+    global.fetch = fetchMock;
+  });
+
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  const add: AddAdInput = {
+    credential: input.credential,
+    platform: 'meta',
+    providerAccountRef: 'acc_1',
+    externalAccountId: 'act_1',
+    externalAdSetId: '1210',
+    pixelId: 'px_1',
+    linkTags: LINK_TAGS,
+    idempotencyKey: 'add-1',
+    ad: {
+      name: 'Autumn sale · Ad 3',
+      media: { kind: 'image', url: 'https://cdn.test/c.jpg' },
+      primaryText: 'Fresh picture.',
+      headline: 'New in',
+      callToAction: 'shop_now',
+      destinationUrl: 'https://shop.test/products/coat',
+    },
+  };
+  const adapter = () => new ZernioAdPlatformAdapter(config);
+
+  it('attaches the ad to the ad set, carrying the link tags and the key', async () => {
+    fetchMock.mockResolvedValueOnce(
+      json(
+        {
+          ad: {
+            platformAdId: '1203',
+            platformAdSetId: '1210',
+            name: 'Autumn sale · Ad 3',
+            status: 'pending_review',
+            reviewStatus: 'in_review',
+            creativeType: 'image',
+          },
+        },
+        201,
+      ),
+    );
+
+    const created = await adapter().addAd(add);
+
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(url.toString()).toBe('https://vendor.test/api/v1/ads/create');
+    expect(init.headers).toMatchObject({ 'Idempotency-Key': 'add-1' });
+    expect(body).toMatchObject({
+      adSetId: '1210',
+      adName: 'Autumn sale · Ad 3',
+      imageUrl: 'https://cdn.test/c.jpg',
+      linkUrl: 'https://shop.test/products/coat',
+      tracking: {
+        pixelId: 'px_1',
+        urlTags: LINK_TAGS.map(({ key, value }) => ({ key, value })),
+      },
+    });
+    // Inherited from the ad set, so never sent: sending them is a 400.
+    for (const field of [
+      'budgetAmount',
+      'budgetType',
+      'goal',
+      'countries',
+      'creatives',
+    ]) {
+      expect(body).not.toHaveProperty(field);
+    }
+    expect(created).toMatchObject({
+      externalAdId: '1203',
+      externalAdSetId: '1210',
+      format: 'image',
+      signals: { delivery: 'pending_review', review: 'in_review' },
+    });
+  });
+
+  it('places Meta’s complaint on the ad', async () => {
+    fetchMock.mockResolvedValueOnce(
+      json(
+        {
+          error: 'Image too small',
+          param: 'imageUrl',
+          platformError: {
+            error_user_msg: 'Use an image at least 600px wide.',
+          },
+        },
+        422,
+      ),
+    );
+    const failure = adapter().addAd(add);
+    await expect(failure).rejects.toBeInstanceOf(CampaignRejectedError);
+    await expect(failure).rejects.toMatchObject({
+      complaints: [
+        {
+          adIndex: 0,
+          field: 'media',
+          message: 'Use an image at least 600px wide.',
+        },
+      ],
+    });
+  });
+
+  it('says so when the same add is still in flight', async () => {
+    fetchMock.mockResolvedValueOnce(json({ error: 'in progress' }, 409));
+    await expect(adapter().addAd(add)).rejects.toBeInstanceOf(
+      CreateInFlightError,
+    );
   });
 });

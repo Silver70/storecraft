@@ -439,10 +439,40 @@ export type Campaign = {
   startsAt: string | null;
   endsAt: string | null;
   coverUrl: string | null;
+  /**
+   * Where the budget lives at the platform. `ad_set` is a budget per ad set,
+   * which is changed in Ads Manager rather than here. Null until Meta has said.
+   */
+  budgetLevel: "campaign" | "ad_set" | null;
+  /**
+   * The daily budget on the campaign, in minor units. Null for a budget per ad
+   * set or a lifetime budget, neither of which can be changed here.
+   */
+  dailyBudget: number | null;
   /** Tracked when true. When false, revenue is unknown — never show it as zero. */
   hasLinkTags: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+/**
+ * What Edit can change, and nothing else: the audience, the goal and an ad's
+ * creative are deliberately absent. A field left out is left alone.
+ */
+export type UpdateCampaignInput = {
+  name?: string;
+  /** Per day, in minor units of the store's currency. */
+  dailyBudget?: number;
+  /** `YYYY-MM-DD` in the store's timezone, or null to run until paused. */
+  endDate?: string | null;
+};
+
+/** What adding an ad to a running campaign answered. */
+export type AddAdOutcome = {
+  adId: string;
+  externalId: string;
+  /** Whether the campaign is Tracked afterwards. */
+  tracked: boolean;
 };
 
 /** What Start tracking did to one ad. */

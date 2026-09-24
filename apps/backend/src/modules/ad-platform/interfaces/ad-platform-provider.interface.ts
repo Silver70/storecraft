@@ -274,6 +274,12 @@ export interface ReportedAd {
    * stored as it is. Null where the platform offers none.
    */
   readonly creativeUrl: string | null;
+  /**
+   * The platform's id for the Ad Set the ad sits in, or null where it did not
+   * say. Kept as a handle only, because the Ad Set holds what an edit reaches:
+   * the schedule, and the place a new ad is added.
+   */
+  readonly externalAdSetId: string | null;
   readonly signals: PlatformSignals;
   readonly days: readonly ReportedAdDay[];
 }
@@ -287,7 +293,21 @@ export interface ReportedCampaign {
   readonly externalCampaignId: string;
   readonly name: string | null;
   readonly signals: PlatformSignals;
+  readonly budget: ReportedBudget;
   readonly ads: readonly ReportedAd[];
+}
+
+/**
+ * Where a campaign's budget lives, and the one figure Edit can change.
+ *
+ * `daily` is **in minor units**, converted at the adapter edge like spend. It
+ * is set only for a daily budget on the campaign itself. A budget per Ad Set,
+ * or a lifetime budget, has no single daily figure to show or to change here.
+ */
+export interface ReportedBudget {
+  /** Null where the platform did not say. */
+  readonly level: 'campaign' | 'ad_set' | null;
+  readonly daily: number | null;
 }
 
 /**
@@ -560,6 +580,8 @@ export interface CreatedAd {
   readonly externalAdId: string;
   readonly name: string | null;
   readonly format: ReportedAdFormat | null;
+  /** The Ad Set it was built in, where the platform said. */
+  readonly externalAdSetId: string | null;
   readonly signals: PlatformSignals;
 }
 
@@ -591,6 +613,70 @@ export class CreateInFlightError extends Error {
   constructor() {
     super('this campaign is already being created');
   }
+}
+
+/**
+ * The platform refused one change, for a reason about that change: a budget
+ * under its minimum, an end date it will not take, a campaign it no longer
+ * has. Nothing was changed. `message` is the platform's own words where it
+ * gave any, written for the person who made the change.
+ *
+ * A failure of the integration itself is not this. That throws an ordinary
+ * `HttpException`, because it says nothing about the change.
+ */
+export class ChangeRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+/** The switch a merchant can flip on a Campaign or an Ad. Nothing else. */
+export type DeliverySwitch = 'active' | 'paused';
+
+export interface UpdateCampaignInput extends GrantedAccount {
+  /** The campaign's id at the platform. */
+  readonly externalCampaignId: string;
+  /** A new name, or absent to leave it. */
+  readonly name?: string;
+  /**
+   * A new daily budget on the campaign, in minor units of the Store's
+   * currency, which the connection guarantees is the ad account's. Absent
+   * leaves it. The adapter converts at the edge.
+   */
+  readonly dailyBudget?: number;
+}
+
+export interface SetCampaignDeliveryInput extends GrantedAccount {
+  readonly externalCampaignId: string;
+  readonly status: DeliverySwitch;
+}
+
+export interface SetAdDeliveryInput extends GrantedAccount {
+  readonly externalAdId: string;
+  readonly status: DeliverySwitch;
+}
+
+export interface SetAdSetEndInput extends GrantedAccount {
+  readonly externalAdSetId: string;
+  /** When it stops delivering, or null to run until it is stopped. */
+  readonly endsAt: Date | null;
+}
+
+export interface AddAdInput extends GrantedAccount {
+  /** The ad account the merchant chose, as the platform spells it. */
+  readonly externalAccountId: string;
+  /** The Ad Set the ad joins. It inherits that Ad Set's budget, audience and schedule. */
+  readonly externalAdSetId: string;
+  readonly ad: AdDraft;
+  /** The Pixel the ad reports to, as the connection recorded it. */
+  readonly pixelId: string;
+  /**
+   * The click parameters the ad is created carrying. **This is the join**, as
+   * it is on a create, so an added ad is measurable from its first click.
+   */
+  readonly linkTags: readonly ClickParam[];
+  /** Makes a retried add answer with the first one's ad instead of a second. */
+  readonly idempotencyKey: string;
 }
 
 export interface AdPlatformProvider {
@@ -706,6 +792,42 @@ export interface AdPlatformProvider {
    * key is still being created. Anything else throws as it comes.
    */
   createCampaign(input: CreateCampaignInput): Promise<CreatedCampaign>;
+
+  /**
+   * Renames a campaign, or changes its daily budget, or both.
+   *
+   * **A budget change spends, or stops spending, the merchant's money** from
+   * the moment the platform accepts it. It is only called when the merchant
+   * saved the change. Throws `ChangeRejectedError` when the platform refuses
+   * the change itself, which it does for a budget that lives on the Ad Sets.
+   */
+  updateCampaign(input: UpdateCampaignInput): Promise<void>;
+
+  /**
+   * Pauses or resumes a whole campaign. Its Ads keep their own switches, so a
+   * resume brings back what was running before the pause.
+   */
+  setCampaignDelivery(input: SetCampaignDeliveryInput): Promise<void>;
+
+  /** Pauses or resumes one Ad, and nothing beside it. */
+  setAdDelivery(input: SetAdDeliveryInput): Promise<void>;
+
+  /**
+   * Sets or clears when one Ad Set stops delivering. The schedule lives on the
+   * Ad Set, so a campaign's end date is written to each of its Ad Sets.
+   */
+  setAdSetEnd(input: SetAdSetEndInput): Promise<void>;
+
+  /**
+   * Adds one ad to an Ad Set that is already running, carrying `linkTags`
+   * in the same call that creates it.
+   *
+   * **This spends the merchant's money** once the platform approves the ad. It
+   * has no dry run: the platform does not dry-run an ad added to an existing
+   * Ad Set. So a complaint about the ad arrives here, as `CampaignRejectedError`,
+   * and nothing is created.
+   */
+  addAd(input: AddAdInput): Promise<CreatedAd>;
 
   /**
    * The bytes behind a creative URL the tree reported.

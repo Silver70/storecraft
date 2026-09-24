@@ -27,6 +27,7 @@ import { cn } from "~/lib/utils";
 import type {
   AdDestinationKind,
   CallToAction,
+  CampaignAdInput,
   DraftComplaint,
   DraftField,
 } from "~/types/api";
@@ -63,6 +64,40 @@ export function emptyAd(): AdDraftState {
   };
 }
 
+/** The ad as the server takes it: references, never URLs. */
+export function toAdInput(ad: AdDraftState): CampaignAdInput {
+  return {
+    mediaSource: ad.media?.source ?? "product",
+    ...(ad.media?.source === "product" ? { productMediaId: ad.media.mediaId } : {}),
+    ...(ad.media?.source === "upload" ? { uploadUrl: ad.media.url } : {}),
+    primaryText: ad.primaryText,
+    headline: ad.headline,
+    callToAction: ad.callToAction,
+    destination: ad.destination,
+    ...(ad.destination === "product"
+      ? { destinationProductId: ad.destinationProductId }
+      : {}),
+    ...(ad.destination === "custom" ? { destinationPath: ad.destinationPath } : {}),
+  };
+}
+
+/** What can be seen to be missing from one ad without asking anyone. */
+export function adGaps(ad: AdDraftState, index: number): DraftComplaint[] {
+  const out: DraftComplaint[] = [];
+  const add = (field: DraftField, message: string) =>
+    out.push({ adIndex: index, field, message });
+  if (!ad.media) add("media", "Choose an image or a video.");
+  if (!ad.primaryText.trim()) add("primaryText", "Write the text above the picture.");
+  if (!ad.headline.trim()) add("headline", "Write a headline.");
+  if (ad.destination === "product" && !ad.destinationProductId) {
+    add("destination", "Choose the product the ad leads to.");
+  }
+  if (ad.destination === "custom" && !ad.destinationPath.trim()) {
+    add("destination", "Type the page on your storefront the ad leads to.");
+  }
+  return out;
+}
+
 export const CALL_TO_ACTION_LABELS: Record<CallToAction, string> = {
   shop_now: "Shop now",
   buy_now: "Buy now",
@@ -91,6 +126,7 @@ export function AdEditor({
   storefrontUrl,
   onChange,
   onRemove,
+  title,
 }: {
   index: number;
   ad: AdDraftState;
@@ -98,6 +134,8 @@ export function AdEditor({
   storefrontUrl: string | null;
   onChange: (next: AdDraftState) => void;
   onRemove: (() => void) | null;
+  /** The card's heading; "Ad N" by default. */
+  title?: string;
 }) {
   const set = <K extends keyof AdDraftState>(key: K, value: AdDraftState[K]) =>
     onChange({ ...ad, [key]: value });
@@ -107,7 +145,7 @@ export function AdEditor({
   return (
     <Card className="gap-0 p-0">
       <div className="flex items-center justify-between border-b px-4 py-2.5">
-        <p className="text-sm font-medium">Ad {index + 1}</p>
+        <p className="text-sm font-medium">{title ?? `Ad ${index + 1}`}</p>
         {onRemove && (
           <Button
             variant="ghost"
@@ -341,10 +379,13 @@ function ProductImagePicker({
   );
 }
 
-function UploadPicker({
+export function UploadPicker({
   onUploaded,
+  imagesOnly = false,
 }: {
   onUploaded: (media: AdDraftState["media"]) => void;
+  /** Pictures only, for a campaign's cover. */
+  imagesOnly?: boolean;
 }) {
   const [problem, setProblem] = React.useState<string | null>(null);
   const upload = useMutation({
@@ -377,6 +418,10 @@ function UploadPicker({
     setProblem(null);
     if (!file) return;
     const isVideo = file.type.startsWith("video/");
+    if (imagesOnly && isVideo) {
+      setProblem("Choose a JPEG or PNG image.");
+      return;
+    }
     const limit = (isVideo ? MAX_VIDEO_MB : MAX_IMAGE_MB) * 1024 * 1024;
     if (file.size > limit) {
       setProblem(
@@ -395,14 +440,23 @@ function UploadPicker({
         <UploadIcon className="h-5 w-5 text-muted-foreground" />
       )}
       <span className="font-medium">
-        {upload.isPending ? "Uploading…" : "Choose an image or a video"}
+        {upload.isPending
+          ? "Uploading…"
+          : imagesOnly
+            ? "Choose an image"
+            : "Choose an image or a video"}
       </span>
       <span className="text-xs text-muted-foreground">
-        JPEG or PNG up to {MAX_IMAGE_MB} MB · MP4 or MOV up to {MAX_VIDEO_MB} MB
+        JPEG or PNG up to {MAX_IMAGE_MB} MB
+        {imagesOnly ? "" : ` · MP4 or MOV up to ${MAX_VIDEO_MB} MB`}
       </span>
       <input
         type="file"
-        accept="image/jpeg,image/png,video/mp4,video/quicktime"
+        accept={
+          imagesOnly
+            ? "image/jpeg,image/png"
+            : "image/jpeg,image/png,video/mp4,video/quicktime"
+        }
         className="sr-only"
         disabled={upload.isPending}
         onChange={(e) => choose(e.target.files?.[0])}

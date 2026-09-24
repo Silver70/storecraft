@@ -40,7 +40,9 @@ import type {
 import {
   AdEditor,
   Complaints,
+  adGaps,
   emptyAd,
+  toAdInput,
   type AdDraftState,
 } from "../components/campaign-ad-editor";
 import { metaConnection } from "../components/meta-connection";
@@ -194,23 +196,7 @@ function CampaignForm({ context }: { context: CampaignFormContext }) {
       ageMin,
       ageMax,
       launch,
-      ads: ads.map((ad) => ({
-        mediaSource: ad.media?.source ?? "product",
-        ...(ad.media?.source === "product"
-          ? { productMediaId: ad.media.mediaId }
-          : {}),
-        ...(ad.media?.source === "upload" ? { uploadUrl: ad.media.url } : {}),
-        primaryText: ad.primaryText,
-        headline: ad.headline,
-        callToAction: ad.callToAction,
-        destination: ad.destination,
-        ...(ad.destination === "product"
-          ? { destinationProductId: ad.destinationProductId }
-          : {}),
-        ...(ad.destination === "custom"
-          ? { destinationPath: ad.destinationPath }
-          : {}),
-      })),
+      ads: ads.map(toAdInput),
     };
   }
 
@@ -223,17 +209,7 @@ function CampaignForm({ context }: { context: CampaignFormContext }) {
     if (toCents(budget) < 1) add(null, "dailyBudget", "Set a daily budget.");
     if (hasEnd && !endDate) add(null, "schedule", "Choose the end date, or remove it.");
     if (countries.length === 0) add(null, "audience", "Choose at least one country.");
-    ads.forEach((ad, i) => {
-      if (!ad.media) add(i, "media", "Choose an image or a video.");
-      if (!ad.primaryText.trim()) add(i, "primaryText", "Write the text above the picture.");
-      if (!ad.headline.trim()) add(i, "headline", "Write a headline.");
-      if (ad.destination === "product" && !ad.destinationProductId) {
-        add(i, "destination", "Choose the product the ad leads to.");
-      }
-      if (ad.destination === "custom" && !ad.destinationPath.trim()) {
-        add(i, "destination", "Type the page on your storefront the ad leads to.");
-      }
-    });
+    ads.forEach((ad, i) => out.push(...adGaps(ad, i)));
     return out;
   }
 

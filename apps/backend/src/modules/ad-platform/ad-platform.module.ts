@@ -7,6 +7,7 @@ import { AdminAdPlatformController } from './controllers/admin-ad-platform.contr
 import { AdPlatformCallbackController } from './controllers/ad-platform-callback.controller';
 import { AdminCampaignTrackingController } from './controllers/admin-campaign-tracking.controller';
 import { AdminCampaignCreationController } from './controllers/admin-campaign-creation.controller';
+import { AdminCampaignEditController } from './controllers/admin-campaign-edit.controller';
 import { AdPlatformConnectionRepository } from './repositories/ad-platform-connection.repository';
 import { AdPlatformCredentialRepository } from './repositories/ad-platform-credential.repository';
 import { CampaignMirrorRepository } from './repositories/campaign-mirror.repository';
@@ -16,6 +17,8 @@ import { AdPlatformConnectionService } from './services/ad-platform-connection.s
 import { AdPlatformSyncService } from './services/ad-platform-sync.service';
 import { CampaignTrackingService } from './services/campaign-tracking.service';
 import { CampaignCreationService } from './services/campaign-creation.service';
+import { CampaignEditService } from './services/campaign-edit.service';
+import { AdDraftResolver } from './services/ad-draft.resolver';
 import { CredentialVault } from './services/credential-vault.service';
 import { MeasurementService } from './services/measurement.service';
 import { PurchaseEventService } from './services/purchase-event.service';
@@ -45,11 +48,14 @@ import { R2StorageService } from '../../shared/storage/r2-storage.service';
  * `CampaignMirrorRepository`. Object storage is provided here for the creative
  * copies, as the product module provides it for product media.
  *
- * Two things write to the platform, and only when a merchant asks.
+ * Three things write to the platform, and only when a merchant asks.
  * `CampaignCreationService` creates a campaign with every ad already carrying
  * the Link Tags, and records it here straight away rather than waiting for the
- * sync. `CampaignTrackingService` writes the tags onto a discovered campaign's
- * ads when a merchant presses Start tracking.
+ * sync. `CampaignEditService` renames, re-budgets, pauses, extends and adds ads
+ * to a running one, recording each change once the platform accepts it; an ad
+ * it adds carries the tags the same way, resolved by the `AdDraftResolver` a
+ * create uses. `CampaignTrackingService` writes the tags onto a discovered
+ * campaign's ads when a merchant presses Start tracking.
  *
  * Measurement flows the other way from the same seam. `MeasurementService`
  * answers the storefront's question about which Pixel to load, and
@@ -68,6 +74,7 @@ import { R2StorageService } from '../../shared/storage/r2-storage.service';
     AdPlatformCallbackController,
     AdminCampaignTrackingController,
     AdminCampaignCreationController,
+    AdminCampaignEditController,
   ],
   providers: [
     {
@@ -84,7 +91,9 @@ import { R2StorageService } from '../../shared/storage/r2-storage.service';
     AdPlatformConnectionService,
     AdPlatformSyncService,
     CampaignTrackingService,
+    AdDraftResolver,
     CampaignCreationService,
+    CampaignEditService,
     MeasurementService,
     MeasurementResolver,
     PurchaseEventService,

@@ -5,6 +5,7 @@ import {
   checkAdCount,
   checkAgeRange,
   normalizeCountries,
+  resolveEndDate,
   resolveSchedule,
   zonedMidnight,
 } from './campaign-draft.util';
@@ -129,6 +130,71 @@ describe('resolveSchedule', () => {
         }),
       )[0].field,
     ).toBe('schedule');
+  });
+});
+
+describe('resolveEndDate', () => {
+  // 20:00 on the 24th in New York, already the 25th in UTC.
+  const now = new Date('2026-09-25T00:00:00Z');
+  const timezone = 'America/New_York';
+
+  it('stops at the midnight after the end day, in the Store’s timezone', () => {
+    expect(
+      resolveEndDate({
+        endDay: '2026-10-31',
+        startsAt: null,
+        timezone,
+        now,
+      }).toISOString(),
+    ).toBe('2026-11-01T04:00:00.000Z');
+  });
+
+  it('accepts today, which is still the 24th in New York', () => {
+    expect(
+      resolveEndDate({
+        endDay: '2026-09-24',
+        startsAt: null,
+        timezone,
+        now,
+      }).toISOString(),
+    ).toBe('2026-09-25T04:00:00.000Z');
+  });
+
+  it('crosses a daylight-saving change without losing an hour of the day', () => {
+    // New York falls back on 1 November 2026.
+    expect(
+      resolveEndDate({
+        endDay: '2026-11-01',
+        startsAt: null,
+        timezone,
+        now,
+      }).toISOString(),
+    ).toBe('2026-11-02T05:00:00.000Z');
+  });
+
+  it('refuses a day already over in the Store’s timezone', () => {
+    const [complaint] = complaintsOf(() =>
+      resolveEndDate({ endDay: '2026-09-23', startsAt: null, timezone, now }),
+    );
+    expect(complaint).toMatchObject({ field: 'schedule', adIndex: null });
+    expect(complaint.message).toMatch(/already passed/);
+  });
+
+  it('refuses an end before a campaign that has not started yet', () => {
+    const startsAt = new Date('2026-10-10T04:00:00Z');
+    expect(
+      complaintsOf(() =>
+        resolveEndDate({ endDay: '2026-10-05', startsAt, timezone, now }),
+      )[0].message,
+    ).toMatch(/before the campaign starts/);
+  });
+
+  it('refuses a day that does not exist', () => {
+    expect(
+      complaintsOf(() =>
+        resolveEndDate({ endDay: '2026-02-30', startsAt: null, timezone, now }),
+      )[0].message,
+    ).toMatch(/not a real date/);
   });
 });
 

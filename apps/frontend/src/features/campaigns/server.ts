@@ -6,6 +6,7 @@ import { apiClient, authHeader } from "~/lib/api-client";
 import { getErrorMessage } from "~/lib/errors";
 import type {
   AdAccountChoice,
+  AddAdOutcome,
   AdPlatformConnection,
   AdPlatformSyncOutcome,
   AttributedRevenueReport,
@@ -15,6 +16,7 @@ import type {
   CreateCampaignOutcome,
   DraftComplaint,
   TrackingOutcome,
+  UpdateCampaignInput,
 } from "~/types/api";
 
 async function storeHeaders() {
@@ -251,6 +253,163 @@ export const uploadCampaignCreativeServerFn = createServerFn({ method: "POST" })
       const res = await apiClient.post<{ url: string; kind: "image" | "video" }>(
         "/api/admin/campaigns/creatives",
         formData,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+// ─── Changing one ─────────────────────────────────────────────────────────────
+//
+// Each change is made at Meta first and recorded here the moment Meta accepts
+// it. A refusal is an answer rather than an error: Meta's own words, placed on
+// the field they are about, with nothing changed.
+
+/** A change answered: the campaign as it now stands, or why it did not. */
+export type CampaignEditResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; message: string; complaints: DraftComplaint[] };
+
+function refusalOf(err: unknown): { message: string; complaints: DraftComplaint[] } | null {
+  const rejection = err as {
+    status?: number;
+    data?: { message?: string; complaints?: DraftComplaint[] };
+  };
+  if (rejection.status === 422) {
+    return {
+      message: rejection.data?.message ?? "Meta did not accept the change.",
+      complaints: rejection.data?.complaints ?? [],
+    };
+  }
+  return null;
+}
+
+/** Rename, daily budget, end date: whichever were sent. */
+export const updateCampaignServerFn = createServerFn({ method: "POST" })
+  .inputValidator(
+    z.object({
+      campaignId: z.string().min(1),
+      changes: z.object({
+        name: z.string().optional(),
+        dailyBudget: z.number().int().optional(),
+        endDate: z.string().nullable().optional(),
+      }),
+    }),
+  )
+  .handler(async ({ data }): Promise<CampaignEditResult<Campaign>> => {
+    try {
+      const res = await apiClient.patch<Campaign>(
+        `/api/admin/campaigns/${data.campaignId}`,
+        data.changes satisfies UpdateCampaignInput,
+        { headers: await storeHeaders() },
+      );
+      return { ok: true, value: res.data };
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (refusal) return { ok: false, ...refusal };
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+/** Pauses or resumes the whole campaign. */
+export const setCampaignDeliveryServerFn = createServerFn({ method: "POST" })
+  .inputValidator(
+    z.object({
+      campaignId: z.string().min(1),
+      status: z.enum(["active", "paused"]),
+    }),
+  )
+  .handler(async ({ data }): Promise<CampaignEditResult<Campaign>> => {
+    try {
+      const res = await apiClient.put<Campaign>(
+        `/api/admin/campaigns/${data.campaignId}/status`,
+        { status: data.status },
+        { headers: await storeHeaders() },
+      );
+      return { ok: true, value: res.data };
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (refusal) return { ok: false, ...refusal };
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+/** Pauses or resumes one ad, and nothing beside it. */
+export const setAdDeliveryServerFn = createServerFn({ method: "POST" })
+  .inputValidator(
+    z.object({
+      campaignId: z.string().min(1),
+      adId: z.string().min(1),
+      status: z.enum(["active", "paused"]),
+    }),
+  )
+  .handler(async ({ data }): Promise<CampaignEditResult<Campaign>> => {
+    try {
+      const res = await apiClient.put<Campaign>(
+        `/api/admin/campaigns/${data.campaignId}/ads/${data.adId}/status`,
+        { status: data.status },
+        { headers: await storeHeaders() },
+      );
+      return { ok: true, value: res.data };
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (refusal) return { ok: false, ...refusal };
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+/**
+ * Adds one ad to a running campaign, from the create form's ad editor.
+ *
+ * `idempotencyKey` is kept by the dialog across retries of one submission, so
+ * a press whose answer was lost cannot add a second ad when pressed again.
+ */
+export const addCampaignAdServerFn = createServerFn({ method: "POST" })
+  .inputValidator(
+    z.object({
+      campaignId: z.string().min(1),
+      idempotencyKey: z.string().min(1).max(255),
+      ad: campaignAdInput,
+    }),
+  )
+  .handler(async ({ data }): Promise<CampaignEditResult<AddAdOutcome>> => {
+    try {
+      const res = await apiClient.post<AddAdOutcome>(
+        `/api/admin/campaigns/${data.campaignId}/ads`,
+        data.ad,
+        {
+          headers: {
+            ...(await storeHeaders()),
+            "Idempotency-Key": data.idempotencyKey,
+          },
+        },
+      );
+      return { ok: true, value: res.data };
+    } catch (err) {
+      const refusal = refusalOf(err);
+      if (refusal) return { ok: false, ...refusal };
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+/** The cover: one of the campaign's ads' pictures, or an uploaded image. */
+export const setCampaignCoverServerFn = createServerFn({ method: "POST" })
+  .inputValidator(
+    z.object({
+      campaignId: z.string().min(1),
+      cover: z.union([
+        z.object({ adId: z.string().min(1) }),
+        z.object({ uploadUrl: z.string().min(1) }),
+      ]),
+    }),
+  )
+  .handler(async ({ data }): Promise<Campaign> => {
+    try {
+      const res = await apiClient.put<Campaign>(
+        `/api/admin/campaigns/${data.campaignId}/cover`,
+        data.cover,
         { headers: await storeHeaders() },
       );
       return res.data;

@@ -1,3 +1,4 @@
+import type * as React from "react";
 import { Card } from "~/components/ui/card";
 import {
   Table,
@@ -10,7 +11,7 @@ import {
 } from "~/components/ui/table";
 import { cn } from "~/lib/utils";
 import { formatMoney } from "~/lib/money";
-import type { CampaignPerformanceLine } from "~/types/api";
+import type { AdPerformanceLine, CampaignPerformanceLine } from "~/types/api";
 import { formatAdFormat, formatCount, formatRoas, reviewNote } from "../utils";
 import { CreativeTile } from "./campaign-cards";
 import { CampaignStatusBadge } from "./campaign-status-badge";
@@ -34,7 +35,14 @@ const NOT_TRACKED = "Not tracked";
  * verdict against it is named beneath, so an ad paused after a rejection reads
  * as both.
  */
-export function CampaignAdsTable({ line }: { line: CampaignPerformanceLine }) {
+export function CampaignAdsTable({
+  line,
+  action,
+}: {
+  line: CampaignPerformanceLine;
+  /** What can be done to one ad, in a last column. Absent draws no column. */
+  action?: (ad: AdPerformanceLine) => React.ReactNode;
+}) {
   const tracked = line.hasLinkTags;
   const unassigned = line.unassigned;
 
@@ -59,7 +67,8 @@ export function CampaignAdsTable({ line }: { line: CampaignPerformanceLine }) {
             <TableHead className={NUM}>Clicks</TableHead>
             <TableHead className={NUM}>Orders</TableHead>
             <TableHead className={NUM}>Revenue</TableHead>
-            <TableHead className={cn(NUM, "pr-5")}>ROAS</TableHead>
+            <TableHead className={cn(NUM, action ? undefined : "pr-5")}>ROAS</TableHead>
+            {action && <TableHead className="pr-5" />}
           </TableRow>
         </TableHeader>
 
@@ -96,9 +105,10 @@ export function CampaignAdsTable({ line }: { line: CampaignPerformanceLine }) {
                 <TableCell className={NUM}>
                   {ad.hasLinkTags ? formatMoney(ad.revenue) : <Absent reason={NOT_TRACKED} />}
                 </TableCell>
-                <TableCell className={cn(NUM, "pr-5")}>
+                <TableCell className={cn(NUM, action ? undefined : "pr-5")}>
                   {ad.roas !== null ? formatRoas(ad.roas) : <Absent />}
                 </TableCell>
+                {action && <TableCell className="pr-5 text-right">{action(ad)}</TableCell>}
               </TableRow>
             );
           })}
@@ -110,7 +120,7 @@ export function CampaignAdsTable({ line }: { line: CampaignPerformanceLine }) {
               </TableCell>
               <TableCell className={NUM}>{formatCount(unassigned.orders)}</TableCell>
               <TableCell className={NUM}>{formatMoney(unassigned.revenue)}</TableCell>
-              <TableCell className="pr-5" />
+              <TableCell className="pr-5" colSpan={action ? 2 : 1} />
             </TableRow>
           ) : null}
         </TableBody>
@@ -129,9 +139,10 @@ export function CampaignAdsTable({ line }: { line: CampaignPerformanceLine }) {
             <TableCell className={NUM}>
               {tracked ? formatMoney(line.revenue) : <Absent reason={NOT_TRACKED} />}
             </TableCell>
-            <TableCell className={cn(NUM, "pr-5")}>
+            <TableCell className={cn(NUM, action ? undefined : "pr-5")}>
               {line.roas !== null ? formatRoas(line.roas) : <Absent />}
             </TableCell>
+            {action && <TableCell className="pr-5" />}
           </TableRow>
         </TableFooter>
       </Table>

@@ -97,6 +97,7 @@ function ad(
     name: `Ad ${externalAdId}`,
     format: 'image',
     creativeUrl: null,
+    externalAdSetId: null,
     days,
     ...rest,
     signals: { ...DELIVERING, ...signals },
@@ -115,6 +116,7 @@ function campaign(
   return {
     externalCampaignId,
     name: `Campaign ${externalCampaignId}`,
+    budget: { level: null, daily: null },
     ads: campaignAds,
     ...rest,
     signals: { ...DELIVERING, ...signals },

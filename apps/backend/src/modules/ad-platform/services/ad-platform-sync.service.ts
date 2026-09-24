@@ -418,6 +418,8 @@ export class AdPlatformSyncService {
         status: collapseStatus(campaign.signals, now),
         startsAt: campaign.signals.startsAt,
         endsAt: campaign.signals.endsAt,
+        budgetLevel: campaign.budget.level,
+        dailyBudget: campaign.budget.daily,
       })),
       now,
     );
@@ -448,6 +450,7 @@ export class AdPlatformSyncService {
         format: ad.format,
         status: collapseStatus(ad.signals, now),
         reviewStatus: ad.signals.review,
+        adSetExternalId: ad.externalAdSetId,
       })),
       now,
     );

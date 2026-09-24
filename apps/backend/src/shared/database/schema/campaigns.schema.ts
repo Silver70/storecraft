@@ -6,6 +6,7 @@ import {
   boolean,
   timestamp,
   pgEnum,
+  integer,
   index,
   unique,
 } from 'drizzle-orm/pg-core';
@@ -39,6 +40,22 @@ export const campaignStatusEnum = pgEnum('campaign_status', [
 ]);
 
 export type CampaignStatus = (typeof campaignStatusEnum.enumValues)[number];
+
+/**
+ * Where a Campaign's budget lives at the platform.
+ *
+ * `campaign` is one budget for the whole Campaign, which every Campaign created
+ * here has. `ad_set` is a budget per Ad Set, which only a Campaign built in Ads
+ * Manager can have. Its budget cannot be edited here: there is no single number
+ * to show, and the Ad Set is not modelled.
+ */
+export const campaignBudgetLevelEnum = pgEnum('campaign_budget_level', [
+  'campaign',
+  'ad_set',
+]);
+
+export type CampaignBudgetLevel =
+  (typeof campaignBudgetLevelEnum.enumValues)[number];
 
 /**
  * The platforms a Campaign can live on — exactly the ones a Store can connect,
@@ -101,6 +118,20 @@ export const campaigns = pgTable(
      * storage, since a platform's image links expire.
      */
     coverUrl: text('cover_url'),
+    /**
+     * Where the budget lives at the platform, as the platform last said. Null
+     * until a sync or a create has said.
+     */
+    budgetLevel: campaignBudgetLevelEnum('budget_level'),
+    /**
+     * The Campaign's daily budget, in minor units of the Store's currency, as
+     * the platform holds it. Null when the budget is not one daily figure on
+     * the Campaign: a budget per Ad Set, or a lifetime budget. Either one is
+     * changed in Ads Manager, not here.
+     *
+     * The platform's cap, not what it spent. Spend is in `ad_daily_figures`.
+     */
+    dailyBudget: integer('daily_budget'),
     /**
      * Whether every Ad under this Campaign carries our Link Tags — Tracked when
      * true, Not Tracked when false. Absent until shown otherwise: a Campaign

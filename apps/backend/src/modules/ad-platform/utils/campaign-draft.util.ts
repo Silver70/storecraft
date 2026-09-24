@@ -128,6 +128,44 @@ export function resolveSchedule(input: {
 }
 
 /**
+ * A new end date for a campaign already running, as the instant it stops.
+ *
+ * The same reading as a create's: the end day is the Store's, and it is spent
+ * in full, so the campaign stops at the midnight that follows it. An end day
+ * already over is refused, since the platform would stop the campaign at once,
+ * and so is one before the campaign has started. Moving an end earlier stops
+ * spending sooner, and moving it later spends for longer; both are the
+ * merchant's call. Only a day that cannot be run is refused here.
+ */
+export function resolveEndDate(input: {
+  endDay: CalendarDay;
+  startsAt: Date | null;
+  timezone: string;
+  now: Date;
+}): Date {
+  const { endDay, startsAt, timezone, now } = input;
+  if (!isRealDay(endDay)) {
+    throw new DraftRuleError([
+      complaint('schedule', 'The end date is not a real date.'),
+    ]);
+  }
+  if (endDay < dayInTimezone(now, timezone)) {
+    throw new DraftRuleError([
+      complaint(
+        'schedule',
+        'The end date has already passed. Choose today or a later day.',
+      ),
+    ]);
+  }
+  if (startsAt && endDay < dayInTimezone(startsAt, timezone)) {
+    throw new DraftRuleError([
+      complaint('schedule', 'The end date is before the campaign starts.'),
+    ]);
+  }
+  return zonedMidnight(nextDay(endDay), timezone);
+}
+
+/**
  * Countries as the platform takes them: two-letter codes, upper case, each
  * once, in the order chosen. At least one, because a campaign with no country
  * would be shown wherever the platform's default puts it.

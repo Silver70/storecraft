@@ -38,6 +38,11 @@ const EXPECTED_SURFACE = [
   'writeLinkTags',
   'validateCampaign',
   'createCampaign',
+  'updateCampaign',
+  'setCampaignDelivery',
+  'setAdDelivery',
+  'setAdSetEnd',
+  'addAd',
   'fetchCreative',
   'sendPurchase',
   'health',
@@ -49,7 +54,13 @@ const EXPECTED_SURFACE = [
  * Named one by one rather than matched by a convention, so that adding one is a
  * line in this file and not a private method that turns out to be reachable.
  */
-const INTERNALS = ['connectPlatform', 'teamKey', 'baseUrl', 'call'].sort();
+const INTERNALS = [
+  'connectPlatform',
+  'teamKey',
+  'baseUrl',
+  'call',
+  'change',
+].sort();
 
 describe('the ad-platform provider contract', () => {
   const methods = Object.getOwnPropertyNames(

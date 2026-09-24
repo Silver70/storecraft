@@ -3,10 +3,13 @@ import { randomUUID } from 'crypto';
 import type { AdPlatform } from '../../src/shared/database/schema';
 import {
   CampaignRejectedError,
+  ChangeRejectedError,
   CreateInFlightError,
 } from '../../src/modules/ad-platform/interfaces/ad-platform-provider.interface';
 import type {
   AdAccountOption,
+  AddAdInput,
+  CreatedAd,
   AdPlatformProvider,
   AdTree,
   CampaignDraft,
@@ -29,8 +32,14 @@ import type {
   ProviderHealth,
   PurchaseEvent,
   ReadLinkTagsInput,
+  ReportedAd,
+  ReportedCampaign,
   SendPurchaseInput,
+  SetAdDeliveryInput,
+  SetAdSetEndInput,
+  SetCampaignDeliveryInput,
   StoreCredential,
+  UpdateCampaignInput,
   WriteLinkTagsInput,
 } from '../../src/modules/ad-platform/interfaces/ad-platform-provider.interface';
 
@@ -127,6 +136,37 @@ export interface CreateRecord {
   created: CreatedCampaign;
 }
 
+/**
+ * One edit the fake was asked to make — what every assertion about Edit is
+ * about: that the change reached the platform, and nothing else did.
+ */
+export type ChangeRecord =
+  | {
+      kind: 'campaign';
+      externalCampaignId: string;
+      name?: string;
+      /** Minor units, as the interface takes it. */
+      dailyBudget?: number;
+    }
+  | {
+      kind: 'campaign_delivery';
+      externalCampaignId: string;
+      status: 'active' | 'paused';
+    }
+  | { kind: 'ad_delivery'; externalAdId: string; status: 'active' | 'paused' }
+  | { kind: 'ad_set_end'; externalAdSetId: string; endsAt: Date | null };
+
+/** One ad added to a running campaign, as it was sent. */
+export interface AddRecord {
+  providerRef: string;
+  externalAdSetId: string;
+  idempotencyKey: string;
+  input: AddAdInput;
+  /** The tags the ad was created carrying, as `key=value` joined with `&`. */
+  urlTags: string;
+  created: CreatedAd;
+}
+
 /** What the merchant approved at the platform, and what it can see. */
 interface Approval {
   providerAccountRef: string;
@@ -220,6 +260,20 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
   failAfterCreating = false;
 
   private campaignSeq = 0;
+
+  /** Every edit the platform accepted, in order. A refused one adds none. */
+  readonly changes: ChangeRecord[] = [];
+
+  /** Makes the next edit refused, in these words, and changes nothing. */
+  rejectNextChange: string | null = null;
+
+  /** Every ad actually added. A replayed key adds none. */
+  readonly adds: AddRecord[] = [];
+
+  /** What adding an ad will object to. Null adds it. */
+  addRejection: DraftComplaint[] | null = null;
+
+  private adSeq = 0;
 
   /** Makes creative downloads fail — a CDN link that has already expired. */
   failCreatives = false;
@@ -318,6 +372,10 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     this.tagRefusals.clear();
     this.creates.length = 0;
     this.validations.length = 0;
+    this.changes.length = 0;
+    this.rejectNextChange = null;
+    this.adds.length = 0;
+    this.addRejection = null;
     this.draftComplaints = [];
     this.createRejection = null;
     this.createInFlight = false;
@@ -556,6 +614,7 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
         externalAdId: `1203${String(n).padStart(10, '0')}${String(index).padStart(4, '0')}`,
         name: ad.name,
         format: ad.media.kind,
+        externalAdSetId: `1204${String(n).padStart(14, '0')}`,
         signals: {
           delivery: paused ? 'paused' : 'pending_review',
           review: 'in_review',
@@ -585,11 +644,13 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
           externalCampaignId: created.externalCampaignId,
           name: input.draft.name,
           signals: created.signals,
+          budget: { level: 'campaign', daily: input.draft.dailyBudget },
           ads: created.ads.map((ad) => ({
             externalAdId: ad.externalAdId,
             name: ad.name,
             format: ad.format,
             creativeUrl: null,
+            externalAdSetId: ad.externalAdSetId,
             signals: ad.signals,
             days: [],
           })),
@@ -611,6 +672,174 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
       this.failAfterCreating = false;
       return Promise.reject(new Error('connection dropped after create'));
     }
+    return Promise.resolve(created);
+  }
+
+  /**
+   * Renames the campaign or changes its budget, on the tree the next sync
+   * reads, as the platform would. A budget that lives on the ad sets is
+   * refused, as Meta refuses it.
+   */
+  updateCampaign(input: UpdateCampaignInput): Promise<void> {
+    this.maybeFail();
+    this.maybeRefuse();
+    const found = this.findCampaign(input.externalCampaignId);
+    if (!found) {
+      return Promise.reject(
+        new ChangeRejectedError('Meta no longer has this campaign.'),
+      );
+    }
+    if (input.dailyBudget !== undefined && found.budget.level === 'ad_set') {
+      return Promise.reject(
+        new ChangeRejectedError(
+          'This campaign’s budget is set on each of its ad sets.',
+        ),
+      );
+    }
+    this.replaceCampaign(input.externalCampaignId, (campaign) => ({
+      ...campaign,
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.dailyBudget !== undefined
+        ? { budget: { level: 'campaign', daily: input.dailyBudget } }
+        : {}),
+    }));
+    this.changes.push({
+      kind: 'campaign',
+      externalCampaignId: input.externalCampaignId,
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.dailyBudget !== undefined
+        ? { dailyBudget: input.dailyBudget }
+        : {}),
+    });
+    return Promise.resolve();
+  }
+
+  setCampaignDelivery(input: SetCampaignDeliveryInput): Promise<void> {
+    this.maybeFail();
+    this.maybeRefuse();
+    this.replaceCampaign(input.externalCampaignId, (campaign) => ({
+      ...campaign,
+      signals: { ...campaign.signals, delivery: input.status },
+    }));
+    this.changes.push({
+      kind: 'campaign_delivery',
+      externalCampaignId: input.externalCampaignId,
+      status: input.status,
+    });
+    return Promise.resolve();
+  }
+
+  setAdDelivery(input: SetAdDeliveryInput): Promise<void> {
+    this.maybeFail();
+    this.maybeRefuse();
+    this.replaceAds(
+      (ad) => ad.externalAdId === input.externalAdId,
+      (ad) => ({ ...ad, signals: { ...ad.signals, delivery: input.status } }),
+    );
+    this.changes.push({
+      kind: 'ad_delivery',
+      externalAdId: input.externalAdId,
+      status: input.status,
+    });
+    return Promise.resolve();
+  }
+
+  /** Moves the end of every ad in the ad set, and so of its campaign. */
+  setAdSetEnd(input: SetAdSetEndInput): Promise<void> {
+    this.maybeFail();
+    this.maybeRefuse();
+    for (const tree of this.trees.values()) {
+      for (const campaign of tree.campaigns) {
+        if (
+          campaign.ads.some(
+            (ad) => ad.externalAdSetId === input.externalAdSetId,
+          )
+        ) {
+          this.replaceCampaign(campaign.externalCampaignId, (c) => ({
+            ...c,
+            signals: { ...c.signals, endsAt: input.endsAt },
+          }));
+        }
+      }
+    }
+    this.replaceAds(
+      (ad) => ad.externalAdSetId === input.externalAdSetId,
+      (ad) => ({ ...ad, signals: { ...ad.signals, endsAt: input.endsAt } }),
+    );
+    this.changes.push({
+      kind: 'ad_set_end',
+      externalAdSetId: input.externalAdSetId,
+      endsAt: input.endsAt,
+    });
+    return Promise.resolve();
+  }
+
+  /**
+   * Adds an ad to the campaign whose ad set it names, carrying the tags it was
+   * sent, so the next sync and a read-back both see it. A key it has already
+   * added under answers with the first ad.
+   */
+  addAd(input: AddAdInput): Promise<CreatedAd> {
+    this.maybeFail();
+    if (this.addRejection) {
+      return Promise.reject(new CampaignRejectedError(this.addRejection));
+    }
+    const replay = this.adds.find(
+      (entry) =>
+        entry.providerRef === input.credential.providerRef &&
+        entry.idempotencyKey === input.idempotencyKey,
+    );
+    if (replay) return Promise.resolve(replay.created);
+
+    const n = ++this.adSeq;
+    const created: CreatedAd = {
+      externalAdId: `1205${String(n).padStart(14, '0')}`,
+      name: input.ad.name,
+      format: input.ad.media.kind,
+      externalAdSetId: input.externalAdSetId,
+      signals: {
+        delivery: 'pending_review',
+        review: 'in_review',
+        startsAt: null,
+        endsAt: null,
+      },
+    };
+    const urlTags = input.linkTags
+      .map(({ key, value }) => `${key}=${value}`)
+      .join('&');
+    this.linkTags.set(created.externalAdId, urlTags);
+
+    for (const tree of this.trees.values()) {
+      const owner = tree.campaigns.find((campaign) =>
+        campaign.ads.some((ad) => ad.externalAdSetId === input.externalAdSetId),
+      );
+      if (owner) {
+        this.replaceCampaign(owner.externalCampaignId, (campaign) => ({
+          ...campaign,
+          ads: [
+            ...campaign.ads,
+            {
+              externalAdId: created.externalAdId,
+              name: created.name,
+              format: created.format,
+              creativeUrl: null,
+              externalAdSetId: input.externalAdSetId,
+              signals: created.signals,
+              days: [],
+            },
+          ],
+        }));
+      }
+    }
+
+    this.adds.push({
+      providerRef: input.credential.providerRef,
+      externalAdSetId: input.externalAdSetId,
+      idempotencyKey: input.idempotencyKey,
+      input,
+      urlTags,
+      created,
+    });
     return Promise.resolve(created);
   }
 
@@ -667,6 +896,56 @@ export class FakeAdPlatformProvider implements AdPlatformProvider {
     platform: AdPlatform,
   ): Approval | undefined {
     return this.approvals.get(`${providerRef}:${platform}`);
+  }
+
+  private findCampaign(externalCampaignId: string): ReportedCampaign | null {
+    for (const tree of this.trees.values()) {
+      const found = tree.campaigns.find(
+        (campaign) => campaign.externalCampaignId === externalCampaignId,
+      );
+      if (found) return found;
+    }
+    return null;
+  }
+
+  private replaceCampaign(
+    externalCampaignId: string,
+    change: (campaign: ReportedCampaign) => ReportedCampaign,
+  ): void {
+    for (const [account, tree] of this.trees) {
+      this.trees.set(account, {
+        ...tree,
+        campaigns: tree.campaigns.map((campaign) =>
+          campaign.externalCampaignId === externalCampaignId
+            ? change(campaign)
+            : campaign,
+        ),
+      });
+    }
+  }
+
+  private replaceAds(
+    match: (ad: ReportedAd) => boolean,
+    change: (ad: ReportedAd) => ReportedAd,
+  ): void {
+    for (const [account, tree] of this.trees) {
+      this.trees.set(account, {
+        ...tree,
+        campaigns: tree.campaigns.map((campaign) => ({
+          ...campaign,
+          ads: campaign.ads.map((ad) => (match(ad) ? change(ad) : ad)),
+        })),
+      });
+    }
+  }
+
+  /** A refusal of one change, which throws the way the adapter's does. */
+  private maybeRefuse(): void {
+    const message = this.rejectNextChange;
+    if (message !== null) {
+      this.rejectNextChange = null;
+      throw new ChangeRejectedError(message);
+    }
   }
 
   private maybeFail(): void {

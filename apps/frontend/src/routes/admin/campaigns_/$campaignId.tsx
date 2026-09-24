@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import {
+  adPlatformConnectionsQueryOptions,
+  campaignFormContextQueryOptions,
   campaignPerformanceQueryOptions,
   campaignQueryOptions,
 } from "~/features/campaigns/queries";
@@ -19,12 +21,18 @@ export const Route = createFileRoute("/admin/campaigns_/$campaignId")({
     const campaign = await context.queryClient.ensureQueryData(
       campaignQueryOptions(params.campaignId),
     );
-    await context.queryClient.ensureQueryData(
-      campaignPerformanceQueryOptions(
-        params.campaignId,
-        deps.period ?? defaultCampaignPeriod(campaign.status),
+    // Edit needs to know whether Meta is connected, and the store's currency
+    // and timezone to read a budget and an end date in.
+    await Promise.all([
+      context.queryClient.ensureQueryData(
+        campaignPerformanceQueryOptions(
+          params.campaignId,
+          deps.period ?? defaultCampaignPeriod(campaign.status),
+        ),
       ),
-    );
+      context.queryClient.ensureQueryData(adPlatformConnectionsQueryOptions()),
+      context.queryClient.ensureQueryData(campaignFormContextQueryOptions()),
+    ]);
     return campaign;
   },
   component: CampaignDetailPage,

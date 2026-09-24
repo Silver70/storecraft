@@ -24,6 +24,8 @@ import type {
   AdFormat,
   AdReviewStatus,
   AdPlatform,
+  Campaign,
+  CampaignBudgetLevel,
   CampaignStatus,
 } from '../../../shared/database/schema';
 
@@ -44,6 +46,10 @@ export interface MirroredCampaignInput {
   status: CampaignStatus;
   startsAt: Date | null;
   endsAt: Date | null;
+  /** Null where the platform did not say, which leaves the stored budget alone. */
+  budgetLevel: CampaignBudgetLevel | null;
+  /** In minor units. Only meaningful beside a `budgetLevel`. */
+  dailyBudget: number | null;
 }
 
 export interface MirroredAdInput {
@@ -53,6 +59,7 @@ export interface MirroredAdInput {
   format: AdFormat | null;
   status: CampaignStatus;
   reviewStatus: AdReviewStatus | null;
+  adSetExternalId: string | null;
 }
 
 /** A row as the sync needs it back: its id, and what is still owed on it. */
@@ -88,6 +95,31 @@ export interface CampaignToTrack {
   }[];
 }
 
+/** A Campaign and its Ads, as an edit needs them. */
+export interface CampaignToEdit {
+  campaign: Campaign;
+  ads: {
+    id: string;
+    externalId: string;
+    name: string;
+    status: CampaignStatus;
+    creativeUrl: string | null;
+    adSetExternalId: string | null;
+  }[];
+}
+
+/**
+ * What an edit the platform accepted changed about a Campaign. Absent fields
+ * are left as they are; `endsAt: null` clears the end.
+ */
+export interface CampaignChange {
+  name?: string;
+  dailyBudget?: number;
+  endsAt?: Date | null;
+  status?: CampaignStatus;
+  coverUrl?: string;
+}
+
 /** A Campaign created here, as the platform answered for it. */
 export interface CreatedCampaignInput {
   /** The create's idempotency key, which finds this row again on a retry. */
@@ -97,6 +129,8 @@ export interface CreatedCampaignInput {
   status: CampaignStatus;
   startsAt: Date | null;
   endsAt: Date | null;
+  /** Per day, in minor units. Every campaign created here budgets on the campaign. */
+  dailyBudget: number;
   /** The first ad's image, in storage we control. */
   coverUrl: string | null;
   ads: CreatedAdInput[];
@@ -110,6 +144,7 @@ export interface CreatedAdInput {
   reviewStatus: AdReviewStatus | null;
   /** The image the ad was made from, already in storage we control. */
   creativeUrl: string | null;
+  adSetExternalId: string | null;
 }
 
 export interface DailyFigureInput {
@@ -189,6 +224,8 @@ export class CampaignMirrorRepository {
             status: row.status,
             startsAt: row.startsAt,
             endsAt: row.endsAt,
+            budgetLevel: row.budgetLevel,
+            dailyBudget: row.budgetLevel ? row.dailyBudget : null,
             createdAt: at,
             updatedAt: at,
           })),
@@ -200,6 +237,11 @@ export class CampaignMirrorRepository {
             status: sql`excluded.status`,
             startsAt: sql`excluded.starts_at`,
             endsAt: sql`excluded.ends_at`,
+            // The platform owns the budget, so its answer replaces ours. A
+            // read that did not say where the budget lives says nothing
+            // about it, and leaves what is stored.
+            budgetLevel: sql`coalesce(excluded.budget_level, ${campaigns.budgetLevel})`,
+            dailyBudget: sql`CASE WHEN excluded.budget_level IS NULL THEN ${campaigns.dailyBudget} ELSE excluded.daily_budget END`,
             updatedAt: sql`excluded.updated_at`,
           },
           // A row in this Store that is somehow another Organization's is not
@@ -242,6 +284,7 @@ export class CampaignMirrorRepository {
             format: row.format,
             status: row.status,
             reviewStatus: row.reviewStatus,
+            adSetExternalId: row.adSetExternalId,
             createdAt: at,
             updatedAt: at,
           })),
@@ -254,6 +297,7 @@ export class CampaignMirrorRepository {
             // A format the platform has stopped reporting is kept rather than
             // erased: the creative did not stop being a video.
             format: sql`coalesce(excluded.format, ${ads.format})`,
+            adSetExternalId: sql`coalesce(excluded.ad_set_external_id, ${ads.adSetExternalId})`,
             status: sql`excluded.status`,
             // Written as reported, null included: a verdict the platform has
             // withdrawn is not one to keep showing.
@@ -429,6 +473,8 @@ export class CampaignMirrorRepository {
         endsAt: input.endsAt,
         coverUrl: input.coverUrl,
         creationKey: input.creationKey,
+        budgetLevel: 'campaign',
+        dailyBudget: input.dailyBudget,
         createdAt: at,
         updatedAt: at,
       })
@@ -439,6 +485,8 @@ export class CampaignMirrorRepository {
           status: sql`excluded.status`,
           startsAt: sql`excluded.starts_at`,
           endsAt: sql`excluded.ends_at`,
+          budgetLevel: sql`excluded.budget_level`,
+          dailyBudget: sql`excluded.daily_budget`,
           coverUrl: sql`coalesce(${campaigns.coverUrl}, excluded.cover_url)`,
           creationKey: sql`coalesce(${campaigns.creationKey}, excluded.creation_key)`,
           updatedAt: sql`excluded.updated_at`,
@@ -447,21 +495,88 @@ export class CampaignMirrorRepository {
       })
       .returning({ id: campaigns.id });
 
+    const adIds = await this.insertCreatedAds(
+      scope,
+      campaign.id,
+      input.ads,
+      at,
+    );
+    return { campaignId: campaign.id, adIds };
+  }
+
+  /**
+   * Writes an Ad added here to a running Campaign, from what the platform
+   * answered, as a create writes its Ads. Answers with the Ad's id here.
+   */
+  async recordAdded(
+    scope: MirrorScope,
+    campaignId: string,
+    ad: CreatedAdInput,
+    creationKey: string,
+    at: Date,
+  ): Promise<string> {
+    const adIds = await this.insertCreatedAds(
+      scope,
+      campaignId,
+      [ad],
+      at,
+      creationKey,
+    );
+    return adIds.get(ad.externalId)!;
+  }
+
+  /** The Ad an add with this key already made here, or null. */
+  async findAdByCreationKey(
+    orgId: string,
+    storeId: string,
+    creationKey: string,
+  ): Promise<{ id: string; externalId: string; campaignId: string } | null> {
+    const [row] = await this.db
+      .select({
+        id: ads.id,
+        externalId: ads.externalId,
+        campaignId: ads.campaignId,
+      })
+      .from(ads)
+      .where(
+        and(
+          eq(ads.organizationId, orgId),
+          eq(ads.storeId, storeId),
+          eq(ads.creationKey, creationKey),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  /**
+   * Ads made here, written carrying our Link Tags because they went out in
+   * the call that made them, and unconfirmed until read back.
+   */
+  private async insertCreatedAds(
+    scope: MirrorScope,
+    campaignId: string,
+    rows: readonly CreatedAdInput[],
+    at: Date,
+    creationKey: string | null = null,
+  ): Promise<Map<string, string>> {
     const adIds = new Map<string, string>();
-    if (input.ads.length) {
+    if (rows.length) {
       const written = await this.db
         .insert(ads)
         .values(
-          input.ads.map((ad) => ({
+          rows.map((ad) => ({
             organizationId: scope.organizationId,
             storeId: scope.storeId,
-            campaignId: campaign.id,
+            campaignId,
             externalId: ad.externalId,
             name: nameOr(ad.name, `Ad ${ad.externalId}`, AD_LIMITS.name),
             format: ad.format,
             status: ad.status,
             reviewStatus: ad.reviewStatus,
             creativeUrl: ad.creativeUrl,
+            adSetExternalId: ad.adSetExternalId,
+            creationKey,
             hasLinkTags: true,
             linkTagsCheckedAt: null,
             createdAt: at,
@@ -477,6 +592,8 @@ export class CampaignMirrorRepository {
             status: sql`excluded.status`,
             reviewStatus: sql`excluded.review_status`,
             creativeUrl: sql`coalesce(${ads.creativeUrl}, excluded.creative_url)`,
+            adSetExternalId: sql`coalesce(excluded.ad_set_external_id, ${ads.adSetExternalId})`,
+            creationKey: sql`coalesce(${ads.creationKey}, excluded.creation_key)`,
             updatedAt: sql`excluded.updated_at`,
           },
           setWhere: eq(ads.organizationId, scope.organizationId),
@@ -484,8 +601,120 @@ export class CampaignMirrorRepository {
         .returning({ id: ads.id, externalId: ads.externalId });
       for (const row of written) adIds.set(row.externalId, row.id);
     }
+    return adIds;
+  }
 
-    return { campaignId: campaign.id, adIds };
+  /**
+   * One Campaign in this Store, whole, and every Ad under it, or null when the
+   * id is not this Store's.
+   */
+  async findCampaignToEdit(
+    orgId: string,
+    storeId: string,
+    campaignId: string,
+  ): Promise<CampaignToEdit | null> {
+    const [campaign] = await this.db
+      .select()
+      .from(campaigns)
+      .where(
+        and(
+          eq(campaigns.id, campaignId),
+          eq(campaigns.organizationId, orgId),
+          eq(campaigns.storeId, storeId),
+        ),
+      )
+      .limit(1);
+    if (!campaign) return null;
+
+    const campaignAds = await this.db
+      .select({
+        id: ads.id,
+        externalId: ads.externalId,
+        name: ads.name,
+        status: ads.status,
+        creativeUrl: ads.creativeUrl,
+        adSetExternalId: ads.adSetExternalId,
+      })
+      .from(ads)
+      .where(
+        and(
+          eq(ads.campaignId, campaign.id),
+          eq(ads.organizationId, orgId),
+          eq(ads.storeId, storeId),
+        ),
+      )
+      .orderBy(asc(ads.createdAt), asc(ads.id));
+
+    return { campaign, ads: campaignAds };
+  }
+
+  /**
+   * The Ad Set a new Ad joins: the one holding the Ad that has spent the
+   * most, so a fresh creative goes where the campaign's money already goes.
+   * With no spend anywhere, the newest Ad's. Null when no Ad of the Campaign
+   * has said which Ad Set it is in.
+   */
+  async adSetForNewAd(
+    scope: MirrorScope,
+    campaignId: string,
+  ): Promise<string | null> {
+    const rows = await this.db.execute<{ ad_set_external_id: string }>(sql`
+      SELECT a.ad_set_external_id
+      FROM ${ads} AS a
+      LEFT JOIN ${adDailyFigures} AS f ON f.ad_id = a.id
+      WHERE a.organization_id = ${scope.organizationId}
+        AND a.store_id = ${scope.storeId}
+        AND a.campaign_id = ${campaignId}
+        AND a.ad_set_external_id IS NOT NULL
+      GROUP BY a.id
+      ORDER BY coalesce(sum(f.spend), 0) DESC, a.created_at DESC, a.id DESC
+      LIMIT 1
+    `);
+    return rows.rows[0]?.ad_set_external_id ?? null;
+  }
+
+  /**
+   * Records what an edit the platform accepted changed about a Campaign, so
+   * the page shows it now rather than after the next sync.
+   *
+   * Only ever called after the platform has said yes. A refused change never
+   * reaches this, so the previous state stands.
+   */
+  async recordCampaignChange(
+    scope: MirrorScope,
+    campaignId: string,
+    change: CampaignChange,
+    at: Date,
+  ): Promise<void> {
+    await this.db
+      .update(campaigns)
+      .set({ ...change, updatedAt: at })
+      .where(
+        and(
+          eq(campaigns.id, campaignId),
+          eq(campaigns.organizationId, scope.organizationId),
+          eq(campaigns.storeId, scope.storeId),
+        ),
+      );
+  }
+
+  /** Records an Ad's switch, once the platform has accepted it. */
+  async recordAdStatus(
+    scope: MirrorScope,
+    adId: string,
+    status: CampaignStatus,
+    at: Date,
+  ): Promise<void> {
+    await this.db
+      .update(ads)
+      .set({ status, updatedAt: at })
+      .where(
+        and(
+          eq(ads.id, adId),
+          eq(ads.organizationId, scope.organizationId),
+          eq(ads.storeId, scope.storeId),
+        ),
+      );
   }
 
   /** The Campaign a create with this key already made here, or null. */

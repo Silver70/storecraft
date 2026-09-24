@@ -10,11 +10,6 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { R2StorageService } from '../../../shared/storage/r2-storage.service';
-import {
-  StorefrontUrlError,
-  resolveStorefrontUrl,
-  type StorefrontDestination,
-} from '../../../shared/utils/storefront-url.util';
 import { StoreService } from '../../tenant/services/store.service';
 import {
   AD_PLATFORM_PROVIDER,
@@ -28,18 +23,19 @@ import {
   type GrantedAccount,
   type StoreCredential,
 } from '../interfaces/ad-platform-provider.interface';
-import type {
-  CampaignAdDto,
-  CreateCampaignDto,
-} from '../dto/create-campaign.dto';
+import type { CreateCampaignDto } from '../dto/create-campaign.dto';
 import { AdPlatformConnectionRepository } from '../repositories/ad-platform-connection.repository';
 import { AdPlatformCredentialRepository } from '../repositories/ad-platform-credential.repository';
-import { CampaignDraftRepository } from '../repositories/campaign-draft.repository';
 import {
   CampaignMirrorRepository,
   type MirrorScope,
 } from '../repositories/campaign-mirror.repository';
 import { CredentialVault } from './credential-vault.service';
+import {
+  AdDraftResolver,
+  UPLOAD_TYPES,
+  uploadPrefix,
+} from './ad-draft.resolver';
 import { LINK_TAGS, carriesOurLinkTags } from '../utils/link-tags.util';
 import { collapseStatus } from '../utils/platform-status.util';
 import {
@@ -62,21 +58,6 @@ export interface CreateCampaignOutcome {
   /** Ads the dry run could not check. Said so the merchant knows. */
   unchecked: number[];
 }
-
-/** A file a merchant can upload to make an ad from, and what it becomes. */
-const UPLOAD_TYPES: Record<
-  string,
-  { ext: string; kind: CreativeMedia['kind'] }
-> = {
-  'image/jpeg': { ext: 'jpg', kind: 'image' },
-  'image/png': { ext: 'png', kind: 'image' },
-  'video/mp4': { ext: 'mp4', kind: 'video' },
-  'video/quicktime': { ext: 'mov', kind: 'video' },
-};
-
-const KIND_BY_EXT = new Map(
-  Object.values(UPLOAD_TYPES).map(({ ext, kind }) => [ext, kind]),
-);
 
 /** Larger than any ad image; Meta takes up to 30 MB. */
 export const MAX_IMAGE_UPLOAD_BYTES = 30 * 1024 * 1024;
@@ -131,7 +112,7 @@ export class CampaignCreationService {
     @Inject(AD_PLATFORM_PROVIDER)
     private readonly provider: AdPlatformProvider,
     private readonly mirror: CampaignMirrorRepository,
-    private readonly drafts: CampaignDraftRepository,
+    private readonly adDrafts: AdDraftResolver,
     private readonly connections: AdPlatformConnectionRepository,
     private readonly credentials: AdPlatformCredentialRepository,
     private readonly vault: CredentialVault,
@@ -269,6 +250,7 @@ export class CampaignCreationService {
           status: collapseStatus(created.signals, now),
           startsAt: draft.startsAt,
           endsAt: draft.endsAt,
+          dailyBudget: draft.dailyBudget,
           // The first ad's picture; the first picture at all when it is a video.
           coverUrl:
             imageOf(0) ??
@@ -283,6 +265,7 @@ export class CampaignCreationService {
               status: collapseStatus(ad.signals, now),
               reviewStatus: ad.signals.review,
               creativeUrl: imageOf(index),
+              adSetExternalId: ad.externalAdSetId,
             };
           }),
         },
@@ -395,41 +378,13 @@ export class CampaignCreationService {
 
     const ads: AdDraft[] = [];
     for (const [index, ad] of dto.ads.entries()) {
-      const media = await this.mediaFor(orgId, storeId, ad, index, complaints);
-      const destinationUrl = await this.destinationFor(
-        orgId,
-        storeId,
-        ad,
+      const resolved = await this.adDrafts.resolve(orgId, storeId, ad, {
         index,
-        context.storefront,
+        name: adName(name, index),
+        storefront: context.storefront,
         complaints,
-      );
-      const primaryText = ad.primaryText.trim();
-      const headline = ad.headline.trim();
-      if (!primaryText) {
-        complaints.push({
-          adIndex: index,
-          field: 'primaryText',
-          message: 'Write the text above the picture.',
-        });
-      }
-      if (!headline) {
-        complaints.push({
-          adIndex: index,
-          field: 'headline',
-          message: 'Write a headline.',
-        });
-      }
-      if (media && destinationUrl) {
-        ads.push({
-          name: adName(name, index),
-          media,
-          primaryText,
-          headline,
-          callToAction: ad.callToAction ?? 'shop_now',
-          destinationUrl,
-        });
-      }
+      });
+      if (resolved) ads.push(resolved);
     }
 
     if (complaints.length) {
@@ -453,96 +408,6 @@ export class CampaignCreationService {
       ads,
       launch: dto.launch,
     };
-  }
-
-  /** A product image of this Store, or a file uploaded to this Store's storage. */
-  private async mediaFor(
-    orgId: string,
-    storeId: string,
-    ad: CampaignAdDto,
-    index: number,
-    complaints: DraftComplaint[],
-  ): Promise<CreativeMedia | null> {
-    if (ad.mediaSource === 'product') {
-      const url = await this.drafts.findProductImage(
-        orgId,
-        storeId,
-        ad.productMediaId!,
-      );
-      if (!url) {
-        complaints.push({
-          adIndex: index,
-          field: 'media',
-          message:
-            'That product image is no longer in the catalogue. Choose another.',
-        });
-        return null;
-      }
-      return { kind: 'image', url };
-    }
-
-    const url = ad.uploadUrl!;
-    const prefix = this.storage.getPublicUrl(uploadPrefix(orgId, storeId));
-    const kind = KIND_BY_EXT.get(url.split('.').pop()?.toLowerCase() ?? '');
-    if (!url.startsWith(prefix) || !kind || url.includes('..')) {
-      complaints.push({
-        adIndex: index,
-        field: 'media',
-        message: 'Upload the picture or video again.',
-      });
-      return null;
-    }
-    return { kind, url };
-  }
-
-  /** The ad's link, always on this Store's own storefront. */
-  private async destinationFor(
-    orgId: string,
-    storeId: string,
-    ad: CampaignAdDto,
-    index: number,
-    storefront: { storefrontUrl: string | null; productPathPattern: string },
-    complaints: DraftComplaint[],
-  ): Promise<string | null> {
-    let destination: StorefrontDestination;
-    switch (ad.destination) {
-      case 'product': {
-        const product = await this.drafts.findProduct(
-          orgId,
-          storeId,
-          ad.destinationProductId!,
-        );
-        if (!product || product.status !== 'active') {
-          complaints.push({
-            adIndex: index,
-            field: 'destination',
-            message: product
-              ? 'That product is not on sale, so its page is not on the storefront. Publish it, or point the ad somewhere else.'
-              : 'That product is no longer in the catalogue. Choose another.',
-          });
-          return null;
-        }
-        destination = { kind: 'product', slug: product.slug };
-        break;
-      }
-      case 'custom':
-        destination = { kind: 'custom', path: ad.destinationPath! };
-        break;
-      default:
-        destination = { kind: ad.destination };
-    }
-
-    try {
-      return resolveStorefrontUrl(storefront, destination);
-    } catch (error) {
-      if (!(error instanceof StorefrontUrlError)) throw error;
-      complaints.push({
-        adIndex: index,
-        field: 'destination',
-        message: error.message,
-      });
-      return null;
-    }
   }
 
   /**
@@ -602,13 +467,8 @@ export class CampaignCreationService {
   }
 }
 
-/** Where this Store's ad uploads live, and the only place a draft may name one. */
-function uploadPrefix(orgId: string, storeId: string): string {
-  return `ad-creatives/${orgId}/${storeId}/uploads/`;
-}
-
 /** A 422 the form reads: a summary, and each complaint where it belongs. */
-function rejected(
+export function rejected(
   message: string,
   complaints: readonly DraftComplaint[],
 ): UnprocessableEntityException {

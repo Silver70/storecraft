@@ -94,6 +94,7 @@ const reported = (externalAdId: string): ReportedAd => ({
   name: `Ad ${externalAdId}`,
   format: 'image',
   creativeUrl: null,
+  externalAdSetId: null,
   signals: DELIVERING,
   days: [],
 });
@@ -107,6 +108,7 @@ const BUILT_ELSEWHERE: AdTree = {
       externalCampaignId: CAMPAIGN_EXT,
       name: 'Built in Ads Manager',
       signals: DELIVERING,
+      budget: { level: null, daily: null },
       ads: [reported(REEL_EXT), reported(STILL_EXT)],
     },
   ],

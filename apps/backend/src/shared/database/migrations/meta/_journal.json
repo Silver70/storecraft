@@ -225,6 +225,13 @@
       "when": 1790248261314,
       "tag": "0031_create_a_campaign",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1790250602918,
+      "tag": "0032_edit_a_campaign",
+      "breakpoints": true
     }
   ]
 }

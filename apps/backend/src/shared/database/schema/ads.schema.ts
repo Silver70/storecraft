@@ -20,6 +20,7 @@ export const AD_LIMITS = {
    * platform writes this id into `utm_content` at the moment of the click.
    */
   externalId: 255,
+  creationKey: 255,
 } as const;
 
 /** An Ad reports the same five statuses as its Campaign, for the same reason. */
@@ -100,6 +101,21 @@ export const ads = pgTable(
      */
     creativeUrl: text('creative_url'),
     /**
+     * The platform's id for the Ad Set this Ad sits in. A handle, not a
+     * modelled level: the Ad Set holds the schedule, so an end date is written
+     * there, and a new Ad is added to one. Null until the platform has said.
+     */
+    adSetExternalId: varchar('ad_set_external_id', {
+      length: AD_LIMITS.externalId,
+    }),
+    /**
+     * The idempotency key of the request that added this Ad to a running
+     * Campaign here, or null for one created with its Campaign or discovered.
+     * A retried add finds its Ad by this key and answers with it, rather than
+     * asking the platform again with a body that has since changed.
+     */
+    creationKey: varchar('creation_key', { length: AD_LIMITS.creationKey }),
+    /**
      * Whether this Ad's link carries our Link Tags. Absent by default: an Ad
      * built in the platform's own ad manager usually has none, and its revenue
      * cannot be measured until it does.
@@ -122,6 +138,8 @@ export const ads = pgTable(
   },
   (t) => [
     unique('ads_store_external_id_unique').on(t.storeId, t.externalId),
+    // One ad per add, even when two retries race each other here.
+    unique('ads_store_creation_key_unique').on(t.storeId, t.creationKey),
     index('ads_org_store_idx').on(t.organizationId, t.storeId),
     index('ads_campaign_idx').on(t.campaignId),
   ],

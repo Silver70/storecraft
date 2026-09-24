@@ -7,10 +7,12 @@ import { ConfigService } from '@nestjs/config';
 import type { AdPlatform } from '../../../shared/database/schema';
 import {
   CampaignRejectedError,
+  ChangeRejectedError,
   CreateInFlightError,
 } from '../interfaces/ad-platform-provider.interface';
 import type {
   AdAccountOption,
+  AddAdInput,
   AdDraft,
   AdPlatformProvider,
   AdTree,
@@ -40,10 +42,15 @@ import type {
   ReportedAd,
   ReportedAdDay,
   ReportedAdFormat,
+  ReportedBudget,
   ReportedCampaign,
   ReviewSignal,
   SendPurchaseInput,
+  SetAdDeliveryInput,
+  SetAdSetEndInput,
+  SetCampaignDeliveryInput,
   StoreCredential,
+  UpdateCampaignInput,
   WriteLinkTagsInput,
 } from '../interfaces/ad-platform-provider.interface';
 import {
@@ -566,6 +573,7 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
         externalAdId: ad.platformAdId!,
         name: ad.name ?? null,
         format: toFormat(ad.creativeType),
+        externalAdSetId: ad.platformAdSetId ?? result?.platformAdSetId ?? null,
         signals: {
           // A new ad with no status yet is in review, not broken.
           delivery: ad.status
@@ -590,6 +598,192 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
         endsAt: draft.endsAt,
       },
       ads,
+    };
+  }
+
+  /**
+   * Renames the campaign, or changes its daily budget, in one call.
+   *
+   * The budget crosses the boundary here, by `toDecimalAmount`, as it does on
+   * a create. Meta answers 409 when the campaign's budget lives on its Ad Sets,
+   * which is a refusal about this campaign, so it says so in those terms.
+   */
+  async updateCampaign(input: UpdateCampaignInput): Promise<void> {
+    this.connectPlatform(input.platform);
+    await this.change(
+      'PUT',
+      `/v1/ads/campaigns/${encodeURIComponent(input.externalCampaignId)}`,
+      input.credential.secret,
+      {
+        platform: 'facebook',
+        // Only read by the vendor for a campaign with no ads, which it could
+        // not otherwise find.
+        accountId: input.providerAccountRef,
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.dailyBudget !== undefined
+          ? {
+              budget: {
+                amount: toDecimalAmount(input.dailyBudget),
+                type: 'daily',
+              },
+            }
+          : {}),
+      },
+      {
+        409: 'This campaign’s budget is set on each of its ad sets, so it can only be changed in Meta Ads Manager.',
+      },
+    );
+  }
+
+  /**
+   * Flips the campaign's own switch. Meta cascades delivery to its ad sets
+   * and ads, and each ad keeps its own switch underneath.
+   *
+   * The vendor echoes the status it wrote, and that echo is the confirmation.
+   * An answer without it has not changed anything we can vouch for.
+   */
+  async setCampaignDelivery(input: SetCampaignDeliveryInput): Promise<void> {
+    this.connectPlatform(input.platform);
+    const result = await this.change<{ status?: string }>(
+      'PUT',
+      `/v1/ads/campaigns/${encodeURIComponent(input.externalCampaignId)}/status`,
+      input.credential.secret,
+      { status: input.status, platform: 'facebook' },
+      { 404: 'Meta no longer has this campaign, so it cannot be switched.' },
+    );
+    if (result?.status !== input.status) {
+      throw new ChangeRejectedError(
+        'Meta did not confirm the change, so nothing is recorded as changed. Refresh to see where the campaign stands.',
+      );
+    }
+  }
+
+  /**
+   * Flips one ad's switch and nothing beside it.
+   *
+   * The vendor skips an ad it will not flip, such as one Meta rejected or one
+   * that has finished, and answers 200 saying so. A skip is not an acceptance,
+   * so it is reported as a refusal in the vendor's own words.
+   */
+  async setAdDelivery(input: SetAdDeliveryInput): Promise<void> {
+    this.connectPlatform(input.platform);
+    const result = await this.change<{
+      updated?: number;
+      skipped?: number;
+      message?: string;
+    }>(
+      'PUT',
+      `/v1/ads/${encodeURIComponent(input.externalAdId)}/status`,
+      input.credential.secret,
+      { status: input.status },
+      { 404: 'Meta no longer has this ad, so it cannot be switched.' },
+    );
+    if ((result?.skipped ?? 0) > 0 && (result?.updated ?? 0) === 0) {
+      throw new ChangeRejectedError(
+        result?.message?.trim() ||
+          'Meta left this ad as it was. It may have been rejected or finished, or already be switched that way.',
+      );
+    }
+  }
+
+  /**
+   * Sets or clears one ad set's end time, which is where Meta keeps a
+   * campaign's schedule.
+   *
+   * A clear is sent as null. **Not yet confirmed against a live account**: the
+   * vendor documents the field as a string. If it refuses null, the refusal
+   * comes back as a change rejected, and nothing is recorded here.
+   */
+  async setAdSetEnd(input: SetAdSetEndInput): Promise<void> {
+    this.connectPlatform(input.platform);
+    await this.change(
+      'PUT',
+      `/v1/ads/ad-sets/${encodeURIComponent(input.externalAdSetId)}`,
+      input.credential.secret,
+      {
+        platform: 'facebook',
+        platformSpecificData: {
+          endDate: input.endsAt ? input.endsAt.toISOString() : null,
+        },
+      },
+      {
+        404: 'Meta no longer has this campaign’s ad set, so its end date cannot be changed.',
+      },
+    );
+  }
+
+  /**
+   * Adds one ad to an ad set that already exists: the vendor's attach shape.
+   * The ad inherits the ad set's budget, audience, goal and schedule, so
+   * none of those is sent, and nothing about them can change.
+   *
+   * **The Link Tags go in this call**, in `tracking.urlTags`, with the Pixel
+   * beside them, exactly as on a create. Tracking lives on the ad, not the ad
+   * set, so it has to be sent every time.
+   *
+   * The vendor has no dry run for this shape, so a complaint arrives with the
+   * create and is placed on the ad. The key makes a retry answer with the ad
+   * the first press made.
+   */
+  async addAd(input: AddAdInput): Promise<CreatedAd> {
+    this.connectPlatform(input.platform);
+
+    let result: RawCreateResult | undefined;
+    try {
+      result = await this.call<RawCreateResult>(
+        input.credential.secret,
+        'POST',
+        '/v1/ads/create',
+        {
+          body: {
+            accountId: input.providerAccountRef,
+            adAccountId: input.externalAccountId,
+            name: input.ad.name,
+            adName: input.ad.name,
+            adSetId: input.externalAdSetId,
+            ...singleCreative(input.ad),
+            status: 'ACTIVE',
+            tracking: {
+              pixelId: input.pixelId,
+              urlTags: input.linkTags.map(({ key, value }) => ({ key, value })),
+            },
+          },
+          headers: { 'Idempotency-Key': input.idempotencyKey },
+          refuse: [400, 404, 409, 422, 502],
+        },
+      );
+    } catch (error) {
+      if (!(error instanceof RefusedByPlatform)) throw error;
+      if (error.status === 409 && !isPlatformError(error.body)) {
+        throw new CreateInFlightError();
+      }
+      if (error.status === 502 && !isPlatformError(error.body)) {
+        throw new ServiceUnavailableException(
+          'The ad platform could not be reached just now. Nothing was created — try again shortly.',
+        );
+      }
+      throw new CampaignRejectedError(complaintsFrom(error.body, 0));
+    }
+
+    const raw = result?.ad ?? result?.ads?.[0];
+    if (!raw?.platformAdId) {
+      this.logger.error('An added ad answered without an ad id');
+      throw new ServiceUnavailableException(
+        'The ad platform accepted the ad but did not say what it created. It will appear here after the next refresh — check before adding it again.',
+      );
+    }
+    return {
+      externalAdId: raw.platformAdId,
+      name: raw.name ?? input.ad.name,
+      format: toFormat(raw.creativeType) ?? input.ad.media.kind,
+      externalAdSetId: raw.platformAdSetId ?? input.externalAdSetId,
+      signals: {
+        // A new ad with no status yet is in review, not broken.
+        delivery: raw.status ? toDelivery(raw.status) : 'pending_review',
+        review: toReview(raw.reviewStatus),
+        startsAt: toDate(raw.schedule?.startDate),
+        endsAt: toDate(raw.schedule?.endDate),
+      },
     };
   }
 
@@ -773,6 +967,38 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
   }
 
   /**
+   * One edit: a request whose refusal is about the change rather than about
+   * the integration, and becomes a `ChangeRejectedError` in Meta's own words.
+   *
+   * `fallback` gives a sentence per status for a refusal that came without
+   * one, so a merchant is never shown a bare status code.
+   */
+  private async change<T = unknown>(
+    method: 'PUT' | 'POST',
+    path: string,
+    key: string,
+    body: Record<string, unknown>,
+    fallback: Partial<Record<number, string>> = {},
+  ): Promise<T | undefined> {
+    try {
+      return await this.call<T>(key, method, path, {
+        body,
+        refuse: [400, 404, 409, 422],
+      });
+    } catch (error) {
+      if (!(error instanceof RefusedByPlatform)) throw error;
+      const platform = error.body?.platformError;
+      throw new ChangeRejectedError(
+        platform?.error_user_msg?.trim() ||
+          platform?.error_user_title?.trim() ||
+          fallback[error.status] ||
+          error.body?.error?.trim() ||
+          'Meta did not accept this change. Nothing has changed.',
+      );
+    }
+  }
+
+  /**
    * One request, and the one place a vendor failure becomes something this
    * codebase can read.
    *
@@ -789,7 +1015,7 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
    */
   private async call<T>(
     key: string,
-    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     path: string,
     options: {
       query?: Record<string, string>;
@@ -933,6 +1159,7 @@ interface RawCreateResult {
   ad?: RawAd & { platformCampaignId?: string };
   ads?: (RawAd & { platformCampaignId?: string })[];
   platformCampaignId?: string;
+  platformAdSetId?: string;
 }
 
 interface RawAdAccount {
@@ -970,6 +1197,7 @@ interface RawAd {
   _id?: string;
   /** Meta's own ad id — what `{{ad.id}}` expands to. The one we key on. */
   platformAdId?: string;
+  platformAdSetId?: string | null;
   name?: string | null;
   status?: string | null;
   reviewStatus?: string | null;
@@ -992,7 +1220,20 @@ interface RawCampaign {
   reviewStatus?: string | null;
   /** Meta's own `effective_status` on the campaign: ACTIVE, PAUSED, DELETED… */
   platformCampaignStatus?: string | null;
-  adSets?: { ads?: RawAd[] }[];
+  /** `campaign` when the budget is on the campaign, `adset` when on each ad set. */
+  budgetLevel?: string | null;
+  /** The campaign's own budget, in whole units. Null when it lives on the ad sets. */
+  campaignBudget?: RawBudget | null;
+  adSets?: {
+    platformAdSetId?: string | null;
+    adSetBudget?: RawBudget | null;
+    ads?: RawAd[];
+  }[];
+}
+
+interface RawBudget {
+  amount?: number | null;
+  type?: string | null;
 }
 
 /**
@@ -1046,7 +1287,7 @@ function toReportedCampaign(raw: RawCampaign): ReportedCampaign {
       // told apart from its siblings across syncs. The vendor's document id is
       // not a substitute: `{{ad.id}}` never expands to it.
       if (!ad.platformAdId) continue;
-      ads.push(toReportedAd(ad));
+      ads.push(toReportedAd(ad, adSet.platformAdSetId ?? null));
     }
   }
 
@@ -1069,11 +1310,42 @@ function toReportedCampaign(raw: RawCampaign): ReportedCampaign {
         ? null
         : new Date(Math.max(...(ends as Date[]).map((d) => d.getTime()))),
     },
+    budget: budgetOf(raw),
     ads,
   };
 }
 
-function toReportedAd(ad: RawAd): ReportedAd {
+/**
+ * Where the campaign's budget lives, and its daily figure when it is one.
+ *
+ * The vendor's `budgetLevel` is its canonical answer. Where it is absent, a
+ * campaign budget means the campaign holds it and an ad-set budget means the
+ * ad sets do. The figure crosses the boundary here, by `toMinorUnits`, so no
+ * whole-unit amount reaches a service. A lifetime budget has no daily figure,
+ * and is changed in Ads Manager rather than here.
+ */
+function budgetOf(raw: RawCampaign): ReportedBudget {
+  const level =
+    raw.budgetLevel === 'campaign'
+      ? 'campaign'
+      : raw.budgetLevel === 'adset'
+        ? 'ad_set'
+        : raw.campaignBudget
+          ? 'campaign'
+          : raw.adSets?.some((adSet) => adSet.adSetBudget)
+            ? 'ad_set'
+            : null;
+  const budget = raw.campaignBudget;
+  const daily =
+    level === 'campaign' &&
+    budget?.type === 'daily' &&
+    typeof budget.amount === 'number'
+      ? toMinorUnits(budget.amount)
+      : null;
+  return { level, daily };
+}
+
+function toReportedAd(ad: RawAd, adSetId: string | null): ReportedAd {
   const days: ReportedAdDay[] = (ad.daily ?? [])
     .map((entry) => {
       const day = entry.date ?? entry.day;
@@ -1092,6 +1364,7 @@ function toReportedAd(ad: RawAd): ReportedAd {
     name: ad.name ?? null,
     format: toFormat(ad.creativeType),
     creativeUrl: creativeUrlOf(ad),
+    externalAdSetId: ad.platformAdSetId ?? adSetId,
     signals: adSignals(ad),
     days,
   };
