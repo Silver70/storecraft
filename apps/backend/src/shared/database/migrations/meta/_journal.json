@@ -211,6 +211,13 @@
       "when": 1790238284471,
       "tag": "0029_sync_campaigns_ads_and_figures",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1790241034957,
+      "tag": "0030_the_campaign_detail_page",
+      "breakpoints": true
     }
   ]
 }

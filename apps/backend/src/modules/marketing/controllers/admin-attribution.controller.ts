@@ -1,4 +1,11 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -14,8 +21,12 @@ import { requireStoreContext } from '../../../shared/tenant/tenant.util';
 import {
   AttributedRevenueService,
   type AttributedRevenueReport,
+  type CampaignPerformanceReport,
 } from '../services/attributed-revenue.service';
-import { AttributedRevenueQueryDto } from '../dto/attributed-revenue.dto';
+import {
+  AttributedRevenueQueryDto,
+  CampaignPerformanceQueryDto,
+} from '../dto/attributed-revenue.dto';
 
 /**
  * Marketing reporting. Separate from `admin/campaigns` on purpose: that
@@ -44,5 +55,23 @@ export class AdminAttributionController {
   ): Promise<AttributedRevenueReport> {
     const { organizationId, storeId } = requireStoreContext(tenant);
     return this.revenue.byCampaign(organizationId, storeId, query.period);
+  }
+
+  @Get('campaigns/:id/performance')
+  @RequirePermission('campaigns.read')
+  @ApiOperation({
+    summary: "One campaign's performance over a period, with its ads",
+    description:
+      "The campaign's line from the attributed-revenue report — same credit rule, same ads, same `unassigned` residue — over 7, 30 or 90 days or its lifetime, plus the ratios its page shows. `roas` is revenue ÷ spend and null at zero spend. `conversionRate` is our orders ÷ the platform's clicks and null at zero clicks. `contributionMargin` is revenue (order totals, already net of discounts) − cost of goods − spend, and `roi` is margin ÷ spend; both are null unless every item sold on the campaign's credited orders has a cost price, and `uncostedProducts` then lists the products missing one. For a campaign with `hasLinkTags` false every revenue-derived figure is null: its revenue is unknown, not zero. Each ad carries its own `roas` and the platform's `reviewStatus`. Read entirely from stored rows; nothing calls the ad platform.",
+  })
+  @ApiResponse({ status: 200 })
+  @ApiResponse({ status: 404 })
+  async campaignPerformance(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: CampaignPerformanceQueryDto,
+    @CurrentTenant() tenant: TenantContext,
+  ): Promise<CampaignPerformanceReport> {
+    const { organizationId, storeId } = requireStoreContext(tenant);
+    return this.revenue.forCampaign(organizationId, storeId, id, query.period);
   }
 }

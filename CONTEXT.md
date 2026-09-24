@@ -302,7 +302,8 @@ _Avoid_: CVR, conversion, close rate, checkout rate
 Attributed revenue − cost of goods − discounts − Spend, for a Campaign or one
 of its Ads. The figure that says whether to keep spending, where ROAS only says
 how much came back. Absent unless every item sold has a cost price — never
-estimated from the part that has one.
+estimated from the part that has one. Attributed revenue is Order totals, which
+are already net of discounts, so discounts are taken off once, there.
 _Avoid_: Profit, net, margin (unqualified)
 
 **ROI**:

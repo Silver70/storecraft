@@ -1,108 +1,105 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi, Link } from "@tanstack/react-router";
-import { ArrowLeftIcon, ChevronRightIcon } from "lucide-react";
+import { ArrowLeftIcon } from "lucide-react";
 
-import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
-import type { Ad, Campaign } from "~/types/api";
+import { Tabs, TabsList, TabsTrigger } from "~/components/ui/tabs";
+import type { Campaign, CampaignPeriod } from "~/types/api";
+import { CampaignAdsTable } from "../components/campaign-ads-table";
 import { CreativeTile } from "../components/campaign-cards";
 import { CampaignStatusBadge } from "../components/campaign-status-badge";
-import { campaignAdsQueryOptions, campaignQueryOptions } from "../queries";
-import { formatAdFormat, formatFlight, formatPlatform } from "../utils";
+import { PerformancePanel } from "../components/performance-panel";
+import { campaignPerformanceQueryOptions, campaignQueryOptions } from "../queries";
+import {
+  CAMPAIGN_PERIODS,
+  defaultCampaignPeriod,
+  formatFlight,
+  formatPlatform,
+} from "../utils";
 
 const route = getRouteApi("/admin/campaigns_/$campaignId");
 
 /**
- * One campaign as the ad platform describes it, and the ads under it.
+ * One campaign: its cover, one performance panel, and the ads that ran under
+ * it. Enough to answer "was this worth it, and which creative carried it"
+ * without touching a control — the period picker is the only one, and the page
+ * opens on a sensible period without it.
  *
- * Read-only: the name, schedule, status and creatives are the platform's, and
- * change here only by asking the platform to change them.
+ * Drawn entirely from what the sync already stored. Nothing here calls the ad
+ * platform, so a vendor outage costs the page its freshness, never the page.
  */
 export function CampaignDetailPage() {
-    const { campaignId } = route.useParams();
+  const { campaignId } = route.useParams();
+  const search = route.useSearch();
+  const navigate = route.useNavigate();
 
-    const campaign: Campaign = useSuspenseQuery(campaignQueryOptions(campaignId)).data;
-    const ads: Ad[] = useSuspenseQuery(campaignAdsQueryOptions(campaignId)).data;
+  const campaign: Campaign = useSuspenseQuery(campaignQueryOptions(campaignId)).data;
+  const period = search.period ?? defaultCampaignPeriod(campaign.status);
+  const report = useSuspenseQuery(campaignPerformanceQueryOptions(campaignId, period)).data;
+  const line = report.campaign;
 
-    const schedule = formatFlight(campaign.startsAt, campaign.endsAt);
+  const schedule = formatFlight(line.startsAt, line.endsAt);
 
-    return (
-        <div className="space-y-6 pb-10">
-            {/* ── Header ────────────────────────────────────────────────────────────── */}
-            <div className="flex min-w-0 items-center gap-1.5 text-sm text-muted-foreground">
-                <Link
-                    to="/admin/campaigns"
-                    className="flex items-center gap-1 transition-colors hover:text-foreground"
-                >
-                    <ArrowLeftIcon className="h-3.5 w-3.5" />
-                    Campaigns
-                </Link>
-                <ChevronRightIcon className="h-3.5 w-3.5 shrink-0" />
-                <span className="truncate text-foreground">{campaign.name}</span>
-                <CampaignStatusBadge status={campaign.status} />
+  const choosePeriod = (next: CampaignPeriod) =>
+    navigate({
+      // The default is left out of the URL, so a link to a campaign keeps
+      // opening on whatever suits the campaign when it is followed.
+      search: { period: next === defaultCampaignPeriod(campaign.status) ? undefined : next },
+      replace: true,
+      resetScroll: false,
+    });
+
+  return (
+    <div className="space-y-6 pb-10">
+      {/* ── Header ────────────────────────────────────────────────────────── */}
+      <div className="space-y-3">
+        <Link
+          to="/admin/campaigns"
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ArrowLeftIcon className="h-3.5 w-3.5" />
+          Campaigns
+        </Link>
+
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div className="min-w-0 space-y-1">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <h1 className="truncate text-2xl font-semibold">{line.name}</h1>
+              <CampaignStatusBadge status={line.status} />
             </div>
+            <p className="text-sm text-muted-foreground">
+              {[`${formatPlatform(line.platform)} Ads`, schedule].filter(Boolean).join(" · ")}
+            </p>
+          </div>
 
-            <div className="mx-auto max-w-2xl space-y-5">
-                {/* ── Details ───────────────────────────────────────────────────────── */}
-                <Card>
-                    <CardHeader className="border-b pb-4">
-                        <CardTitle className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                            Campaign
-                        </CardTitle>
-                    </CardHeader>
-                    <CardContent className="flex gap-4 pt-5">
-                        <CreativeTile src={campaign.coverUrl} name={campaign.name} />
-                        <dl className="grid flex-1 grid-cols-2 gap-x-6 gap-y-3 text-sm">
-                            <div>
-                                <dt className="text-xs text-muted-foreground">Platform</dt>
-                                <dd>{formatPlatform(campaign.platform)} Ads</dd>
-                            </div>
-                            <div>
-                                <dt className="text-xs text-muted-foreground">Schedule</dt>
-                                <dd>{schedule ?? "—"}</dd>
-                            </div>
-                            <div>
-                                <dt className="text-xs text-muted-foreground">Campaign id</dt>
-                                <dd className="truncate font-mono text-xs">{campaign.externalId}</dd>
-                            </div>
-                            <div>
-                                <dt className="text-xs text-muted-foreground">Revenue tracking</dt>
-                                <dd>{campaign.hasLinkTags ? "Tracked" : "Not tracked"}</dd>
-                            </div>
-                        </dl>
-                    </CardContent>
-                </Card>
-
-                {/* ── Ads ───────────────────────────────────────────────────────────── */}
-                <Card>
-                    <CardHeader className="border-b pb-4">
-                        <CardTitle className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                            Ads
-                        </CardTitle>
-                    </CardHeader>
-                    <CardContent className="pt-5">
-                        {ads.length === 0 ? (
-                            <p className="text-sm text-muted-foreground">No ads on this campaign.</p>
-                        ) : (
-                            <ul className="divide-y">
-                                {ads.map(ad => (
-                                    <li key={ad.id} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
-                                        <CreativeTile src={ad.creativeUrl} name={ad.name} />
-                                        <div className="min-w-0 flex-1">
-                                            <p className="truncate text-sm font-medium">{ad.name}</p>
-                                            <p className="mt-1 text-xs text-muted-foreground">
-                                                {[formatAdFormat(ad.format), ad.hasLinkTags ? "Tracked" : "Not tracked"]
-                                                    .filter(Boolean)
-                                                    .join(" · ")}
-                                            </p>
-                                        </div>
-                                        <CampaignStatusBadge status={ad.status} />
-                                    </li>
-                                ))}
-                            </ul>
-                        )}
-                    </CardContent>
-                </Card>
-            </div>
+          <Tabs value={period} onValueChange={(v) => choosePeriod(v as CampaignPeriod)}>
+            <TabsList>
+              {CAMPAIGN_PERIODS.map((p) => (
+                <TabsTrigger key={p.value} value={p.value} className="text-xs">
+                  {p.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
         </div>
-    );
+      </div>
+
+      {/* ── Cover and performance ─────────────────────────────────────────── */}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+        <CreativeTile
+          src={line.coverUrl}
+          name={line.name}
+          className="aspect-[4/3] h-auto w-full rounded-xl"
+        />
+        <PerformancePanel line={line} lookbackDays={report.lookbackDays} />
+      </div>
+
+      {/* ── Ads ───────────────────────────────────────────────────────────── */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          Ads
+        </h2>
+        <CampaignAdsTable line={line} />
+      </section>
+    </div>
+  );
 }

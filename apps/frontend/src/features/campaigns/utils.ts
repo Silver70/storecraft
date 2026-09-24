@@ -1,4 +1,10 @@
-import type { AdFormat, CampaignPlatform, CampaignStatus } from "~/types/api";
+import type {
+  AdFormat,
+  AdReviewStatus,
+  CampaignPeriod,
+  CampaignPlatform,
+  CampaignStatus,
+} from "~/types/api";
 
 /** Display names for the ad platforms a campaign can be on. */
 export const PLATFORM_LABELS: Record<CampaignPlatform, string> = {
@@ -131,4 +137,54 @@ export function arrangeGrid<T extends GridCampaign>(
     shown: ordered.filter((c) => !isOlder(c)),
     older: ordered.filter(isOlder),
   };
+}
+
+// ─── One campaign's page ──────────────────────────────────────────────────────
+
+export const CAMPAIGN_PERIODS: { value: CampaignPeriod; label: string }[] = [
+  { value: "7d", label: "7 days" },
+  { value: "30d", label: "30 days" },
+  { value: "90d", label: "90 days" },
+  { value: "lifetime", label: "Lifetime" },
+];
+
+/**
+ * The period a campaign's page opens on: the last 30 days, or its whole life
+ * once it has Ended — a finished campaign's last month is mostly zeroes.
+ */
+export function defaultCampaignPeriod(status: CampaignStatus): CampaignPeriod {
+  return status === "ended" ? "lifetime" : "30d";
+}
+
+/**
+ * What the platform's review said, when it is worth saying beside the status.
+ * An approval or a pending review is already what the status reads, so only a
+ * verdict against the ad is named.
+ */
+export function reviewNote(
+  review: AdReviewStatus | null,
+  platform: CampaignPlatform,
+): string | null {
+  if (review === "rejected") return `Rejected by ${formatPlatform(platform)}`;
+  if (review === "with_issues") return `Flagged by ${formatPlatform(platform)}`;
+  return null;
+}
+
+const COUNT = new Intl.NumberFormat("en-US");
+
+export function formatCount(n: number): string {
+  return COUNT.format(n);
+}
+
+/** A fraction as a percentage: `0.0375` → `3.75%`, `1.1` → `110%`. */
+export function formatPercent(ratio: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "percent",
+    maximumFractionDigits: Math.abs(ratio) < 0.1 ? 2 : 1,
+  }).format(ratio);
+}
+
+/** Revenue per unit of spend: `3.2` → `3.20×`. */
+export function formatRoas(roas: number): string {
+  return `${roas.toFixed(2)}×`;
 }

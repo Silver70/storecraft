@@ -667,6 +667,48 @@ describe('Ad platform sync (e2e)', () => {
       });
     });
 
+    it('keeps the review verdict beside the status, so a paused rejection reads as both', async () => {
+      await connect(fixture.admin.client, {
+        holds: tree([
+          campaign('cmp_live', [
+            ad('ad_benched', [], {
+              signals: { delivery: 'paused', review: 'rejected' },
+            }),
+            ad('ad_fine', [], { signals: { review: 'approved' } }),
+            ad('ad_silent', [], { signals: { review: null } }),
+          ]),
+        ]),
+      });
+
+      const live = await campaignLine(fixture.admin.client, 'cmp_live');
+      const byExt = Object.fromEntries(
+        live.ads.map((a) => [a.externalId, [a.status, a.reviewStatus]]),
+      );
+      expect(byExt).toEqual({
+        ad_benched: ['paused', 'rejected'],
+        ad_fine: ['active', 'approved'],
+        ad_silent: ['active', null],
+      });
+
+      // A later read where the platform withdrew its verdict is written as
+      // reported, not kept from the last one.
+      provider.setAdTree(
+        'act_100',
+        tree([
+          campaign('cmp_live', [
+            ad('ad_benched', [], {
+              signals: { delivery: 'paused', review: null },
+            }),
+          ]),
+        ]),
+      );
+      await refresh(fixture.admin.client);
+      const after = await campaignLine(fixture.admin.client, 'cmp_live');
+      expect(
+        after.ads.find((a) => a.externalId === 'ad_benched')!.reviewStatus,
+      ).toBeNull();
+    });
+
     it('reads a campaign deleted on the platform as Ended and keeps its history', async () => {
       const spentOn = daysBefore(today(), 2);
       await connect(fixture.admin.client, {

@@ -1,9 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
   Ad,
   AdFormat,
+  AdReviewStatus,
   AdStatus,
+  Campaign,
   CampaignPlatform,
   CampaignStatus,
 } from '../../../shared/database/schema';
@@ -16,20 +18,30 @@ import { AttributionRepository } from '../repositories/attribution.repository';
 import {
   AdDailyFigureRepository,
   type AdFigures,
+  type AdLifetime,
 } from '../repositories/ad-daily-figure.repository';
 import {
+  resolveCampaignPeriodRange,
   resolvePeriodRange,
   type AttributionPeriod,
+  type CampaignPeriod,
 } from '../utils/attribution-period.util';
 import {
+  campaignRatios,
+  roas,
+  type CampaignRatios,
+} from '../utils/campaign-performance.util';
+import {
+  creditFor,
   tallyAttributedRevenue,
   type AdTally,
+  type AttributionTally,
   type CreditIndex,
   type RevenueBucket,
 } from '../utils/attributed-revenue.util';
 import { coverFor, endedAtFor } from '../utils/campaign-card.util';
 
-export type { AttributionPeriod };
+export type { AttributionPeriod, CampaignPeriod };
 
 /**
  * What the ad platform measured, summed over the period: what it charged, how
@@ -52,6 +64,11 @@ export interface AdRevenueLine extends RevenueBucket, PlatformFigures {
   name: string;
   format: AdFormat | null;
   status: AdStatus;
+  /**
+   * The platform's review verdict, beside the collapsed status rather than
+   * inside it — so an Ad paused after a rejection reads as both.
+   */
+  reviewStatus: AdReviewStatus | null;
   creativeUrl: string | null;
   hasLinkTags: boolean;
 }
@@ -128,6 +145,42 @@ export interface AttributedRevenueReport {
   totals: RevenueBucket;
 }
 
+/** One Ad's row on its Campaign's page: its report line, and its ROAS. */
+export interface AdPerformanceLine extends AdRevenueLine {
+  /** Null when the Ad spent nothing, or its revenue cannot be read. */
+  roas: number | null;
+}
+
+/**
+ * One Campaign over a period, with every figure its page shows.
+ *
+ * The same line the Store-wide report carries — the same tally, the same Ads,
+ * the same Unassigned residue — so the page and the grid cannot disagree about
+ * a Campaign they both show. The ratios on top follow
+ * `campaign-performance.util`, which is where each one's reason to be absent is
+ * written.
+ */
+export interface CampaignPerformanceLine
+  extends Omit<CampaignRevenueLine, 'ads'>, CampaignRatios {
+  ads: AdPerformanceLine[];
+  /**
+   * Why Contribution Margin and ROI are absent, when it is missing cost
+   * prices: every product sold in the period without one, once each.
+   * Empty when every item was costed, or when the Campaign is Not Tracked.
+   */
+  uncostedProducts: { productId: string | null; name: string }[];
+}
+
+export interface CampaignPerformanceReport {
+  period: CampaignPeriod;
+  /** The Lookback Window, stated once where the figures are read. */
+  lookbackDays: number;
+  /** The first instant read, or null for Lifetime, which has no start. */
+  rangeStart: string | null;
+  rangeEnd: string;
+  campaign: CampaignPerformanceLine;
+}
+
 const EMPTY: RevenueBucket = { orders: 0, revenue: 0 };
 const NO_FIGURES: PlatformFigures = { spend: 0, impressions: 0, clicks: 0 };
 const NO_ADS: AdTally = { byAd: new Map(), unassigned: EMPTY };
@@ -160,6 +213,7 @@ function adLinesFor(
         name: ad.name,
         format: ad.format,
         status: ad.status,
+        reviewStatus: ad.reviewStatus,
         creativeUrl: ad.creativeUrl,
         hasLinkTags: ad.hasLinkTags,
         orders: bucket.orders,
@@ -168,6 +222,43 @@ function adLinesFor(
       };
     })
     .sort(byRevenue);
+}
+
+/**
+ * One Campaign's report line from rows already read: its credit, its Ads'
+ * split of it, and the platform's figures summed up from those Ads.
+ */
+function campaignLineFor(
+  campaign: Campaign,
+  ownAds: readonly Ad[],
+  tally: AttributionTally,
+  figures: ReadonlyMap<string, AdFigures>,
+  lifetime: ReadonlyMap<string, AdLifetime>,
+  end: Date,
+): CampaignRevenueLine {
+  const bucket = tally.byCampaign.get(campaign.id) ?? EMPTY;
+  const adTally = tally.adsByCampaign.get(campaign.id) ?? NO_ADS;
+  const endedAt = endedAtFor(campaign, ownAds, lifetime, end);
+  const ads = adLinesFor(ownAds, adTally, figures);
+  return {
+    campaignId: campaign.id,
+    externalId: campaign.externalId,
+    name: campaign.name,
+    platform: campaign.platform,
+    status: campaign.status,
+    startsAt: campaign.startsAt?.toISOString() ?? null,
+    endsAt: campaign.endsAt?.toISOString() ?? null,
+    coverUrl: coverFor(campaign.coverUrl, ownAds, lifetime),
+    endedAt: endedAt?.toISOString() ?? null,
+    hasLinkTags: campaign.hasLinkTags,
+    orders: bucket.orders,
+    revenue: bucket.revenue,
+    // A Campaign's platform figures are its Ads' summed — there is no
+    // campaign-level figure to disagree with them.
+    ...sumFigures(ads),
+    ads,
+    unassigned: adTally.unassigned,
+  };
 }
 
 /**
@@ -250,36 +341,16 @@ export class AttributedRevenueService {
     }
 
     const campaigns: CampaignRevenueLine[] = campaignRows
-      .map((campaign) => {
-        const bucket = tally.byCampaign.get(campaign.id) ?? EMPTY;
-        const ownAds = adRowsByCampaign.get(campaign.id) ?? [];
-        const endedAt = endedAtFor(campaign, ownAds, lifetime, end);
-        const ads = adLinesFor(
-          ownAds,
-          tally.adsByCampaign.get(campaign.id) ?? NO_ADS,
+      .map((campaign) =>
+        campaignLineFor(
+          campaign,
+          adRowsByCampaign.get(campaign.id) ?? [],
+          tally,
           figures,
-        );
-        return {
-          campaignId: campaign.id,
-          externalId: campaign.externalId,
-          name: campaign.name,
-          platform: campaign.platform,
-          status: campaign.status,
-          startsAt: campaign.startsAt?.toISOString() ?? null,
-          endsAt: campaign.endsAt?.toISOString() ?? null,
-          coverUrl: coverFor(campaign.coverUrl, ownAds, lifetime),
-          endedAt: endedAt?.toISOString() ?? null,
-          hasLinkTags: campaign.hasLinkTags,
-          orders: bucket.orders,
-          revenue: bucket.revenue,
-          // A Campaign's platform figures are its Ads' summed — there is no
-          // campaign-level figure to disagree with them.
-          ...sumFigures(ads),
-          ads,
-          unassigned: (tally.adsByCampaign.get(campaign.id) ?? NO_ADS)
-            .unassigned,
-        };
-      })
+          lifetime,
+          end,
+        ),
+      )
       .sort(byRevenue);
 
     return {
@@ -297,6 +368,111 @@ export class AttributedRevenueService {
       ),
       unattributed: tally.unattributed,
       totals: tally.totals,
+    };
+  }
+  /**
+   * One Campaign's page: its line over the period, its Ads' ROAS, and the
+   * ratios and margin the Store-wide report does not carry.
+   *
+   * Reads only what is stored — the Orders, the Campaign and Ad rows, and the
+   * platform figures the sync already wrote. Nothing here calls the platform,
+   * so a vendor outage costs this page freshness and never the page.
+   *
+   * Only the Orders naming this Campaign are read, but they are credited with
+   * the whole Store's index: an Order whose first Touch names this Campaign
+   * and whose last Touch names another belongs to the other one, and only the
+   * full index knows that.
+   */
+  async forCampaign(
+    orgId: string,
+    storeId: string,
+    campaignId: string,
+    period: CampaignPeriod,
+  ): Promise<CampaignPerformanceReport> {
+    const campaign = await this.campaigns.findById(campaignId, orgId, storeId);
+    if (!campaign) throw new NotFoundException('Campaign not found');
+
+    const { start, end } = resolveCampaignPeriodRange(period);
+    const store = await this.stores.findById(storeId, orgId);
+    const timezone = store?.timezone ?? 'UTC';
+
+    const [campaignRows, adRows, orderRows, figures, lifetime] =
+      await Promise.all([
+        this.campaigns.findMany(orgId, storeId),
+        this.ads.findManyForStore(orgId, storeId),
+        this.attribution.findOrdersNamingCampaign(
+          orgId,
+          storeId,
+          campaign.externalId,
+          start,
+          end,
+        ),
+        this.figures.sumByAd(
+          orgId,
+          storeId,
+          dayInTimezone(start, timezone),
+          dayInTimezone(end, timezone),
+        ),
+        this.figures.lifetimeByAd(orgId, storeId),
+      ]);
+
+    const index: CreditIndex = {
+      campaigns: new Map(campaignRows.map((c) => [c.externalId, c.id])),
+      ads: new Map(
+        adRows.map((a) => [
+          a.externalId,
+          { adId: a.id, campaignId: a.campaignId },
+        ]),
+      ),
+    };
+
+    const credited = orderRows.filter(
+      (order) =>
+        creditFor(order, index, this.lookbackDays)?.campaignId === campaign.id,
+    );
+    const tally = tallyAttributedRevenue(credited, index, this.lookbackDays);
+    const line = campaignLineFor(
+      campaign,
+      adRows.filter((ad) => ad.campaignId === campaign.id),
+      tally,
+      figures,
+      lifetime,
+      end,
+    );
+
+    // A Not Tracked Campaign's margin is withheld for a better reason than
+    // missing costs, so its goods are not read and none are listed as owed.
+    const goods = campaign.hasLinkTags
+      ? await this.attribution.goodsCost(
+          orgId,
+          storeId,
+          credited.map((order) => order.id),
+        )
+      : { cost: 0, uncostedItems: 0, uncostedProducts: [] };
+
+    return {
+      period,
+      lookbackDays: this.lookbackDays,
+      rangeStart: period === 'lifetime' ? null : start.toISOString(),
+      rangeEnd: end.toISOString(),
+      campaign: {
+        ...line,
+        ...campaignRatios({
+          tracked: campaign.hasLinkTags,
+          revenue: line.revenue,
+          orders: line.orders,
+          spend: line.spend,
+          clicks: line.clicks,
+          goods,
+        }),
+        ads: line.ads.map((ad) => ({
+          ...ad,
+          // An Ad can carry our tags inside a Campaign that is Not Tracked as
+          // a whole, and then its own revenue is readable.
+          roas: ad.hasLinkTags ? roas(ad.revenue, ad.spend) : null,
+        })),
+        uncostedProducts: goods.uncostedProducts,
+      },
     };
   }
 }

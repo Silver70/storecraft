@@ -28,11 +28,17 @@ import {
   adDailyFigures,
   ads,
   campaigns,
+  orders,
+  productVariants,
   stores,
   type AdFormat,
   type CampaignStatus,
 } from '../src/shared/database/schema';
-import type { AttributedRevenueReport } from '../src/modules/marketing/services/attributed-revenue.service';
+import type {
+  AttributedRevenueReport,
+  CampaignPerformanceReport,
+} from '../src/modules/marketing/services/attributed-revenue.service';
+import type { FakeAdPlatformProvider } from './helpers/fake-ad-platform-provider';
 import { createTestApp } from './helpers/test-app';
 import { AdminClient } from './helpers/admin-client';
 import {
@@ -135,11 +141,12 @@ interface SeededCampaign {
 describe('Campaigns keyed by the platform (e2e)', () => {
   let app: INestApplication<App>;
   let db: DrizzleClient;
+  let adPlatform: FakeAdPlatformProvider;
   let fixture: StorefrontFixture;
   let admin: AdminUserFixture;
 
   beforeAll(async () => {
-    ({ app } = await createTestApp());
+    ({ app, adPlatform } = await createTestApp());
     db = app.get<DrizzleClient>(DRIZZLE_CLIENT);
   });
 
@@ -787,6 +794,280 @@ describe('Campaigns keyed by the platform (e2e)', () => {
       lineFor(report, summer.id)!.revenue + report.unattributed.revenue,
     ).toBe(report.totals.revenue);
     expect(report.blended).toEqual({ orders: 1, revenue: ORDER_TOTAL });
+  });
+
+  // ─── One Campaign's page ────────────────────────────────────────────────────
+
+  describe('one campaign’s page', () => {
+    async function readPerformance(
+      campaignId: string,
+      period: '7d' | '30d' | '90d' | 'lifetime' = '30d',
+      as: AdminUserFixture = admin,
+    ): Promise<CampaignPerformanceReport> {
+      const res = await as.client
+        .get(`/marketing/campaigns/${campaignId}/performance?period=${period}`)
+        .expect(200);
+      return res.body as CampaignPerformanceReport;
+    }
+
+    async function setCostPrice(costPrice: number | null): Promise<void> {
+      await db
+        .update(productVariants)
+        .set({ costPrice })
+        .where(eq(productVariants.id, fixture.variantId));
+    }
+
+    it('is the same line the store report carries, with ads and residue adding up for every figure', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [
+        SUMMER_VIDEO_EXT,
+        SUMMER_STILL_EXT,
+      ]);
+      const video = summer.ads[SUMMER_VIDEO_EXT];
+      const still = summer.ads[SUMMER_STILL_EXT];
+      await seedFigures(video, dayAgo(2), {
+        spend: 30_00,
+        impressions: 3000,
+        clicks: 60,
+      });
+      await seedFigures(still, dayAgo(1), {
+        spend: 10_00,
+        impressions: 1000,
+        clicks: 20,
+      });
+
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT) });
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT, SUMMER_STILL_EXT) });
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT, 'hand-edited') });
+
+      const { campaign, lookbackDays, rangeStart } = await readPerformance(
+        summer.id,
+      );
+      const storeLine = lineFor(await readReport(), summer.id)!;
+
+      expect(lookbackDays).toBe(30);
+      expect(rangeStart).not.toBeNull();
+      for (const key of [
+        'orders',
+        'revenue',
+        'spend',
+        'impressions',
+        'clicks',
+      ] as const) {
+        expect(campaign[key]).toBe(storeLine[key]);
+      }
+      expect(campaign).toMatchObject({
+        orders: 3,
+        revenue: ORDER_TOTAL * 3,
+        spend: 40_00,
+        impressions: 4000,
+        clicks: 80,
+        unassigned: { orders: 1, revenue: ORDER_TOTAL },
+      });
+
+      const summed = campaign.ads.reduce(
+        (sum, ad) => ({
+          orders: sum.orders + ad.orders,
+          revenue: sum.revenue + ad.revenue,
+          spend: sum.spend + ad.spend,
+          impressions: sum.impressions + ad.impressions,
+          clicks: sum.clicks + ad.clicks,
+        }),
+        { ...campaign.unassigned, spend: 0, impressions: 0, clicks: 0 },
+      );
+      expect(summed).toEqual({
+        orders: campaign.orders,
+        revenue: campaign.revenue,
+        spend: campaign.spend,
+        impressions: campaign.impressions,
+        clicks: campaign.clicks,
+      });
+
+      expect(campaign.roas).toBe((ORDER_TOTAL * 3) / 40_00);
+      expect(campaign.conversionRate).toBe(3 / 80);
+      expect(campaign.ads.find((a) => a.adId === video)!.roas).toBe(
+        ORDER_TOTAL / 30_00,
+      );
+    });
+
+    it('credits with the whole store’s index, not just this campaign’s', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+      const spring = await seedCampaign(SPRING_EXT, [SPRING_VIDEO_EXT]);
+
+      // Names Spring first and Summer last: Summer's, and never Spring's.
+      await placeOrder({
+        firstTouch: adClick(SPRING_EXT, SPRING_VIDEO_EXT, daysAgo(4)),
+        lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT, daysAgo(1)),
+      });
+
+      expect((await readPerformance(summer.id)).campaign.orders).toBe(1);
+      expect((await readPerformance(spring.id)).campaign.orders).toBe(0);
+    });
+
+    it('withholds margin and ROI while any item sold lacks a cost price, and names the product', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+      await seedFigures(summer.ads[SUMMER_VIDEO_EXT], dayAgo(1), {
+        spend: 10_00,
+        impressions: 100,
+        clicks: 10,
+      });
+      await setCostPrice(null);
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT) });
+
+      const { campaign } = await readPerformance(summer.id);
+      expect(campaign.contributionMargin).toBeNull();
+      expect(campaign.roi).toBeNull();
+      expect(campaign.uncostedProducts).toEqual([
+        { productId: fixture.productId, name: fixture.productName },
+      ]);
+      // Only the cost-based figures are withheld.
+      expect(campaign.roas).toBe(ORDER_TOTAL / 10_00);
+    });
+
+    it('computes margin and ROI once every item sold has a cost price', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+      await seedFigures(summer.ads[SUMMER_VIDEO_EXT], dayAgo(1), {
+        spend: 10_00,
+        impressions: 100,
+        clicks: 10,
+      });
+      await setCostPrice(10_00);
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT) });
+
+      const { campaign } = await readPerformance(summer.id);
+      // 30.00 revenue − 10.00 goods − 10.00 spend.
+      expect(campaign.contributionMargin).toBe(ORDER_TOTAL - 10_00 - 10_00);
+      expect(campaign.roi).toBe((ORDER_TOTAL - 10_00 - 10_00) / 10_00);
+      expect(campaign.uncostedProducts).toEqual([]);
+    });
+
+    it('reports ROAS and ROI as absent, not zero or infinite, at zero spend', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+      await setCostPrice(10_00);
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT) });
+
+      const { campaign } = await readPerformance(summer.id);
+      expect(campaign.spend).toBe(0);
+      expect(campaign.roas).toBeNull();
+      expect(campaign.roi).toBeNull();
+      expect(campaign.conversionRate).toBeNull();
+      expect(campaign.ads[0].roas).toBeNull();
+    });
+
+    it('shows a Not Tracked campaign’s spend and nothing built on its revenue', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT], {
+        hasLinkTags: false,
+      });
+      await seedFigures(summer.ads[SUMMER_VIDEO_EXT], dayAgo(1), {
+        spend: 25_00,
+        impressions: 900,
+        clicks: 30,
+      });
+
+      const { campaign } = await readPerformance(summer.id);
+      expect(campaign).toMatchObject({
+        hasLinkTags: false,
+        spend: 25_00,
+        impressions: 900,
+        clicks: 30,
+        roas: null,
+        conversionRate: null,
+        contributionMargin: null,
+        roi: null,
+        uncostedProducts: [],
+      });
+      expect(campaign.ads[0].roas).toBeNull();
+    });
+
+    it('reads a campaign’s whole life under Lifetime', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+      const video = summer.ads[SUMMER_VIDEO_EXT];
+      await seedFigures(video, dayAgo(120), {
+        spend: 40_00,
+        impressions: 400,
+        clicks: 4,
+      });
+      await seedFigures(video, dayAgo(1), {
+        spend: 10_00,
+        impressions: 100,
+        clicks: 1,
+      });
+      const old = await placeOrder({
+        lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT, daysAgo(121)),
+      });
+      await db
+        .update(orders)
+        .set({ createdAt: new Date(daysAgo(120)) })
+        .where(eq(orders.id, old));
+      await placeOrder({ lastTouch: adClick(SUMMER_EXT, SUMMER_VIDEO_EXT) });
+
+      const quarter = await readPerformance(summer.id, '90d');
+      expect(quarter.campaign).toMatchObject({ orders: 1, spend: 10_00 });
+
+      const lifetime = await readPerformance(summer.id, 'lifetime');
+      expect(lifetime.rangeStart).toBeNull();
+      expect(lifetime.campaign).toMatchObject({
+        orders: 2,
+        revenue: ORDER_TOTAL * 2,
+        spend: 50_00,
+        impressions: 500,
+        clicks: 5,
+      });
+    });
+
+    it('carries each ad’s review verdict beside its status', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT], {
+        status: 'paused',
+      });
+      await db
+        .update(ads)
+        .set({ reviewStatus: 'rejected' })
+        .where(eq(ads.id, summer.ads[SUMMER_VIDEO_EXT]));
+
+      const { campaign } = await readPerformance(summer.id);
+      expect(campaign.ads[0]).toMatchObject({
+        status: 'paused',
+        reviewStatus: 'rejected',
+      });
+    });
+
+    it('renders from stored figures while the ad platform is down', async () => {
+      const summer = await seedCampaign(SUMMER_EXT, [SUMMER_VIDEO_EXT]);
+      await seedFigures(summer.ads[SUMMER_VIDEO_EXT], dayAgo(1), {
+        spend: 10_00,
+        impressions: 100,
+        clicks: 10,
+      });
+      const fetchesBefore = adPlatform.fetched.length;
+      adPlatform.failAlways = new Error('vendor outage');
+      try {
+        const { campaign } = await readPerformance(summer.id);
+        expect(campaign.spend).toBe(10_00);
+        expect(adPlatform.fetched.length).toBe(fetchesBefore);
+      } finally {
+        adPlatform.failAlways = null;
+      }
+    });
+
+    it('refuses an unknown period', async () => {
+      const summer = await seedCampaign(SUMMER_EXT);
+      await admin.client
+        .get(`/marketing/campaigns/${summer.id}/performance?period=today`)
+        .expect(400);
+    });
+
+    it('makes another organization’s campaign unreadable', async () => {
+      const other = await seedStorefront(app);
+      try {
+        const theirs = await seedCampaign(SPRING_EXT, [SPRING_VIDEO_EXT], {
+          at: other,
+        });
+        await admin.client
+          .get(`/marketing/campaigns/${theirs.id}/performance?period=30d`)
+          .expect(404);
+      } finally {
+        await destroyStorefront(app, other.organizationId);
+      }
+    });
   });
 
   // ─── Tenancy ────────────────────────────────────────────────────────────────

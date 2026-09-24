@@ -1,11 +1,11 @@
 import { queryOptions } from "@tanstack/react-query";
-import type { Period } from "~/types/api";
+import type { CampaignPeriod, Period } from "~/types/api";
 import {
   getAdAccountsServerFn,
   getAdPlatformConnectionsServerFn,
   getAttributedRevenueServerFn,
-  getCampaignAdsServerFn,
   getCampaignByIdServerFn,
+  getCampaignPerformanceServerFn,
   getCampaignsServerFn,
 } from "./server";
 
@@ -23,11 +23,15 @@ export const campaignQueryOptions = (campaignId: string) =>
     staleTime: 30 * 1000,
   });
 
-export const campaignAdsQueryOptions = (campaignId: string) =>
+export const campaignPerformanceQueryOptions = (
+  campaignId: string,
+  period: CampaignPeriod,
+) =>
   queryOptions({
-    queryKey: ["campaigns", "detail", campaignId, "ads"],
-    queryFn: () => getCampaignAdsServerFn({ data: { campaignId } }),
-    staleTime: 30 * 1000,
+    queryKey: ["campaigns", "detail", campaignId, "performance", period],
+    queryFn: () =>
+      getCampaignPerformanceServerFn({ data: { campaignId, period } }),
+    staleTime: 60 * 1000,
   });
 
 export const attributedRevenueQueryOptions = (period: Period) =>

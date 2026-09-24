@@ -2,7 +2,9 @@ import { IsEnum } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import {
   ATTRIBUTION_PERIODS,
+  CAMPAIGN_PERIODS,
   type AttributionPeriod,
+  type CampaignPeriod,
 } from '../utils/attribution-period.util';
 
 /**
@@ -13,4 +15,11 @@ export class AttributedRevenueQueryDto {
   @ApiProperty({ enum: ATTRIBUTION_PERIODS })
   @IsEnum(ATTRIBUTION_PERIODS)
   declare period: AttributionPeriod;
+}
+
+/** One Campaign's page: a week, a month, a quarter, or its whole life. */
+export class CampaignPerformanceQueryDto {
+  @ApiProperty({ enum: CAMPAIGN_PERIODS })
+  @IsEnum(CAMPAIGN_PERIODS)
+  declare period: CampaignPeriod;
 }

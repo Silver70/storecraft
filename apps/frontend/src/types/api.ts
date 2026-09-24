@@ -449,6 +449,13 @@ export type Campaign = {
 
 export type AdStatus = CampaignStatus;
 
+/**
+ * The platform's review verdict on an ad, kept beside its collapsed status: a
+ * pause outranks a rejection in the status, so an ad paused after Meta rejected
+ * it reads Paused, and only this says it was rejected.
+ */
+export type AdReviewStatus = "in_review" | "approved" | "rejected" | "with_issues";
+
 /** How an ad's creative is built, as the platform classifies it. */
 export type AdFormat = "image" | "video" | "carousel";
 
@@ -498,6 +505,7 @@ export type AdRevenueLine = RevenueBucket &
     name: string;
     format: AdFormat | null;
     status: AdStatus;
+    reviewStatus: AdReviewStatus | null;
     creativeUrl: string | null;
     hasLinkTags: boolean;
   };
@@ -549,6 +557,46 @@ export type AttributedRevenueReport = {
   unattributed: RevenueBucket;
   /** Attributed plus unattributed — the period's realized revenue. */
   totals: RevenueBucket;
+};
+
+// ─── One campaign's page ──────────────────────────────────────────────────────
+
+/** The periods a campaign's own page offers. */
+export type CampaignPeriod = "7d" | "30d" | "90d" | "lifetime";
+
+/**
+ * Ratios are plain fractions (`0.25` is 25%). Each is null where it cannot be
+ * stated honestly — show a dash, never `0`.
+ */
+export type AdPerformanceLine = AdRevenueLine & {
+  /** Null at zero spend, and for an ad whose revenue cannot be read. */
+  roas: number | null;
+};
+
+export type CampaignPerformanceLine = Omit<CampaignRevenueLine, "ads"> & {
+  ads: AdPerformanceLine[];
+  /** Revenue ÷ spend. Null at zero spend, or when Not Tracked. */
+  roas: number | null;
+  /** Our orders ÷ the platform's clicks. Null at zero clicks, or when Not Tracked. */
+  conversionRate: number | null;
+  /**
+   * Revenue − cost of goods − spend, in the smallest currency unit. Null unless
+   * every item sold has a cost price, and when Not Tracked.
+   */
+  contributionMargin: number | null;
+  /** Contribution margin ÷ spend. Null whenever the margin is, or at zero spend. */
+  roi: number | null;
+  /** The products sold without a cost price, once each — why margin is absent. */
+  uncostedProducts: { productId: string | null; name: string }[];
+};
+
+export type CampaignPerformanceReport = {
+  period: CampaignPeriod;
+  lookbackDays: number;
+  /** Null for Lifetime, which has no start. */
+  rangeStart: string | null;
+  rangeEnd: string;
+  campaign: CampaignPerformanceLine;
 };
 
 // ─── Price Lists ──────────────────────────────────────────────────────────────

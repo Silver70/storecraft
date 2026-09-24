@@ -37,3 +37,29 @@ export function resolvePeriodRange(period: AttributionPeriod): {
   start.setDate(start.getDate() - periodDays(period));
   return { start, end: now };
 }
+
+/**
+ * The periods one Campaign's own page offers: a week, a month, a quarter, or
+ * the whole of it. `today` is left out — a single day of ad figures is mostly
+ * the platform still counting.
+ *
+ * Kept apart from `ATTRIBUTION_PERIODS` so Lifetime stays a question asked of
+ * one Campaign, never of a whole Store's history in one read.
+ */
+export const CAMPAIGN_PERIODS = ['7d', '30d', '90d', 'lifetime'] as const;
+
+export type CampaignPeriod = (typeof CAMPAIGN_PERIODS)[number];
+
+/**
+ * The range a Campaign period reads. Lifetime is unbounded at the start: an
+ * Order can only be credited to a Campaign whose platform id its Touch carries,
+ * and the platform's figures only exist for days the Campaign ran, so there is
+ * nothing before the Campaign for an open start to pick up.
+ */
+export function resolveCampaignPeriodRange(period: CampaignPeriod): {
+  start: Date;
+  end: Date;
+} {
+  if (period === 'lifetime') return { start: new Date(0), end: new Date() };
+  return resolvePeriodRange(period);
+}

@@ -21,6 +21,7 @@ import {
 } from '../../../shared/database/schema';
 import type {
   AdFormat,
+  AdReviewStatus,
   AdPlatform,
   CampaignStatus,
 } from '../../../shared/database/schema';
@@ -50,6 +51,7 @@ export interface MirroredAdInput {
   name: string | null;
   format: AdFormat | null;
   status: CampaignStatus;
+  reviewStatus: AdReviewStatus | null;
 }
 
 /** A row as the sync needs it back: its id, and what is still owed on it. */
@@ -198,6 +200,7 @@ export class CampaignMirrorRepository {
             name: nameOr(row.name, `Ad ${row.externalId}`, AD_LIMITS.name),
             format: row.format,
             status: row.status,
+            reviewStatus: row.reviewStatus,
             createdAt: at,
             updatedAt: at,
           })),
@@ -211,6 +214,9 @@ export class CampaignMirrorRepository {
             // erased: the creative did not stop being a video.
             format: sql`coalesce(excluded.format, ${ads.format})`,
             status: sql`excluded.status`,
+            // Written as reported, null included: a verdict the platform has
+            // withdrawn is not one to keep showing.
+            reviewStatus: sql`excluded.review_status`,
             updatedAt: sql`excluded.updated_at`,
           },
           setWhere: eq(ads.organizationId, scope.organizationId),

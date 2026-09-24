@@ -35,6 +35,25 @@ export const adFormatEnum = pgEnum('ad_format', ['image', 'video', 'carousel']);
 export type AdFormat = (typeof adFormatEnum.enumValues)[number];
 
 /**
+ * The platform's review verdict on an Ad, as it reported it — kept beside the
+ * collapsed status rather than folded into it.
+ *
+ * The collapse has to pick one answer, and a pause outranks a rejection, so an
+ * Ad the merchant paused after Meta rejected it reads Paused. That is the right
+ * headline and the wrong whole story: the rejection is still there, and
+ * resuming the Ad will not make it deliver. Keeping the verdict lets a reader
+ * show both.
+ */
+export const adReviewStatusEnum = pgEnum('ad_review_status', [
+  'in_review',
+  'approved',
+  'rejected',
+  'with_issues',
+]);
+
+export type AdReviewStatus = (typeof adReviewStatusEnum.enumValues)[number];
+
+/**
  * One creative running under a Campaign, keyed by the platform's own ad id.
  *
  * That id is what the Link Tags carry into an Order's Touch
@@ -70,6 +89,11 @@ export const ads = pgTable(
     format: adFormatEnum('format'),
     /** As the platform reports it. Never written by a merchant here. */
     status: campaignStatusEnum('status').notNull(),
+    /**
+     * What the platform's review said, as of the last sync. Null where it
+     * reported no verdict at all. See `adReviewStatusEnum`.
+     */
+    reviewStatus: adReviewStatusEnum('review_status'),
     /**
      * The picture the Ad is recognised by — its image, or a video's poster
      * frame. A copy in our own storage, since a platform's image links expire.

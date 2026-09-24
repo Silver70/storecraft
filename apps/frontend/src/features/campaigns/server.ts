@@ -4,12 +4,12 @@ import { adminStoreHeader } from "~/lib/active-store";
 import { apiClient, authHeader } from "~/lib/api-client";
 import { getErrorMessage } from "~/lib/errors";
 import type {
-  Ad,
   AdAccountChoice,
   AdPlatformConnection,
   AdPlatformSyncOutcome,
   AttributedRevenueReport,
   Campaign,
+  CampaignPerformanceReport,
 } from "~/types/api";
 
 async function storeHeaders() {
@@ -47,20 +47,6 @@ export const getCampaignByIdServerFn = createServerFn({ method: "GET" })
     }
   });
 
-export const getCampaignAdsServerFn = createServerFn({ method: "GET" })
-  .inputValidator(z.object({ campaignId: z.string().min(1) }))
-  .handler(async ({ data }): Promise<Ad[]> => {
-    try {
-      const res = await apiClient.get<Ad[]>(
-        `/api/admin/campaigns/${data.campaignId}/ads`,
-        { headers: await storeHeaders() },
-      );
-      return res.data;
-    } catch (err) {
-      throw new Error(getErrorMessage(err));
-    }
-  });
-
 /**
  * Revenue, orders and the platform's figures per campaign for a period.
  *
@@ -74,6 +60,30 @@ export const getAttributedRevenueServerFn = createServerFn({ method: "GET" })
     try {
       const res = await apiClient.get<AttributedRevenueReport>(
         `/api/admin/marketing/attributed-revenue?period=${data.period}`,
+        { headers: await storeHeaders() },
+      );
+      return res.data;
+    } catch (err) {
+      throw new Error(getErrorMessage(err));
+    }
+  });
+
+/**
+ * One campaign over a period: its figures, its ads and the ratios its page
+ * shows. Read from what the sync already stored — this never reaches the ad
+ * platform, so an outage there costs freshness, not the page.
+ */
+export const getCampaignPerformanceServerFn = createServerFn({ method: "GET" })
+  .inputValidator(
+    z.object({
+      campaignId: z.string().min(1),
+      period: z.enum(["7d", "30d", "90d", "lifetime"]),
+    }),
+  )
+  .handler(async ({ data }): Promise<CampaignPerformanceReport> => {
+    try {
+      const res = await apiClient.get<CampaignPerformanceReport>(
+        `/api/admin/marketing/campaigns/${data.campaignId}/performance?period=${data.period}`,
         { headers: await storeHeaders() },
       );
       return res.data;

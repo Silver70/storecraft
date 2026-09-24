@@ -447,6 +447,7 @@ export class AdPlatformSyncService {
         name: ad.name,
         format: ad.format,
         status: collapseStatus(ad.signals, now),
+        reviewStatus: ad.signals.review,
       })),
       now,
     );
