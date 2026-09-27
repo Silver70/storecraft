@@ -327,15 +327,24 @@ export class AdPlatformConnectionService {
     const refusal = toChoice(chosen, store.currency).reason;
     if (refusal) throw new BadRequestException(refusal);
 
-    const pixelId = await this.reachingProvider(() =>
-      this.provider.ensurePixel({
+    // Optional: a connection through a classic `facebook` account cannot hold
+    // a pixel, and that must not stop the merchant choosing an account. Without
+    // one, reporting works; the storefront pixel, purchase events and campaign
+    // creation stay off until the store reconnects through business login.
+    let pixelId: string | null = null;
+    try {
+      pixelId = await this.provider.ensurePixel({
         credential,
         platform,
         providerAccountRef,
         externalAccountId: chosen.externalAccountId,
         storeName: store.name,
-      }),
-    );
+      });
+    } catch (error) {
+      this.logger.warn(
+        `No pixel for ${platform} on store ${storeId}: ${messageOf(error)}`,
+      );
+    }
 
     const row = await this.connections.markConnected(orgId, storeId, platform, {
       externalAccountId: chosen.externalAccountId,

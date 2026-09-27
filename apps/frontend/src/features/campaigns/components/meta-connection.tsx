@@ -63,6 +63,42 @@ function useInvalidateCampaigns() {
  * connected there are none, and saying so is the entire content.
  */
 export function ConnectMetaEmptyState() {
+  return (
+    <Card className="flex flex-col items-center gap-4 px-6 py-20 text-center">
+      <div className="max-w-md space-y-2">
+        <h2 className="text-lg font-semibold">Connect Meta</h2>
+        <p className="text-sm text-muted-foreground">
+          Your campaigns live on your Meta ad account. Connect it once, on
+          Meta&rsquo;s own screen, and they appear here with what each one
+          earned.
+        </p>
+      </div>
+
+      <ConnectMetaButton className="items-center">
+        Connect Meta
+      </ConnectMetaButton>
+    </Card>
+  );
+}
+
+/**
+ * Sends the merchant through Meta's approval screen.
+ *
+ * Usable from any state: a new approval replaces whatever grant the store held
+ * and returns it to the account picker, so it is also the way out of a login
+ * that turned out to be the wrong one.
+ */
+function ConnectMetaButton({
+  children,
+  className,
+  size,
+  variant,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  size?: "sm";
+  variant?: "outline";
+}) {
   const [error, setError] = React.useState<string | null>(null);
 
   const connect = useMutation({
@@ -76,17 +112,10 @@ export function ConnectMetaEmptyState() {
   });
 
   return (
-    <Card className="flex flex-col items-center gap-4 px-6 py-20 text-center">
-      <div className="max-w-md space-y-2">
-        <h2 className="text-lg font-semibold">Connect Meta</h2>
-        <p className="text-sm text-muted-foreground">
-          Your campaigns live on your Meta ad account. Connect it once, on
-          Meta&rsquo;s own screen, and they appear here with what each one
-          earned.
-        </p>
-      </div>
-
+    <div className={cn("flex flex-col gap-2", className)}>
       <Button
+        size={size}
+        variant={variant}
         className="gap-2"
         disabled={connect.isPending}
         onClick={() => {
@@ -95,11 +124,11 @@ export function ConnectMetaEmptyState() {
         }}
       >
         {connect.isPending && <Loader2Icon className="h-4 w-4 animate-spin" />}
-        Connect Meta
+        {children}
       </Button>
 
       {error && <Refusal>{error}</Refusal>}
-    </Card>
+    </div>
   );
 }
 
@@ -126,6 +155,13 @@ export function AdAccountPicker() {
     onSuccess: () => void invalidate(),
     // The server refuses a mismatch too, so a reason that never reached the
     // picker still arrives as a sentence rather than as a broken connection.
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const disconnect = useMutation({
+    mutationFn: () =>
+      disconnectAdPlatformServerFn({ data: { platform: "meta" } }),
+    onSuccess: () => void invalidate(),
     onError: (err: Error) => setError(err.message),
   });
 
@@ -202,6 +238,35 @@ export function AdAccountPicker() {
           <Refusal>{error}</Refusal>
         </div>
       )}
+
+      {/* The way out of a login that sees the wrong accounts, or none. */}
+      <div className="flex items-center justify-between gap-4 border-t px-6 py-4">
+        <p className="text-xs text-muted-foreground">
+          Not the right Meta login?
+        </p>
+        <div className="flex items-start gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2"
+            disabled={disconnect.isPending || select.isPending}
+            onClick={() => {
+              setError(null);
+              disconnect.mutate();
+            }}
+          >
+            {disconnect.isPending ? (
+              <Loader2Icon className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <UnlinkIcon className="h-3.5 w-3.5" />
+            )}
+            Disconnect
+          </Button>
+          <ConnectMetaButton size="sm" variant="outline" className="items-end">
+            Connect again
+          </ConnectMetaButton>
+        </div>
+      </div>
     </Card>
   );
 }
@@ -320,6 +385,12 @@ export function MetaConnectionSummary({
 
         {note && <p className="text-xs text-muted-foreground">{note}</p>}
         {error && <Refusal>{error}</Refusal>}
+
+        {gone && (
+          <div className="pt-1">
+            <ConnectMetaButton size="sm">Connect again</ConnectMetaButton>
+          </div>
+        )}
 
         {!gone && (
           <div className="flex items-center gap-2 pt-1">

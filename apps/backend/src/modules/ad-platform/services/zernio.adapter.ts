@@ -186,7 +186,10 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
       );
     }
 
-    const providerAccountRef = params.accountId;
+    // Classic login returns the Facebook account as `accountId`. When the
+    // vendor also returns a `metaads` account as `adsAccountId`, that one is
+    // preferred: only it carries tracking tags (the pixel).
+    const providerAccountRef = params.adsAccountId ?? params.accountId;
     if (!providerAccountRef) return Promise.resolve(null);
 
     return Promise.resolve({ providerAccountRef });
@@ -1067,6 +1070,10 @@ export class ZernioAdPlatformAdapter implements AdPlatformProvider {
 
     if (!response.ok) {
       this.logger.error(`${method} ${path} answered ${response.status}`);
+      // TEMP(debug): remove once the tracking-tags 400 is understood.
+      this.logger.error(
+        `${method} ${url.search} body: ${JSON.stringify(await bodyOf(response))}`,
+      );
       throw new ServiceUnavailableException(
         response.status === 429
           ? 'The ad platform is rate-limiting this integration just now. This is a limit on the integration rather than on your ad account — nothing has changed, and it will be tried again shortly.'
